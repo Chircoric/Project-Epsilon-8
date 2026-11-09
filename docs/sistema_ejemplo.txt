@@ -1,0 +1,70 @@
+﻿Sistema 42 - estrella G
+  masa 0.986 Msol, radio 1.1886 Rsol (826912 km), 5886 K, 1.528 Lsol, giro 21.2 dias
+  zona habitable 1.224-2.101 UA, linea de hielo 3.337 UA
+
+Sistema 42 b - Lava
+  masa 0.06802 Mtierra, radio 2799 km, 968 K, acoplado por marea
+  a = 1.27981e+07 km (0.08555 UA), e = 0.0073, i = 2.84 grados, periodo 9.20 dias
+  materiales: hierro 59 %, silicatos 41 %, agua 0.0 %, hielos 0 %, gas 0 %; densidad 5.04 g/cm3
+  superficie: 968 K, 0 bar, oceano 0 %, hielo 0 %, oxidos 0 %, azufre 13 %, carbono 30 %
+  M(t) = 0.00489312304 + 7.900756946e-06 * t   [rad, t en s]
+  E - 0.007261 * sin(E) = M(t)
+  r(t) = 1.279812e+07 * (1 - 0.007261 * cos(E))   [km, distancia al centro]
+  x(t) = 7.458673e+06 * (cos(E) - 0.007261) + -1.039699e+07 * sin(E)
+  y(t) = -6.154195e+05 * (cos(E) - 0.007261) + -1.484034e+05 * sin(E)
+  z(t) = 1.038177e+07 * (cos(E) - 0.007261) + 7.460809e+06 * sin(E)
+  giro(t) = 7.236160 + 7.900756946e-06 * t   [rad], eje (-0.0186, -0.9988, -0.0458)
+
+Sistema 42 c - Roca
+  masa 0.1321 Mtierra, radio 3343 km, 794 K, acoplado por marea
+  a = 1.90227e+07 km (0.12716 UA), e = 0.1078, i = 0.46 grados, periodo 16.68 dias
+  materiales: hierro 62 %, silicatos 38 %, agua 0.0 %, hielos 0 %, gas 0 %; densidad 5.15 g/cm3
+  superficie: 794 K, 0 bar, oceano 0 %, hielo 0 %, oxidos 18 %, azufre 5 %, carbono 0 %
+  M(t) = 2.30191936 + 4.359923870e-06 * t   [rad, t en s]
+  E - 0.107770 * sin(E) = M(t)
+  r(t) = 1.902272e+07 * (1 - 0.107770 * cos(E))   [km, distancia al centro]
+  x(t) = -1.897379e+06 * (cos(E) - 0.107770) + -1.881704e+07 * sin(E)
+  y(t) = 2.527354e+04 * (cos(E) - 0.107770) + -1.509906e+05 * sin(E)
+  z(t) = 1.892784e+07 * (cos(E) - 0.107770) + -1.886071e+06 * sin(E)
+  giro(t) = 10.255805 + 6.539885804e-06 * t   [rad], eje (0.0078, -1.0000, 0.0021)
+
+Sistema 42 d - Desierto
+  masa 0.08081 Mtierra, radio 2891 km, 643 K, acoplado por marea
+  a = 2.90016e+07 km (0.19386 UA), e = 0.1723, i = 1.64 grados, periodo 31.40 dias
+  materiales: hierro 65 %, silicatos 35 %, agua 0.0 %, hielos 0 %, gas 0 %; densidad 5.28 g/cm3
+  superficie: 654 K, 0.109 bar, oceano 0 %, hielo 0 %, oxidos 51 %, azufre 6 %, carbono 0 %
+  M(t) = 5.96202363 + 2.316083344e-06 * t   [rad, t en s]
+  E - 0.172315 * sin(E) = M(t)
+  r(t) = 2.900163e+07 * (1 - 0.172315 * cos(E))   [km, distancia al centro]
+  x(t) = 2.556108e+07 * (cos(E) - 0.172315) + -1.349245e+07 * sin(E)
+  y(t) = -6.915928e+04 * (cos(E) - 0.172315) + -8.154778e+05 * sin(E)
+  z(t) = 1.370114e+07 * (cos(E) - 0.172315) + 2.516762e+07 * sin(E)
+  giro(t) = 6.454101 + 3.474125016e-06 * t   [rad], eje (0.0114, -0.9996, -0.0263)
+
+Sistema 42 d I - Luna
+  masa 0.0003265 Mtierra, radio 512 km, 643 K, acoplado por marea
+  a = 16667.7 km (0.00011 UA), e = 0.0150, i = 0.36 grados, periodo 0.87 dias
+  materiales: hierro 13 %, silicatos 86 %, agua 1.2 %, hielos 0 %, gas 0 %; densidad 3.46 g/cm3
+  superficie: 643 K, 0 bar, oceano 0 %, hielo 0 %, oxidos 2 %, azufre 0 %, carbono 1 %
+  M(t) = 4.29307134 + 8.357224391e-05 * t   [rad, t en s]
+  E - 0.015000 * sin(E) = M(t)
+  r(t) = 1.666768e+04 * (1 - 0.015000 * cos(E))   [km, distancia al centro]
+  x(t) = -6.984813e+03 * (cos(E) - 0.015000) + 1.513146e+04 * sin(E)
+  y(t) = -3.870466e+01 * (cos(E) - 0.015000) + 9.802009e+01 * sin(E)
+  z(t) = -1.513348e+04 * (cos(E) - 0.015000) + -6.984132e+03 * sin(E)
+  giro(t) = 8.573039 + 8.357224391e-05 * t   [rad], eje (0.0063, -1.0000, -0.0004)
+
+Sistema 42 cometa 1 - Cometa
+  masa 5.439e-09 Mtierra, radio 23 km, 582 K
+  a = 4.12819e+07 km (0.27595 UA), e = 0.6641, i = 5.29 grados, periodo 53.32 dias
+  materiales: hierro 0 %, silicatos 50 %, agua 40.0 %, hielos 10 %, gas 0 %; densidad 1.51 g/cm3
+  superficie: 0 K, 0 bar, oceano 0 %, hielo 0 %, oxidos 0 %, azufre 0 %, carbono 75 %
+  M(t) = 1.1450231 + 1.363794307e-06 * t   [rad, t en s]
+  E - 0.664092 * sin(E) = M(t)
+  r(t) = 4.128186e+07 * (1 - 0.664092 * cos(E))   [km, distancia al centro]
+  x(t) = -2.418726e+07 * (cos(E) - 0.664092) + 2.494707e+07 * sin(E)
+  y(t) = -3.801002e+06 * (cos(E) - 0.664092) + 1.569319e+05 * sin(E)
+  z(t) = -3.323734e+07 * (cos(E) - 0.664092) + -1.817227e+07 * sin(E)
+  giro(t) = 3.267684 + 1.092874367e-04 * t   [rad], eje (0.5280, -0.8474, -0.0562)
+
+Estabilidad: correcta

@@ -1,0 +1,21 @@
+# Compilados y dependencias: se regeneran con cmake --preset y vcpkg.
+out/
+build/
+.vs/
+CMakeUserPresets.json
+*.user
+*.suo
+
+# Ejecutables apartados mientras el juego estaba abierto.
+*.abierto*
+*_old*.exe
+*_old*.pdb
+
+# Partidas y configuracion de pruebas.
+*.sav
+*.sav.tmp
+ajustes.txt
+
+# Copias de seguridad de Blender.
+*.blend1
+*.blend2

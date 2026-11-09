@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+if(@EPSILON_PACKAGE_SDL@)
+    find_dependency(SDL3 CONFIG)
+endif()
+if(@EPSILON_PACKAGE_HUD@)
+    find_dependency(imgui CONFIG)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/EpsilonEngineTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/EpsilonShaders.cmake")
+check_required_components(EpsilonEngine)

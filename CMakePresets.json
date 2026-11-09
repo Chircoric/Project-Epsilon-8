@@ -1,0 +1,68 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "x64-debug",
+      "displayName": "x64 Debug",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "x64-release",
+      "displayName": "x64 Release",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "x64-asan",
+      "displayName": "x64 AddressSanitizer",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "EPSILON_ASAN": "ON" }
+    },
+    {
+      "name": "sdl-base",
+      "hidden": true,
+      "inherits": "base",
+      "toolchainFile": "$env{VSINSTALLDIR}VC/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "EPSILON_WITH_SDL": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/vcpkg_installed"
+      }
+    },
+    {
+      "name": "x64-sdl-debug",
+      "displayName": "x64 SDL Debug",
+      "inherits": "sdl-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "x64-sdl-release",
+      "displayName": "x64 SDL Release",
+      "inherits": "sdl-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "x64-debug", "configurePreset": "x64-debug" },
+    { "name": "x64-release", "configurePreset": "x64-release" },
+    { "name": "x64-asan", "configurePreset": "x64-asan" },
+    { "name": "x64-sdl-debug", "configurePreset": "x64-sdl-debug" },
+    { "name": "x64-sdl-release", "configurePreset": "x64-sdl-release" }
+  ],
+  "testPresets": [
+    { "name": "x64-debug", "configurePreset": "x64-debug", "output": { "outputOnFailure": true } },
+    { "name": "x64-release", "configurePreset": "x64-release", "output": { "outputOnFailure": true } },
+    { "name": "x64-asan", "configurePreset": "x64-asan", "output": { "outputOnFailure": true } },
+    { "name": "x64-sdl-debug", "configurePreset": "x64-sdl-debug", "output": { "outputOnFailure": true } },
+    { "name": "x64-sdl-release", "configurePreset": "x64-sdl-release", "output": { "outputOnFailure": true } }
+  ]
+}
