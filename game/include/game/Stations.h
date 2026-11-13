@@ -14,6 +14,7 @@
 // un modulo tiene nivel: asi se mejora sin cambiar de estacion.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -86,6 +87,8 @@ public:
     // lo anota, asi que da igual cada cuanto se la mire o con que reloj (docs/multijugador.md, 2.3). Una
     // que aun no tiene sello empieza a contar en from. El tiempo de una estacion nunca retrocede.
     void ProduceUntil(double time, double from);
+    // Solo las que acepte el filtro: con varios relojes, cada estacion sigue al de su sistema.
+    void ProduceUntil(double time, double from, const std::function<bool(const Station&)>& accept);
     void Age(double realSeconds);
 
     // Vacia una estacion en la nave, hasta donde quepa.

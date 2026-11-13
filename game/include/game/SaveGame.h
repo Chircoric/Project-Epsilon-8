@@ -54,6 +54,7 @@ struct ShipSave {
     bool docked = false;  // atracada en la estacion que dice la orbita
     int homeStation = -1; // la ultima estacion propia donde atraco: ahi reaparece si se pierde
     bool lost = false;    // estaba perdida al guardar: al cargar, reaparece
+    double clock = 0;     // el reloj de su burbuja (s): las naves que no estan juntas pueden llevar fechas distintas
 };
 
 struct WorldSave {

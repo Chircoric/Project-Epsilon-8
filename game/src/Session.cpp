@@ -76,16 +76,19 @@ double NebulaDensity(const Vec3d& absolute) {
 }  // namespace
 
 GameSession::GameSession(Engine& engine, const Balance& rules, std::uint32_t seed, GameModeId mode)
-    : engine_(engine), rules_(rules), world_(rules, seed, mode), bubble_(seed) {
+    : engine_(&engine), rules_(rules), world_(rules, seed, mode) {
+    bubbles_.emplace_back(seed);
+    bubbles_.back().engine = &engine;
+    bubble_ = &bubbles_.back();
     fleet_.emplace_back();
     players_.emplace_back();
     Use(0);
     vessel_->id = nextVessel_++;
     vessel_->ship = MakeShip(rules);
-    World& w = engine_.GetWorld();
+    World& w = engine_->GetWorld();
     world_.anomalies = GenerateAnomalies(w.extents, rules_.anomalies, seed);
     ResizeSpecies(world_.species, w.extents.size());
-    w.scene.UpdateWorld(engine_.Jobs());
+    w.scene.UpdateWorld(engine_->Jobs());
     pilot_->known.assign(w.state.size(), 0);
     pilot_->known[0] = 1;
     pilot_->visited = pilot_->known;
@@ -97,7 +100,7 @@ void GameSession::PlaceAtStart() { PlaceInSystem(0); }
 
 // A medio camino de la estrella de ese sistema, dentro de el.
 void GameSession::PlaceInSystem(int system) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const std::size_t i = static_cast<std::size_t>(system);
     const Vec3d center = w.scene.WorldPosition(w.sectors[i]);
     vessel_->ship.position = center + Vec3d{w.extents[i] * 0.25, 0.0, -w.extents[i] * 0.15};
@@ -120,13 +123,13 @@ void GameSession::Say(const std::string& text, Audience audience) {
 }
 
 double GameSession::Visibility() const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     return rules_.world.fogDistance / NebulaDensity(vessel_->ship.position + w.origin);
 }
 
 // Grandes zonas de un color a otro. Cambia despacio: hay que viajar para notarlo.
 float GameSession::NebulaTone() const {
-    const Vec3d p = (vessel_->ship.position + engine_.GetWorld().origin) * (1.0 / 1.0e11);
+    const Vec3d p = (vessel_->ship.position + engine_->GetWorld().origin) * (1.0 / 1.0e11);
     return static_cast<float>(std::clamp(0.5 + 0.36 * std::sin(p.x * 1.1 + 0.4) * std::cos(p.z * 0.8 - 0.6) + 0.14 * std::sin(p.y * 1.4 + p.z * 0.5), 0.0, 1.0));
 }
 
@@ -150,7 +153,7 @@ std::string GameSession::SystemName(int system) const { return "SYS-" + std::to_
 
 std::vector<AtlasRow> GameSession::AtlasRows(int system) const {
     std::vector<AtlasRow> rows;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (system < 0 || static_cast<std::size_t>(system) >= w.systems.size()) return rows;
     const StarSystemData& data = *w.systems[static_cast<std::size_t>(system)];
     const std::string base = SystemName(system);
@@ -249,7 +252,7 @@ bool GameSession::SetAutopilot(const TargetRef& target) {
 void GameSession::CancelAutopilot() { vessel_->autopilot.reset(); }
 
 std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (t.kind == Kind::None) return std::nullopt;
     if (t.kind != Kind::Station && t.kind != Kind::Anomaly && (t.system < 0 || static_cast<std::size_t>(t.system) >= w.state.size())) return std::nullopt;
 
@@ -262,7 +265,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             const StarData& star = system.StarAt(t.index);
             const StarYield yield = YieldOf(star);
             info.position = w.scene.WorldPosition(state.starNodes[static_cast<std::size_t>(t.index)]);
-            if (static_cast<std::size_t>(t.index) < state.starBodies.size()) info.velocity = BodyVelocity(w, w.bodies[static_cast<std::size_t>(state.starBodies[static_cast<std::size_t>(t.index)])], bubble_.simTime);  // una estrella doble se mueve
+            if (static_cast<std::size_t>(t.index) < state.starBodies.size()) info.velocity = BodyVelocity(w, w.bodies[static_cast<std::size_t>(state.starBodies[static_cast<std::size_t>(t.index)])], bubble_->simTime);  // una estrella doble se mueve
             info.radius = star.radius;
             info.arrival = yield.orbitRadius;
             info.name = w.bodies[static_cast<std::size_t>(state.starBodies[static_cast<std::size_t>(std::min<std::size_t>(t.index, state.starBodies.size() - 1))])].name;
@@ -274,7 +277,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             if (!body) return std::nullopt;
             const BodyData* data = BodyInfo(w, *body);
             info.position = w.scene.WorldPosition(body->node);
-            info.velocity = BodyVelocity(w, *body, bubble_.simTime);
+            info.velocity = BodyVelocity(w, *body, bubble_->simTime);
             info.radius = body->radius;
             info.arrival = body->radius * 1.6 + 500.0;
             info.name = body->name;
@@ -287,7 +290,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             if (!belt) return std::nullopt;
             // El cumulo mas cercano: es donde se puede trabajar.
             Vec3d near;
-            if (!AsteroidLayer::NearestFamily(w, vessel_->ship.position, bubble_.simTime, near, slot)) return std::nullopt;
+            if (!AsteroidLayer::NearestFamily(w, vessel_->ship.position, bubble_->simTime, near, slot)) return std::nullopt;
             info.position = near;
             info.radius = 220.0;
             info.arrival = 2000.0;
@@ -304,11 +307,11 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             if (s->site.star >= 0) {
                 info.velocity = Vec3d{-std::sin(s->angle), 0.0, std::cos(s->angle)} * (rules_.stations.orbitRate / 3600.0 * s->yield.orbitRadius);
             } else if (s->site.body >= 0) {
-                if (const Body* body = FindPlanet(w, s->site.system, s->site.body)) info.velocity = BodyVelocity(w, *body, bubble_.simTime);
+                if (const Body* body = FindPlanet(w, s->site.system, s->site.body)) info.velocity = BodyVelocity(w, *body, bubble_->simTime);
             } else if (s->site.belt >= 0) {
                 if (const AsteroidBelt* belt = FindBelt(w, s->site.system, s->site.belt)) {
                     const std::size_t family = static_cast<std::size_t>(s->site.family) % belt->families.size();
-                    info.velocity = w.scene.World(belt->parent).TransformDirection(OrbitVelocity(belt->families[family].orbit, bubble_.simTime));
+                    info.velocity = w.scene.World(belt->parent).TransformDirection(OrbitVelocity(belt->families[family].orbit, bubble_->simTime));
                 }
             }
             info.radius = StationRadius(s->kind);
@@ -337,7 +340,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             // Otra nave de la flota, mientras vuele. La propia no es un objetivo.
             for (std::size_t i = 0; i < fleet_.size(); ++i) {
                 const Vessel& v = fleet_[i];
-                if (v.id != t.index || &v == vessel_ || v.phase != GamePhase::Flying) continue;
+                if (v.id != t.index || &v == vessel_ || v.phase != GamePhase::Flying || !Here(v)) continue;  // en otra burbuja no se la ve
                 info.position = v.ship.position;
                 info.velocity = VelocityOf(v);
                 info.radius = rules_.ship.radius;
@@ -358,18 +361,18 @@ bool GameSession::InRange(const TargetRef& target, double range) const {
 }
 
 Vec3d GameSession::AnomalyPosition(const Anomaly& a) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     return w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(a.system)]) + a.offset;
 }
 
 bool GameSession::StationVisible(const Station& s) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (s.site.star >= 0) return true;
     return w.state[static_cast<std::size_t>(s.site.system)].loaded;
 }
 
 Vec3d GameSession::StationPosition(const Station& s) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const SystemState& state = w.state[static_cast<std::size_t>(s.site.system)];
     if (s.kind == StationKind::Shipyard) {
         // Quieta respecto a su planeta o al sistema. Mientras se despliega va de donde se abrio
@@ -388,14 +391,14 @@ Vec3d GameSession::StationPosition(const Station& s) const {
     } else if (s.site.belt >= 0) {
         if (const AsteroidBelt* belt = FindBelt(w, s.site.system, s.site.belt)) {
             const std::size_t family = static_cast<std::size_t>(s.site.family) % belt->families.size();
-            return FamilyPosition(w.scene, *belt, belt->families[family], bubble_.simTime) + around * 40.0;
+            return FamilyPosition(w.scene, *belt, belt->families[family], bubble_->simTime) + around * 40.0;
         }
     }
     return w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(s.site.system)]);
 }
 
 Vec3d GameSession::ShipyardLaunchPosition(const Station& s) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     Vec3d base = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(s.site.system)]);
     if (s.site.body >= 0)
         if (const Body* body = FindPlanet(w, s.site.system, s.site.body)) base = w.scene.WorldPosition(body->node);
@@ -405,7 +408,7 @@ Vec3d GameSession::ShipyardLaunchPosition(const Station& s) const {
 Quatd GameSession::StationRotation(const Station& s) const {
     if (s.kind == StationKind::Shipyard) return s.attitude;
     if (s.kind != StationKind::Power || s.site.star < 0) return {};
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const SystemState& state = w.state[static_cast<std::size_t>(s.site.system)];
     if (static_cast<std::size_t>(s.site.star) >= state.starNodes.size()) return {};
     return TurnedToward({}, w.scene.WorldPosition(state.starNodes[static_cast<std::size_t>(s.site.star)]) - StationPosition(s));
@@ -501,7 +504,7 @@ GameSession::DockTube GameSession::Tube() const {
 }
 
 bool GameSession::DeployPower(const TargetRef& target) {
-    World& w = engine_.GetWorld();
+    World& w = engine_->GetWorld();
     const std::optional<TargetInfo> info = Resolve(target);
     if (!info || target.kind != Kind::Star) {
         Say("La central se despliega en estrellas y agujeros negros.");
@@ -565,7 +568,7 @@ bool GameSession::CanDeployShipyard(std::string* why) const {
         if (why) *why = reason;
         return false;
     };
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (!vessel_->ship.stationAboard) return fail("La estación origami ya está desplegada.");
     if (vessel_->phase != GamePhase::Flying || AnyOnFoot()) return fail("Ahora no se puede soltar la estación.");
     if (vessel_->dockPhase != DockPhase::None) return fail("Suelte antes la nave de la estación.");
@@ -584,7 +587,7 @@ bool GameSession::DeployShipyard() {
         Say(why);
         return false;
     }
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const Mat4d turn = vessel_->ship.orientation.ToMatrix();
     const Vec3d stowed = vessel_->ship.position + turn.TransformDirection(Vec3d{0, 0, -kShipyardMountAft});
     const Vec3d aft = turn.TransformDirection(Vec3d{0, 0, -1});
@@ -673,7 +676,7 @@ void GameSession::SyncDrones() {
 }
 
 bool GameSession::DeployDrones(const TargetRef& target) {
-    World& w = engine_.GetWorld();
+    World& w = engine_->GetWorld();
     const std::optional<TargetInfo> info = Resolve(target);
     if (!info || (target.kind != Kind::Planet && target.kind != Kind::Belt)) {
         Say("Los drones minan planetas y campos de asteroides.");
@@ -738,7 +741,7 @@ void GameSession::SetExtractElement(int z) {
 }
 
 std::optional<astro::PeriodicShares> GameSession::ElementSharesOf(const TargetRef& t) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (t.system < 0 || static_cast<std::size_t>(t.system) >= w.systems.size() || t.index < 0 || !Scanned(t)) return std::nullopt;
     const astro::StarSystemData& system = *w.systems[static_cast<std::size_t>(t.system)];
     // La misma semilla en todas partes: la tabla periodica del mapa y esto dan lo mismo.
@@ -758,7 +761,7 @@ double GameSession::ElementYieldRate(const TargetRef& t, int z) const {
     if (!ElementStock::Valid(z) || (t.kind != Kind::Planet && t.kind != Kind::Belt)) return 0.0;
     const std::optional<astro::PeriodicShares> shares = ElementSharesOf(t);
     if (!shares) return 0.0;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     Deposit deposit;
     if (t.kind == Kind::Planet) {
         const Body* body = FindPlanet(w, t.system, t.index);
@@ -980,7 +983,7 @@ bool GameSession::Scanned(const TargetRef& t) const {
 }
 
 void GameSession::MarkScanned(int system) {
-    const StarSystemData& data = *engine_.GetWorld().systems[static_cast<std::size_t>(system)];
+    const StarSystemData& data = *engine_->GetWorld().systems[static_cast<std::size_t>(system)];
     for (int m = 0; m < data.StarCount(); ++m) pilot_->scanned.insert(ScanKey({Kind::Star, system, m}));
     for (std::size_t b = 0; b < data.bodies.size(); ++b) pilot_->scanned.insert(ScanKey({Kind::Planet, system, static_cast<int>(b)}));
     for (std::size_t b = 0; b < data.belts.size(); ++b) pilot_->scanned.insert(ScanKey({Kind::Belt, system, static_cast<int>(b)}));
@@ -1018,7 +1021,7 @@ double GameSession::SystemAlert(int system) const {
 }
 
 int GameSession::SpawnAnomaly(AnomalyKind kind, Stance stance, double km, int level, int shipClass) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const int system = vessel_->nearestSystem;
     if (system < 0 || static_cast<std::size_t>(system) >= w.sectors.size()) return -1;
     Anomaly a;
@@ -1058,7 +1061,7 @@ int GameSession::SpawnAnomaly(AnomalyKind kind, Stance stance, double km, int le
 
 // Lo que alcanza el barrido en este sistema: estrellas, planetas y campos.
 void GameSession::ScanBodies(double range, int& found) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const int system = vessel_->nearestSystem;
     const StarSystemData& data = *w.systems[static_cast<std::size_t>(system)];
     const auto consider = [&](const TargetRef& t) {
@@ -1088,7 +1091,7 @@ void GameSession::UpdateScan(double realSeconds) {
     CancelScan();
 
     const double range = ScanRange();
-    World& w = engine_.GetWorld();
+    World& w = engine_->GetWorld();
     const double systemRange = rules_.scanner.systemRange * (1.0 + rules_.scanner.rangePerTier * (vessel_->ship.scannerTier - 1));
     int systems = 0;
     for (std::size_t s = 0; s < pilot_->known.size(); ++s) {
@@ -1124,7 +1127,7 @@ void GameSession::UpdateScan(double realSeconds) {
     if (systems > 0) vessel_->lastScan += " Sistemas localizados: " + std::to_string(systems) + ".";
     Say(vessel_->lastScan);
     if (found + systems + bodies > 0) saveWanted_ = true;
-    bubble_.steps = 0;  // que aparezca en sensores ya
+    bubble_->steps = 0;  // que aparezca en sensores ya
 }
 
 double GameSession::EchoRange() const { return ScanRange() * rules_.scanner.echoFactor; }
@@ -1132,7 +1135,7 @@ double GameSession::EchoRange() const { return ScanRange() * rules_.scanner.echo
 bool GameSession::EchoGuaranteed() const { return pilot_->dialogue.Tag() == kStructureStep; }
 
 std::optional<Vec3d> GameSession::EchoPosition() const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (!vessel_->echo.active || vessel_->echo.system < 0 || static_cast<std::size_t>(vessel_->echo.system) >= w.sectors.size()) return std::nullopt;
     return w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_->echo.system)]) + vessel_->echo.offset;
 }
@@ -1144,7 +1147,7 @@ std::optional<Vec3d> GameSession::EchoPosition() const {
 void GameSession::ListenForEcho(double range) {
     vessel_->echo = {};
     vessel_->echoTarget = -1;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const int system = vessel_->nearestSystem;
     if (system < 0 || static_cast<std::size_t>(system) >= w.sectors.size()) return;
     const bool guaranteed = EchoGuaranteed();
@@ -1238,7 +1241,7 @@ SaveData GameSession::Snapshot() const {
     WorldSave& w = d.world;
     w.seed = world_.seed;
     w.mode = world_.mode;
-    w.simTime = bubble_.simTime;
+    w.simTime = WorldTime();
     w.stations = world_.stations.All();
     w.nextStation = world_.stations.NextId();
     w.anomalies = world_.anomalies;
@@ -1249,8 +1252,9 @@ SaveData GameSession::Snapshot() const {
         ShipSave v;
         v.id = from.id;
         v.ship = from.ship;
-        v.absolutePosition = from.ship.position + engine_.GetWorld().origin;
+        v.absolutePosition = from.ship.position + bubbles_[static_cast<std::size_t>(from.bubble)].engine->GetWorld().origin;  // cada nave, en el mundo de su burbuja
         v.homeStation = from.homeStation;
+        v.clock = bubbles_[static_cast<std::size_t>(from.bubble)].simTime;
         // Con la nave recien perdida se guarda todo como esta y esta marca: al cargar, reaparece.
         v.lost = from.phase != GamePhase::Flying;
         if (from.orbiting) {
@@ -1297,7 +1301,10 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
         if (error) *error = "la partida no tiene ninguna nave";
         return false;
     }
-    const World& w = engine_.GetWorld();
+    // Se carga sobre la primera burbuja, la del motor que recibio la sesion.
+    for (Vessel& v : fleet_) v.bubble = 0;
+    UsePlayer(focusPlayer_);
+    const World& w = engine_->GetWorld();
 
     // El mundo.
     world_.mode = d.world.mode;
@@ -1317,10 +1324,9 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     }
     world_.species = d.world.species;
     ResizeSpecies(world_.species, w.extents.size());
-    bubble_.simTime = d.world.simTime;
-    bubble_.lostPieces.clear();
-    bubble_.projectiles.clear();
-    bubble_.steps = 0;
+    bubble_->lostPieces.clear();
+    bubble_->projectiles.clear();
+    bubble_->steps = 0;
 
     // Las naves: una por cada una del mundo, con un jugador en blanco. El foco, en la de quien carga.
     const bool cinematic = pilot_->cinematic, firstPerson = pilot_->firstPerson;
@@ -1370,7 +1376,24 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
         other.scanned = pilot_->scanned;
         other.cursorUsed = other.analysisUsed = true;
     }
-    fleetSystem_ = fleet_.size() > 1 ? eps::NearestSystem(w, vessel_->ship.position) : -1;
+    // Todas empiezan en la burbuja de quien carga, con su reloj; las que esten en otro sistema se
+    // separan ahora, cada una con el reloj con que se guardo.
+    for (Bubble& b : bubbles_) {
+        b.active = &b == bubble_;
+        b.system = -1;
+        b.projectiles.clear();
+        b.lostPieces.clear();
+    }
+    const int home = vessel_->bubble;
+    for (Vessel& v : fleet_) v.bubble = home;
+    bubble_->system = fleet_.size() > 1 ? eps::NearestSystem(w, vessel_->ship.position) : -1;
+    bubble_->simTime = mine->clock;
+    Regroup();
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        Bubble& b = bubbles_[static_cast<std::size_t>(fleet_[i].bubble)];
+        if (CountIn(fleet_[i].bubble) == 1) b.simTime = d.world.ships[i].clock;
+    }
+    UsePlayer(focusPlayer_);
 
     // Las que se guardaron perdidas reaparecen ahora.
     for (std::size_t i = 0; i < d.world.ships.size(); ++i) {
@@ -1385,7 +1408,7 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
 
 // Deja la nave en curso como dice el guardado.
 void GameSession::RestoreVessel(const ShipSave& v) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     vessel_->id = v.id;
     vessel_->ship = v.ship;
     vessel_->ship.position = v.absolutePosition - w.origin;
@@ -1466,8 +1489,8 @@ void GameSession::Respawn() {
     vessel_->droneYield = 0.0;
     CancelScan();
     BoardAll();
-    bubble_.lostPieces.clear();
-    bubble_.projectiles.clear();
+    bubble_->lostPieces.clear();
+    bubble_->projectiles.clear();
 
     const Station* home = world_.stations.Find(vessel_->homeStation);
     PlaceInSystem(home ? home->site.system : 0);
@@ -1496,9 +1519,9 @@ bool GameSession::FinishRespawn() {
 
 // Modo realista: no queda nada. Nave nueva, sin estaciones, y las anomalias vuelven a su sitio.
 void GameSession::ResetCampaign() {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     vessel_->ship = MakeShip(rules_);
-    bubble_.lostPieces.clear();
+    bubble_->lostPieces.clear();
     vessel_->hullHits.clear();
     vessel_->failedZone = -1;
     vessel_->zoneHeat = {};
@@ -1511,7 +1534,7 @@ void GameSession::ResetCampaign() {
     vessel_->drones.clear();
     vessel_->droneSite.reset();
     vessel_->droneYield = 0.0;
-    bubble_.projectiles.clear();
+    bubble_->projectiles.clear();
     pilot_->kills = 0;
     pilot_->collected = 0;
     pilot_->known.assign(pilot_->known.size(), 0);
@@ -1583,7 +1606,7 @@ void GameSession::HoldPosition() {
 }
 
 double GameSession::ObjectMass(const Body& b) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (b.isStar) return w.systems[static_cast<std::size_t>(b.system)]->StarAt(b.member).mass;
     const BodyData* data = BodyInfo(w, b);
     return data ? data->mass : 0.0;
@@ -1591,14 +1614,14 @@ double GameSession::ObjectMass(const Body& b) const {
 
 // Una luna va con su planeta, y este con su estrella.
 Vec3d GameSession::WorldVelocity(const Body& b) const {
-    const World& w = engine_.GetWorld();
-    Vec3d velocity = BodyVelocity(w, b, bubble_.simTime);
-    if (b.parent >= 0) velocity += BodyVelocity(w, w.bodies[static_cast<std::size_t>(b.parent)], bubble_.simTime);
+    const World& w = engine_->GetWorld();
+    Vec3d velocity = BodyVelocity(w, b, bubble_->simTime);
+    if (b.parent >= 0) velocity += BodyVelocity(w, w.bodies[static_cast<std::size_t>(b.parent)], bubble_->simTime);
     return velocity;
 }
 
 void GameSession::RefreshFrame(LocalFrame& f) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (f.body >= 0) {
         const Body& b = w.bodies[static_cast<std::size_t>(f.body)];
         if (!Alive(b)) {
@@ -1610,8 +1633,8 @@ void GameSession::RefreshFrame(LocalFrame& f) const {
     } else if (f.belt >= 0) {
         const AsteroidBelt& belt = w.belts[static_cast<std::size_t>(f.belt)];
         const AsteroidFamily& family = belt.families[static_cast<std::size_t>(f.family)];
-        f.position = FamilyPosition(w.scene, belt, family, bubble_.simTime);
-        f.velocity = family.fixed ? Vec3d{} : w.scene.World(belt.parent).TransformDirection(OrbitVelocity(family.orbit, bubble_.simTime));
+        f.position = FamilyPosition(w.scene, belt, family, bubble_->simTime);
+        f.velocity = family.fixed ? Vec3d{} : w.scene.World(belt.parent).TransformDirection(OrbitVelocity(family.orbit, bubble_->simTime));
     }
 }
 
@@ -1619,7 +1642,7 @@ void GameSession::RefreshFrame(LocalFrame& f) const {
 // nave se mueve respecto a el. Asi una nave quieta junto a un planeta viaja con el planeta, sin
 // tener que perseguirlo, y al cruzar de una zona a otra su velocidad real no cambia.
 void GameSession::UpdateFrame() {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const std::size_t system = static_cast<std::size_t>(vessel_->nearestSystem);
     const SystemState& state = w.state[system];
     LocalFrame best;
@@ -1654,7 +1677,7 @@ void GameSession::UpdateFrame() {
             if (fromCenter > belt.outer * 1.4 + 1000.0) continue;
             for (std::size_t f = 0; f < belt.families.size(); ++f) {
                 const AsteroidFamily& family = belt.families[f];
-                if (Length(vessel_->ship.position - FamilyPosition(w.scene, belt, family, bubble_.simTime)) < family.radius * 1.3) {
+                if (Length(vessel_->ship.position - FamilyPosition(w.scene, belt, family, bubble_->simTime)) < family.radius * 1.3) {
                     best = {};
                     best.belt = static_cast<int>(bi);
                     best.family = static_cast<int>(f);
@@ -1687,7 +1710,7 @@ void GameSession::UpdateFrame() {
 }
 
 std::string GameSession::DominantName() const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (vessel_->frame.body >= 0) return w.bodies[static_cast<std::size_t>(vessel_->frame.body)].name;
     if (vessel_->frame.belt >= 0) return w.beltInfo[static_cast<std::size_t>(vessel_->frame.belt)].name;
     return "";
@@ -1696,7 +1719,7 @@ std::string GameSession::DominantName() const {
 // Radio de Schwarzschild entre distancia: mide cuanto se frena el tiempo en un pozo gravitatorio.
 double GameSession::GravityWell() const {
     if (vessel_->frame.body < 0 || vessel_->frame.mu <= 0.0) return 0.0;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const Body& b = w.bodies[static_cast<std::size_t>(vessel_->frame.body)];
     const double radius = std::max(Length(vessel_->ship.position - vessel_->frame.position), b.radius);
     const double rs = 2.0 * vessel_->frame.mu / (kLightSpeed * kLightSpeed);
@@ -1705,7 +1728,7 @@ double GameSession::GravityWell() const {
 }
 
 double GameSession::OrbitMu(const TargetRef& target) const {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (target.kind == Kind::Planet) {
         if (const Body* body = FindPlanet(w, target.system, target.index)) return kGravity * ObjectMass(*body);
     } else if (target.kind == Kind::Star) {
@@ -1877,7 +1900,7 @@ void GameSession::LimitNearStations(double realSeconds) {
 // propulsores finos. Devuelve km/s simulados.
 double GameSession::StationTop(double distance, bool closing) const {
     const ShipRules& r = rules_.ship;
-    const double rate = std::max(world_.timeScale * bubble_.timeFocus, 1e-6);
+    const double rate = std::max(world_.timeScale * bubble_->timeFocus, 1e-6);
     double real = 0.0;  // km por segundo real
     if (distance < r.maneuverRange) real = closing ? std::max(distance / r.maneuverTime, r.maneuverMinimum) : std::max(distance / r.maneuverLeave, r.maneuverLeaveMinimum);
     else real = distance / (closing ? r.approachTime : r.recedeTime);
@@ -1910,12 +1933,12 @@ bool GameSession::Disembark() {
     }
     // La cubierta y su gente se montan cuando baja el primero; los demas bajan a la misma.
     if (!AnyOnFoot()) {
-        bubble_.deckKind = s->kind;
-        bubble_.deck = MakeDeck(bubble_.deckKind);
-        bubble_.crew = MakeCrew(bubble_.deck, body_, rules_.foot.crew, bubble_.fx);
+        bubble_->deckKind = s->kind;
+        bubble_->deck = MakeDeck(bubble_->deckKind);
+        bubble_->crew = MakeCrew(bubble_->deck, body_, rules_.foot.crew, bubble_->fx);
     }
     pilot_->avatar = {};
-    pilot_->avatar.position = bubble_.deck.spawn;
+    pilot_->avatar.position = bubble_->deck.spawn;
     pilot_->avatar.yaw = 1.5707963;  // de espaldas a la esclusa
     pilot_->onFoot = true;
     Say("A pie en " + s->name + ".", Audience::Player);
@@ -1924,7 +1947,7 @@ bool GameSession::Disembark() {
 
 bool GameSession::CanBoard() const {
     if (!pilot_->onFoot) return false;
-    Vec3d to = bubble_.deck.airlock - pilot_->avatar.position;
+    Vec3d to = bubble_->deck.airlock - pilot_->avatar.position;
     to.y = 0.0;
     return Length(to) <= rules_.foot.boardRange;
 }
@@ -1936,7 +1959,7 @@ bool GameSession::Board(bool anywhere) {
         return false;
     }
     pilot_->onFoot = false;
-    if (!AnyOnFoot()) bubble_.crew.clear();  // la cubierta se recoge cuando sube el ultimo
+    if (!AnyOnFoot()) bubble_->crew.clear();  // la cubierta se recoge cuando sube el ultimo
     Say("De vuelta a bordo.", Audience::Player);
     return true;
 }
@@ -1958,7 +1981,7 @@ void GameSession::BoardAll() {
         p.onFoot = false;
         any = true;
     }
-    if (any) bubble_.crew.clear();
+    if (any) bubble_->crew.clear();
 }
 
 // Los que estan a pie andan cada uno con su mando; la gente de la estacion, una vez por paso.
@@ -1968,14 +1991,14 @@ void GameSession::StepCrewOnFoot(double realSeconds) {
         if (p.vessel != mine || !p.onFoot) continue;
         p.avatar.yaw += p.footInput.yaw;
         p.avatar.pitch = std::clamp(p.avatar.pitch + p.footInput.pitch, -1.45, 1.45);
-        if (realSeconds > 0.0) StepHumanoid(p.avatar, p.footInput.move, bubble_.deck.area, body_, rules_.foot.gravity, realSeconds);
+        if (realSeconds > 0.0) StepHumanoid(p.avatar, p.footInput.move, bubble_->deck.area, body_, rules_.foot.gravity, realSeconds);
     }
     if (realSeconds <= 0.0) return;
-    for (Person& p : bubble_.crew) StepPerson(p, bubble_.deck, body_, rules_.foot.gravity, realSeconds, bubble_.fx);
+    for (Person& p : bubble_->crew) StepPerson(p, bubble_->deck, body_, rules_.foot.gravity, realSeconds, bubble_->fx);
 }
 
 bool GameSession::EnterOrbitHere() {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (vessel_->orbiting) return true;
     if (vessel_->frame.body < 0 || vessel_->ship.warpSpeed > rules_.drive.impulseSpeed) {
         Say("Aquí no hay nada que orbitar.");
@@ -2039,7 +2062,7 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
     double cruise = std::min(rules_.drive.impulseSpeed, std::sqrt(2.0 * accel * std::max(remaining, 0.0)) * 0.8);
 
     // Lo primero que se cruce en el camino se rodea, por la tangente a una altura segura.
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const Body* obstacle = nullptr;
     double nearest = remaining, shell = 0, open = 1.0e300;
     for (const Body& b : w.bodies) {
@@ -2158,7 +2181,7 @@ OrbitReport GameSession::OrbitNow() const {
 
 // Una explosion, un combate o un choque inminente no pueden pasar a 60 veces la velocidad real.
 void GameSession::UpdateFocus(double realSeconds) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     double wanted = 1.0;
     if (AnyOnFoot()) {
         wanted = 1.0 / std::max(world_.timeScale, 1.0);  // una persona vive a tiempo real
@@ -2175,7 +2198,7 @@ void GameSession::UpdateFocus(double realSeconds) {
             }
         }
         // Un proyectil en vuelo cerca de la nave tambien pide tiempo para reaccionar, sea quien sea el que dispara.
-        for (const Projectile& p : bubble_.projectiles) {
+        for (const Projectile& p : bubble_->projectiles) {
             if (!p.dead && Length(p.position - vessel_->ship.position) < rules_.combat.defenseRange * 4.0) wanted = rules_.world.dangerTime;
         }
         // Junto a una estacion, mas despacio; pegada a ella, a tiempo real, para arrimarse a la escotilla.
@@ -2195,8 +2218,8 @@ void GameSession::UpdateFocus(double realSeconds) {
 
 std::optional<CollisionWarning> GameSession::FindWarning() const {
     if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || vessel_->autopilot) return std::nullopt;  // la ruta ya se ocupa
-    const World& w = engine_.GetWorld();
-    const double rate = std::max(world_.timeScale * bubble_.timeFocus * vessel_->exteriorFactor, 1.0);
+    const World& w = engine_->GetWorld();
+    const double rate = std::max(world_.timeScale * bubble_->timeFocus * vessel_->exteriorFactor, 1.0);
     std::optional<CollisionWarning> out;
     double soonest = 30.0;  // segundos reales
     const Vec3d velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed;
@@ -2286,7 +2309,7 @@ std::vector<Vec3d> GameSession::ManeuverPath(double realSeconds) const {
     if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || AnyOnFoot() || realSeconds <= 0.0) return path;
     constexpr int kSteps = 160;
     const double dt = realSeconds / kSteps;
-    const double rate = world_.timeScale * bubble_.timeFocus;
+    const double rate = world_.timeScale * bubble_->timeFocus;
     ShipState s = vessel_->ship;
     Vec3d origin = vessel_->frame.position, matched;
     const int anchor = vessel_->autopilot ? -1 : StationFrame();
@@ -2303,7 +2326,7 @@ std::vector<Vec3d> GameSession::ManeuverPath(double realSeconds) const {
         DriveInput order;
         const double d = std::max(Length(s.position), 1.0);
         if (anchor < 0 && vessel_->frame.mu > 0.0) order.gravity = s.position * (-vessel_->frame.mu / (d * d * d));
-        order.dragScale = anchor >= 0 || (vessel_->frame.body >= 0 && !engine_.GetWorld().bodies[static_cast<std::size_t>(vessel_->frame.body)].isStar) ? 0.0 : 1.0;
+        order.dragScale = anchor >= 0 || (vessel_->frame.body >= 0 && !engine_->GetWorld().bodies[static_cast<std::size_t>(vessel_->frame.body)].isStar) ? 0.0 : 1.0;
         StepDrive(s, rules_, dt * rate, dt * rate * vessel_->exteriorFactor, dt, order);
         if (anchor >= 0) {
             const double distance = Length(s.position);
@@ -2353,7 +2376,7 @@ void GameSession::Impact(const std::string& name, const Vec3d& normal, const Vec
 // from es donde estaba antes de este paso: a gran velocidad un paso puede saltarse un planeta
 // entero, asi que se comprueba todo el tramo recorrido y no solo el final.
 void GameSession::KeepOutOfBodies(const Vec3d& from) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const Vec3d travel = vessel_->ship.position - from;
     const double length = Length(travel);
     double first = 2.0;
@@ -2404,7 +2427,7 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
     // Las demas naves de la flota tambien son solidas: chocar con una dana a las dos.
     for (std::size_t i = 0; i < fleet_.size(); ++i) {
         const Vessel& v = fleet_[i];
-        if (&v == vessel_ || v.phase != GamePhase::Flying) continue;
+        if (&v == vessel_ || v.phase != GamePhase::Flying || !Here(v)) continue;
         solids.push_back({v.ship.position, VelocityOf(v), rules_.ship.radius, "la nave " + std::to_string(v.id), -1, static_cast<int>(i)});
     }
     // Las estaciones propias son pequenas al lado de la nave (1,2 km): cuenta su eslora entera, de
@@ -2491,7 +2514,7 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
 
 // Las rocas sueltas del anillo (BeltField): las mismas que se dibujan, en orbitas circulares.
 void GameSession::CheckFieldRocks(const Vec3d& from) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const Vec3d travel = vessel_->ship.position - from;
     const double reach = Length(travel) + 40.0;
     const bool plasma = vessel_->ship.defense.field == ShieldKind::Plasma && FieldActive();
@@ -2499,7 +2522,7 @@ void GameSession::CheckFieldRocks(const Vec3d& from) {
     for (const AsteroidBelt& belt : w.belts) {
         if (!belt.used || belt.parent == kNoNode || belt.mu <= 0.0 || belt.families.empty() || belt.families.front().fixed) continue;
         rocks.clear();
-        BeltField(belt, w.scene.World(belt.parent), w.scene.WorldPosition(belt.parent), vessel_->ship.position, reach, bubble_.simTime, BeltRockTier(belt), rocks);
+        BeltField(belt, w.scene.World(belt.parent), w.scene.WorldPosition(belt.parent), vessel_->ship.position, reach, bubble_->simTime, BeltRockTier(belt), rocks);
         const double squared = std::max(Dot(travel, travel), 1e-9);
         for (const BeltFieldRock& rock : rocks) {
             if (plasma && static_cast<double>(rock.radius) < rules_.defense.plasmaRock) continue;  // se vaporiza sin notarlo
@@ -2518,10 +2541,10 @@ void GameSession::CheckFieldRocks(const Vec3d& from) {
 // Las rocas del cumulo en el que esta la nave. Se generan solo aqui, y salen de su semilla.
 void GameSession::CheckRocks(const Vec3d& from) {
     if (vessel_->frame.belt < 0) return;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const AsteroidFamily& family = w.belts[static_cast<std::size_t>(vessel_->frame.belt)].families[static_cast<std::size_t>(vessel_->frame.family)];
-    if (bubble_.rocks.size() > 32 && bubble_.rocks.find(family.seed) == bubble_.rocks.end()) bubble_.rocks.clear();
-    std::vector<AsteroidRock>& rocks = bubble_.rocks[family.seed];
+    if (bubble_->rocks.size() > 32 && bubble_->rocks.find(family.seed) == bubble_->rocks.end()) bubble_->rocks.clear();
+    std::vector<AsteroidRock>& rocks = bubble_->rocks[family.seed];
     if (rocks.empty()) rocks = GenerateRocks(family);
     // Una mina ya ha despejado lo que tenia alrededor: ahi se maniobra sin rocas.
     for (const Station& s : world_.stations.All()) {
@@ -2529,7 +2552,7 @@ void GameSession::CheckRocks(const Vec3d& from) {
         const Vec3d at = StationPosition(s) - vessel_->frame.position;
         if (Length(at) > static_cast<double>(family.radius) + kStationClearing) continue;
         for (std::size_t i = 0; i < rocks.size(); ++i)
-            if (Length(Vec3d(rocks[i].offset) - at) < kStationClearing + static_cast<double>(rocks[i].radius)) engine_.GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
+            if (Length(Vec3d(rocks[i].offset) - at) < kStationClearing + static_cast<double>(rocks[i].radius)) engine_->GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
     }
     const auto dead = w.deadRocks.find(family.seed);
     const Vec3d travel = vessel_->ship.position - from;
@@ -2545,7 +2568,7 @@ void GameSession::CheckRocks(const Vec3d& from) {
         if (Dot(away, away) >= limit * limit) continue;
         // El plasma vaporiza las rocas pequenas al instante: la nave sigue sin notarlas.
         if (static_cast<double>(rock.radius) < rules_.defense.plasmaRock && vessel_->ship.defense.field == ShieldKind::Plasma && FieldActive()) {
-            engine_.GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
+            engine_->GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
             DefenseState& d = vessel_->ship.defense;
             const std::size_t k = static_cast<std::size_t>(ShieldKind::Plasma);
             d.charge[k] = std::max(d.charge[k] - static_cast<double>(rock.radius) * 100.0, 0.0);
@@ -2561,12 +2584,12 @@ void GameSession::CheckRocks(const Vec3d& from) {
 }
 
 void GameSession::UpdateAnomalies(double seconds) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const GameMode& mode = ModeInfo(world_.mode);
     // La alerta baja con el tiempo; al acabar una rendicion, la flota vuelve reforzada.
-    DecayAlertUntil(world_.species, bubble_.simTime, bubble_.simTime - seconds, rules_.alert);
-    if (EndSurrender(world_.species, world_.anomalies, bubble_.simTime, rules_.alert)) Say("La flota alienígena vuelve al combate, un 50 % más fuerte.", Audience::Everyone);
-    const bool surrender = Surrendered(world_.species, bubble_.simTime);
+    DecayAlertUntil(world_.species, bubble_->simTime, bubble_->simTime - seconds, rules_.alert);
+    if (EndSurrender(world_.species, world_.anomalies, bubble_->simTime, rules_.alert)) Say("La flota alienígena vuelve al combate, un 50 % más fuerte.", Audience::Everyone);
+    const bool surrender = Surrendered(world_.species, bubble_->simTime);
     for (Anomaly& a : world_.anomalies) {
         const Vec3d sector = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(a.system)]);
         // Cada anomalia atiende a la nave en vuelo que tiene mas cerca: a ella persigue, a ella dispara
@@ -2574,7 +2597,7 @@ void GameSession::UpdateAnomalies(double seconds) {
         int nearest = -1;
         double distance = 1.0e300;
         for (std::size_t i = 0; i < fleet_.size(); ++i) {
-            if (fleet_[i].phase != GamePhase::Flying) continue;
+            if (fleet_[i].phase != GamePhase::Flying || !Here(fleet_[i])) continue;
             const double d = Length(fleet_[i].ship.position - sector - a.offset);
             if (d < distance) {
                 distance = d;
@@ -2597,7 +2620,7 @@ void GameSession::UpdateAnomalies(double seconds) {
             a.pursuing = false;
             a.velocity = a.velocity * std::exp(-seconds / 4.0);
             a.offset += a.velocity * seconds;
-        } else StepAnomaly(a, ship, rules_.anomalies, seconds, bubble_.rng, mode.hostilesAttack, sight);
+        } else StepAnomaly(a, ship, rules_.anomalies, seconds, bubble_->rng, mode.hostilesAttack, sight);
         a.cooldown = std::max(a.cooldown - seconds, 0.0);
         if (mode.hostilesAttack && !surrender && a.armed && !a.disabled && a.stance == Stance::Hostile && a.hull > 0.0) {
             const WeaponRules spec = Scaled(rules_.combat, a.weapon, a.weaponTier);
@@ -2671,6 +2694,8 @@ void GameSession::Use(int index) { UsePlayer(PrimaryOf(index)); }
 void GameSession::UsePlayer(int player) {
     pilot_ = &players_[static_cast<std::size_t>(player)];
     vessel_ = &fleet_[static_cast<std::size_t>(pilot_->vessel)];
+    bubble_ = &bubbles_[static_cast<std::size_t>(vessel_->bubble)];
+    engine_ = bubble_->engine;
 }
 
 // Quien ocupa ese puesto en esa nave, o -1 si esta libre.
@@ -2820,6 +2845,7 @@ int GameSession::AddVessel(double km) {
     v.ship.moveDirection = v.ship.warpHeading = Heading(origin.ship);
     v.nearestSystem = origin.nearestSystem;
     v.timeFocus = origin.timeFocus;
+    v.bubble = origin.bubble;
     PlayerState& p = players_.back();
     p.vessel = static_cast<int>(fleet_.size()) - 1;
     p.id = "local-" + std::to_string(v.id);
@@ -2828,18 +2854,18 @@ int GameSession::AddVessel(double km) {
     p.visited = guide.visited;
     p.scanned = guide.scanned;
     p.cursorUsed = p.analysisUsed = true;
-    // Fase 3a: mientras haya varias naves, ninguna sale de este sistema (ver LeashToFleet).
-    fleetSystem_ = origin.nearestSystem;
+    // Las dos comparten burbuja: la de este sistema. La que salga de el se llevara otra (Regroup).
+    bubbles_[static_cast<std::size_t>(origin.bubble)].system = origin.nearestSystem;
     UsePlayer(focusPlayer_);  // emplace_back no mueve las demas, pero la nave en curso se vuelve a fijar por si acaso
     return v.id;
 }
 
-// Limite provisional de la fase 3a: el motor solo carga un sistema, el de la nave del foco, asi que
-// con varias naves ninguna sale del sistema donde esta la flota. Se quita con las burbujas (fase 4).
+// Sin fabrica de motores no se pueden abrir mas burbujas: entonces, con varias naves, ninguna sale del
+// sistema donde estan (el limite de la fase 3a). Con fabrica, la que sale se lleva su burbuja (Regroup).
 void GameSession::LeashToFleet() {
-    if (fleet_.size() < 2 || fleetSystem_ < 0) return;
-    const World& w = engine_.GetWorld();
-    const std::size_t s = static_cast<std::size_t>(fleetSystem_);
+    if (engineFactory_ || bubble_->system < 0 || CountIn(vessel_->bubble) < 2) return;
+    const World& w = engine_->GetWorld();
+    const std::size_t s = static_cast<std::size_t>(bubble_->system);
     const Vec3d center = w.scene.WorldPosition(w.sectors[s]);
     const double limit = w.extents[s] * 1.5;
     const Vec3d out = vessel_->ship.position - center;
@@ -2863,7 +2889,7 @@ void GameSession::LeashToFleet() {
 // Los astros del sistema que tiran de un proyectil. Los asteroides y cometas apenas atraen.
 std::vector<GravitySource> GameSession::GravitySources() const {
     std::vector<GravitySource> out;
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const SystemState& state = w.state[static_cast<std::size_t>(vessel_->nearestSystem)];
     if (!state.loaded) return out;
     std::vector<int> seen;
@@ -2981,7 +3007,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
 
     Vec3d direction = s->direction;
     if (kind == WeaponKind::Spinal) direction = Heading(vessel_->ship);  // fijo al casco
-    else if (kind == WeaponKind::Turret) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * AimSpread(vessel_->ship.zones), bubble_.rng);  // el puente apunta
+    else if (kind == WeaponKind::Turret) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * AimSpread(vessel_->ship.zones), bubble_->rng);  // el puente apunta
 
     vessel_->ship.energy -= spec.energy;
     vessel_->ship.antimatter -= spec.antimatter;
@@ -3004,7 +3030,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
         p.beam = kind == WeaponKind::Spinal;
         p.cruise = spec.speed;
         p.turn = spec.turn;
-        const Vec3d dir = spec.count > 1 ? Scatter(direction, 0.03, bubble_.rng) : direction;
+        const Vec3d dir = spec.count > 1 ? Scatter(direction, 0.03, bubble_->rng) : direction;
         // Una torreta de modulo dispara desde su ranura; las de serie, desde el borde del casco.
         const ShipDesign& design = CurrentShipDesign();
         if (mount->slot >= 0 && mount->slot < static_cast<int>(design.slots.size()))
@@ -3012,7 +3038,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
         else p.position = vessel_->ship.position + dir * (rules_.ship.radius + 0.1);
         p.origin = p.position;
         p.velocity = p.beam ? dir * spec.speed : shooter + dir * (p.guided ? spec.speed * 0.3 : spec.speed);
-        bubble_.projectiles.push_back(p);
+        bubble_->projectiles.push_back(p);
     }
     return true;
 }
@@ -3038,7 +3064,7 @@ int GameSession::FireAll(const TargetRef& target) {
 void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
     const WeaponRules spec = Scaled(rules_.combat, a.weapon, a.weaponTier);
     const FiringSolution s = Solve(position, a.velocity, vessel_->ship.position, ShipVelocity(), spec.speed, a.weapon == WeaponKind::Spinal, GravitySources(), a.computerTier, rules_.combat);
-    a.cooldown = spec.cooldown * (1.0 + rules_.combat.jitter * Uniform(bubble_.rng, -1.0, 1.0));
+    a.cooldown = spec.cooldown * (1.0 + rules_.combat.jitter * Uniform(bubble_->rng, -1.0, 1.0));
     if (!s.valid) return;
     const bool guided = spec.turn > 0.0;
     Projectile p;
@@ -3058,11 +3084,11 @@ void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
     // El escudo electromagnetico confunde sus sensores: fallan mas, incluso el haz.
     const bool jammed = vessel_->ship.defense.field == ShieldKind::EM && FieldActive();
     const double error = AimError(rules_.combat, a.computerTier) * (jammed ? rules_.defense.emJamming : 1.0);
-    const Vec3d dir = guided || (p.beam && !jammed) ? s.direction : Scatter(s.direction, error, bubble_.rng);
+    const Vec3d dir = guided || (p.beam && !jammed) ? s.direction : Scatter(s.direction, error, bubble_->rng);
     p.position = position + dir * (a.radius + 0.5);
     p.origin = p.position;
     p.velocity = p.beam ? dir * spec.speed : a.velocity + dir * (guided ? spec.speed * 0.3 : spec.speed);
-    bubble_.projectiles.push_back(p);
+    bubble_->projectiles.push_back(p);
 }
 
 // Todo dano de armas a la nave pasa por aqui: primero el campo, luego los conos y al final el casco.
@@ -3111,7 +3137,7 @@ void GameSession::WoundHull(double amount, const Vec3d& worldFrom, bool blunt) {
     if (amount <= 0.0 || rules_.ship.hull <= 0.0) return;
     vessel_->directedLoss += amount;
     const Vec3d local = Normalize(vessel_->ship.orientation.Conjugate().ToMatrix().TransformDirection(worldFrom) + Vec3d{0, 0, 1e-9});
-    const int zone = ZoneHitFrom(local, std::uniform_real_distribution<double>(0.0, 1.0)(bubble_.rng));
+    const int zone = ZoneHitFrom(local, std::uniform_real_distribution<double>(0.0, 1.0)(bubble_->rng));
     RecordHit(zone, local, amount / rules_.ship.hull, blunt);
     const double critical = ZoneInfo(zone).red != RedZone::None ? kCriticalHit : 1.0;
     WoundZone(zone, amount * critical / (rules_.ship.hull * kZoneToughness));
@@ -3149,8 +3175,8 @@ void GameSession::RecordHit(int zone, const Vec3d& localFrom, double intensity, 
     h.from = localFrom;
     h.intensity = intensity;
     h.blunt = blunt;
-    h.time = bubble_.simTime;
-    h.absolute = vessel_->ship.position + engine_.GetWorld().origin;
+    h.time = bubble_->simTime;
+    h.absolute = vessel_->ship.position + engine_->GetWorld().origin;
     h.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity;
     h.orientation = vessel_->ship.orientation;
     vessel_->hullHits.push_back(h);
@@ -3195,13 +3221,13 @@ void GameSession::WoundZone(int zone, double fraction) {
     LostPiece piece;
     piece.zone = zone;
     piece.pivot = pivot;
-    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(pivot * 0.001) + engine_.GetWorld().origin;
+    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(pivot * 0.001) + engine_->GetWorld().origin;
     // Se lleva la velocidad de la nave y un empujon de unas decenas de m/s hacia fuera.
-    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.3) * 0.03;
+    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} * 0.3) * 0.03;
     piece.orientation = vessel_->ship.orientation;
-    piece.spinAxis = Normalize(Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} + Vec3d{0, 0, 1e-3});
-    piece.spin = 0.15 + 0.35 * std::fabs(unit(bubble_.fx));
-    bubble_.lostPieces.push_back(piece);
+    piece.spinAxis = Normalize(Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} + Vec3d{0, 0, 1e-3});
+    piece.spin = 0.15 + 0.35 * std::fabs(unit(bubble_->fx));
+    bubble_->lostPieces.push_back(piece);
     Say(std::string("Se ha desprendido ") + (info.masculine ? "el " : "la ") + info.name + ": solo se repone atracando en una estación propia.");
 
     // Con una bodega se va lo que llevaba: su parte de cada material.
@@ -3237,8 +3263,8 @@ void GameSession::ShutDownShip(const std::string& reason) {
     vessel_->wreckAge = 0;
     vessel_->wreckPosition = vessel_->ship.position;
     std::uniform_real_distribution<double> unit(-1.0, 1.0);
-    vessel_->driftVelocity = Heading(vessel_->ship) * 0.04 + Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} * 0.01;
-    vessel_->ship.angularRate = Normalize(Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} + Vec3d{0, 1e-3, 0}) * 0.035;
+    vessel_->driftVelocity = Heading(vessel_->ship) * 0.04 + Vec3d{unit(bubble_->rng), unit(bubble_->rng), unit(bubble_->rng)} * 0.01;
+    vessel_->ship.angularRate = Normalize(Vec3d{unit(bubble_->rng), unit(bubble_->rng), unit(bubble_->rng)} + Vec3d{0, 1e-3, 0}) * 0.035;
     vessel_->autopilot.reset();
     vessel_->tracking.reset();
     vessel_->orbiting.reset();
@@ -3295,13 +3321,13 @@ void GameSession::DetachPiece(int index) {
     piece.zone = p.zone;
     piece.piece = index;
     piece.pivot = p.center;
-    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(p.center * 0.001) + engine_.GetWorld().origin;
+    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(p.center * 0.001) + engine_->GetWorld().origin;
     const Vec3d out = Normalize(toWorld.TransformDirection(p.center) + Vec3d{0, 0, 1e-6});
-    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.4) * 0.025;
+    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} * 0.4) * 0.025;
     piece.orientation = vessel_->ship.orientation;
-    piece.spinAxis = Normalize(Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} + Vec3d{0, 0, 1e-3});
-    piece.spin = 0.2 + 0.6 * std::fabs(unit(bubble_.fx));
-    bubble_.lostPieces.push_back(piece);
+    piece.spinAxis = Normalize(Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} + Vec3d{0, 0, 1e-3});
+    piece.spin = 0.2 + 0.6 * std::fabs(unit(bubble_->fx));
+    bubble_->lostPieces.push_back(piece);
     Say("Arrancada: " + PrettyName(p.name) + ".");
     LoseModules(-1, index);
 }
@@ -3559,7 +3585,7 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
         if (miss > w->proximity) return fail(name + ": el blanco no está en el eje; gira la nave.");
         direction = Heading(vessel_->ship);
     }
-    if (w->turn <= 0.0) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * w->aimError * (w->type == ArmType::RailSpinal ? 1.0 : AimSpread(vessel_->ship.zones)), bubble_.rng);
+    if (w->turn <= 0.0) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * w->aimError * (w->type == ArmType::RailSpinal ? 1.0 : AimSpread(vessel_->ship.zones)), bubble_->rng);
 
     vessel_->ship.energy -= w->energy;
     cooldown = w->cooldown;
@@ -3582,7 +3608,7 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
     p.position = vessel_->ship.position + vessel_->ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(slot)].position * 0.001) + direction * 0.03;
     p.origin = p.position;
     p.velocity = ShipVelocity() + direction * (p.guided ? w->speed * 0.3 : w->speed);
-    bubble_.projectiles.push_back(p);
+    bubble_->projectiles.push_back(p);
     return true;
 }
 
@@ -3616,19 +3642,20 @@ void GameSession::DamageZone(int zone, double hullAmount, const Vec3d* from) {
 
 void GameSession::UpdateLostPieces(double seconds, double realSeconds) {
     for (Vessel& v : fleet_) {
+        if (!Here(v)) continue;
         for (int z = 0; z < kHullZoneCount; ++z) v.zoneHeat[static_cast<std::size_t>(z)] *= std::exp(-realSeconds / 6.0);
         for (HullHit& h : v.hullHits) h.age += realSeconds;
     }
     for (Anomaly& a : world_.anomalies)
         for (double& h : a.zoneHeat) h *= std::exp(-realSeconds / 6.0);
-    for (LostPiece& p : bubble_.lostPieces) {
+    for (LostPiece& p : bubble_->lostPieces) {
         p.absolute += p.velocity * seconds;
         p.orientation = Quatd::FromAxisAngle(p.spinAxis, p.spin * seconds) * p.orientation;
         p.age += realSeconds;
     }
     // Pasado un rato, o lejos de la nave que se mira, ya no se ve: se olvida.
-    const Vec3d ship = fleet_[static_cast<std::size_t>(focus_)].ship.position + engine_.GetWorld().origin;
-    bubble_.lostPieces.erase(std::remove_if(bubble_.lostPieces.begin(), bubble_.lostPieces.end(), [&](const LostPiece& p) { return p.age > 120.0 || Length(p.absolute - ship) > 2.0e4; }), bubble_.lostPieces.end());
+    const Vec3d ship = vessel_->ship.position + engine_->GetWorld().origin;
+    bubble_->lostPieces.erase(std::remove_if(bubble_->lostPieces.begin(), bubble_->lostPieces.end(), [&](const LostPiece& p) { return p.age > 120.0 || Length(p.absolute - ship) > 2.0e4; }), bubble_->lostPieces.end());
 }
 
 // Un impacto en una nave o un bastion. Si estaba en calma, ahora deja de estarlo.
@@ -3644,7 +3671,7 @@ void GameSession::DamageAnomaly(Anomaly& a, DamageType type, double amount, int 
     const double taken = ShieldAnomaly(a, rules_.defense, type, amount);
     a.hull -= taken;
     // Atacar sube la alerta de la region, en proporcion al dano (en cascos de fragata ligera).
-    if (team == 0) RaiseAlert(world_.species, a.system, rules_.alert.attackRaise * std::max(taken, 0.0) / rules_.anomalies.referenceHull, bubble_.simTime, rules_.alert);
+    if (team == 0) RaiseAlert(world_.species, a.system, rules_.alert.attackRaise * std::max(taken, 0.0) / rules_.anomalies.referenceHull, bubble_->simTime, rules_.alert);
     const ZoneLayout* layout = ZonesOf(a);
     if (impact && layout && taken > 0.0 && a.maxHull > 0.0) {
         if (team == 0) {
@@ -3676,17 +3703,17 @@ void GameSession::OnAlienDestroyed(const Anomaly& a) {
     const int level = a.kind == AnomalyKind::AlienStation ? a.stationLevel : 0;
     if (level == kHangarLevel) {
         // Un hangar militar: la alerta llega a los sistemas de alrededor, no solo a su region.
-        const World& w = engine_.GetWorld();
+        const World& w = engine_->GetWorld();
         std::vector<Vec3d> positions;
         positions.reserve(w.sectors.size());
         for (const auto& sector : w.sectors) positions.push_back(w.scene.WorldPosition(sector));
-        RaiseAlert(world_.species, a.system, DestroyRaise(rules_.alert, level), bubble_.simTime, rules_.alert, &positions, rules_.alert.hangarSpread);
+        RaiseAlert(world_.species, a.system, DestroyRaise(rules_.alert, level), bubble_->simTime, rules_.alert, &positions, rules_.alert.hangarSpread);
         Say("La destrucción del hangar militar extiende la alerta a " + std::to_string(rules_.alert.hangarSpread) + " sistemas.");
     } else {
-        RaiseAlert(world_.species, a.system, DestroyRaise(rules_.alert, level), bubble_.simTime, rules_.alert);
+        RaiseAlert(world_.species, a.system, DestroyRaise(rules_.alert, level), bubble_->simTime, rules_.alert);
     }
     if (TriggersSurrender(a)) {
-        BeginSurrender(world_.species, bubble_.simTime, rules_.alert);
+        BeginSurrender(world_.species, bubble_->simTime, rules_.alert);
         Say("La flota alienígena se detiene: rendición temporal. Cuando vuelva, lo hará más fuerte.", Audience::Everyone);
     }
 }
@@ -3727,12 +3754,12 @@ void GameSession::WoundAnomaly(Anomaly& a, int zone, double fraction, int team) 
     piece.zone = zone;
     piece.model = AlienModelOf(a);
     piece.pivot = pivot;
-    piece.absolute = AnomalyPosition(a) + turn.ToMatrix().TransformDirection(pivot * 0.001) + engine_.GetWorld().origin;
-    piece.velocity = a.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.3) * 0.03;
+    piece.absolute = AnomalyPosition(a) + turn.ToMatrix().TransformDirection(pivot * 0.001) + engine_->GetWorld().origin;
+    piece.velocity = a.velocity + (out + Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} * 0.3) * 0.03;
     piece.orientation = turn;
-    piece.spinAxis = Normalize(Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} + Vec3d{0, 0, 1e-3});
-    piece.spin = 0.15 + 0.35 * std::fabs(unit(bubble_.fx));
-    bubble_.lostPieces.push_back(piece);
+    piece.spinAxis = Normalize(Vec3d{unit(bubble_->fx), unit(bubble_->fx), unit(bubble_->fx)} + Vec3d{0, 0, 1e-3});
+    piece.spin = 0.15 + 0.35 * std::fabs(unit(bubble_->fx));
+    bubble_->lostPieces.push_back(piece);
     if (team == 0) Say(a.name + " pierde " + ZoneLabel(layout, zone, true) + ".");
     if (excess > 0.0) WoundAnomaly(a, info.inner, excess * kInnerShare, team);
 }
@@ -3811,7 +3838,7 @@ bool GameSession::CinematicView() const {
 void GameSession::TrackStrike() {
     const Anomaly* a = pilot_->lastStrike.anomaly >= 0 ? FindAnomaly(pilot_->lastStrike.anomaly) : nullptr;
     if (!a) return;
-    pilot_->lastStrike.target = AnomalyPosition(*a) + engine_.GetWorld().origin;
+    pilot_->lastStrike.target = AnomalyPosition(*a) + engine_->GetWorld().origin;
     pilot_->lastStrike.yaw = static_cast<double>(a->yaw);
     if (const ZoneLayout* layout = ZonesOf(*a)) pilot_->lastStrike.size = Length(layout->extent) * 0.001;
 }
@@ -3829,7 +3856,7 @@ Quatd CameraLooking(const Vec3d& forward) {
 bool GameSession::CinematicShot(Vec3d& eye, Quatd& look) const {
     if (!CinematicView()) return false;
     const CinematicRules& r = rules_.cinematic;
-    const Vec3d target = pilot_->lastStrike.target - engine_.GetWorld().origin;
+    const Vec3d target = pilot_->lastStrike.target - engine_->GetWorld().origin;
     const Quatd turn = Quatd::FromAxisAngle({0, 1, 0}, pilot_->lastStrike.yaw);
     const Vec3d hit = target + turn.ToMatrix().TransformDirection(pilot_->lastStrike.point * 0.001);
     // Empieza del lado del golpe; si dio en el centro, del lado de la nave.
@@ -3849,11 +3876,11 @@ bool GameSession::CinematicShot(Vec3d& eye, Quatd& look) const {
 
 void GameSession::UpdateCombat(double seconds) {
     for (Vessel& v : fleet_) {
-        if (v.phase != GamePhase::Flying) continue;
+        if (v.phase != GamePhase::Flying || !Here(v)) continue;
         for (WeaponMount& m : v.ship.weapons) m.cooldown = std::max(m.cooldown - seconds, 0.0);
         for (double& c : v.ship.loadout.cooldown) c = std::max(c - seconds, 0.0);
     }
-    if (bubble_.projectiles.empty()) return;
+    if (bubble_->projectiles.empty()) return;
     const GameMode& mode = ModeInfo(world_.mode);
 
     // Las torretas derriban misiles y drones que se acerquen: las de los jugadores y las de los hostiles.
@@ -3861,7 +3888,7 @@ void GameSession::UpdateCombat(double seconds) {
     struct Defender { Vec3d position; int team; double rate; int vessel; };  // rate: probabilidad por segundo
     std::vector<Defender> defenders;
     for (std::size_t i = 0; i < fleet_.size(); ++i) {
-        if (fleet_[i].phase != GamePhase::Flying) continue;
+        if (fleet_[i].phase != GamePhase::Flying || !Here(fleet_[i])) continue;
         const Using mine(*this, static_cast<int>(i));
         int tier = 0;
         for (const WeaponMount& m : vessel_->ship.weapons)
@@ -3873,11 +3900,11 @@ void GameSession::UpdateCombat(double seconds) {
         if (!mode.hostilesAttack || !a.armed || a.disabled || a.hull <= 0.0 || a.weapon != WeaponKind::Turret || a.stance != Stance::Hostile) continue;
         defenders.push_back({AnomalyPosition(a), TeamOf(a), rules_.combat.defenseRate * a.weaponTier, -1});
     }
-    for (Projectile& p : bubble_.projectiles) {
+    for (Projectile& p : bubble_->projectiles) {
         if (!p.guided || p.dead) continue;
         for (const Defender& d : defenders) {
             if (d.team == p.team || Length(p.position - d.position) > rules_.combat.defenseRange) continue;
-            if (Uniform(bubble_.rng, 0.0, 1.0) < 1.0 - std::exp(-d.rate * seconds)) {
+            if (Uniform(bubble_->rng, 0.0, 1.0) < 1.0 - std::exp(-d.rate * seconds)) {
                 p.dead = true;
                 if (d.vessel >= 0) {
                     const Using mine(*this, d.vessel);
@@ -3892,7 +3919,7 @@ void GameSession::UpdateCombat(double seconds) {
 
 // Cada proyectil avanza en tramos cortos y se comprueba todo el recorrido: uno rapido no atraviesa nada.
 void GameSession::StepProjectiles(double seconds) {
-    if (bubble_.projectiles.empty() || seconds <= 0.0) return;
+    if (bubble_->projectiles.empty() || seconds <= 0.0) return;
     const std::vector<GravitySource> sources = GravitySources();
     const int parts = std::clamp(static_cast<int>(std::ceil(seconds / 0.25)), 1, 120);
     const double dt = seconds / parts;
@@ -3900,7 +3927,7 @@ void GameSession::StepProjectiles(double seconds) {
     struct Hull { int index; int id; Vec3d velocity; };
     std::vector<Hull> hulls;
     for (std::size_t i = 0; i < fleet_.size(); ++i)
-        if (fleet_[i].phase == GamePhase::Flying) hulls.push_back({static_cast<int>(i), fleet_[i].id, VelocityOf(fleet_[i])});
+        if (fleet_[i].phase == GamePhase::Flying && Here(fleet_[i])) hulls.push_back({static_cast<int>(i), fleet_[i].id, VelocityOf(fleet_[i])});
 
     // Las naves y las anomalias ya se movieron este paso: aqui se retrocede hasta el principio de el.
     std::vector<Anomaly*> targets;
@@ -3912,7 +3939,7 @@ void GameSession::StepProjectiles(double seconds) {
     }
     for (int part = 1; part <= parts; ++part) {
         const double back = seconds - part * dt;  // lo que falta para el final del paso
-        for (Projectile& p : bubble_.projectiles) {
+        for (Projectile& p : bubble_->projectiles) {
             if (p.dead) continue;
             Vec3d tp, tv;
             bool have = false;
@@ -3938,7 +3965,7 @@ void GameSession::StepProjectiles(double seconds) {
             p.age += dt;
             const auto finish = [&](bool hit) {
                 p.dead = true;
-                bubble_.impacts.push_back({p.position, p.origin, p.type, p.beam, hit, 0.0});
+                bubble_->impacts.push_back({p.position, p.origin, p.type, p.beam, hit, 0.0});
             };
             if (p.life <= 0.0) {
                 if (p.beam) finish(false);  // el haz se ve aunque no de en nada
@@ -3995,13 +4022,13 @@ void GameSession::StepProjectiles(double seconds) {
             }
         }
     }
-    bubble_.projectiles.erase(std::remove_if(bubble_.projectiles.begin(), bubble_.projectiles.end(), [](const Projectile& p) { return p.dead; }), bubble_.projectiles.end());
+    bubble_->projectiles.erase(std::remove_if(bubble_->projectiles.begin(), bubble_->projectiles.end(), [](const Projectile& p) { return p.dead; }), bubble_->projectiles.end());
     world_.anomalies.erase(std::remove_if(world_.anomalies.begin(), world_.anomalies.end(), [](const Anomaly& a) { return a.maxHull > 0.0 && a.hull <= 0.0; }), world_.anomalies.end());
 }
 
 // Entrar en la orbita de una estrella demasiado caliente para el blindaje quema el casco.
 void GameSession::UpdateHeat(double seconds) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     vessel_->inHeatZone = false;
     const std::size_t s = static_cast<std::size_t>(vessel_->nearestSystem);
     const SystemState& state = w.state[s];
@@ -4089,7 +4116,7 @@ void GameSession::UpdateThermal(double proper, double realSeconds) {
     const ThermalRules& t = rules_.thermal;
     const DefenseRules& r = rules_.defense;
     const GameMode& mode = ModeInfo(world_.mode);
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     const double density = NebulaDensity(vessel_->ship.position + w.origin);
     const double hours = proper / 3600.0;
     double heatIn = 0.0;
@@ -4249,7 +4276,7 @@ void GameSession::RefreshContacts() {
 }
 
 void GameSession::UpdateContacts() {
-    World& w = engine_.GetWorld();
+    World& w = engine_->GetWorld();
     vessel_->contacts.clear();
     // La pista sobra en cuanto se revela lo que señalaba o se sale de su sistema.
     if (vessel_->echo.active) {
@@ -4307,7 +4334,7 @@ void GameSession::UpdateContacts() {
     }
     for (const Station& s : world_.stations.All()) add({Kind::Station, s.site.system, s.id}, Stance::None, 1.0e300);
     for (const Vessel& v : fleet_)
-        if (&v != vessel_) add({Kind::Ship, v.nearestSystem, v.id}, Stance::None, 1.0e300);  // las naves de la flota se saben siempre
+        if (&v != vessel_ && Here(v)) add({Kind::Ship, v.nearestSystem, v.id}, Stance::None, 1.0e300);  // las naves de la flota se saben siempre
     for (const Anomaly& a : world_.anomalies) {
         // Lo frio solo existe para los sensores despues de un barrido.
         if (a.cold && !a.revealed) continue;
@@ -4342,12 +4369,24 @@ void GameSession::StepAll(double realSeconds, const std::vector<ShipControls>& c
 }
 
 void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels) {
-    const std::size_t count = fleet_.size();
     // Pase lo que pase, al salir la nave y el jugador en curso vuelven a ser los del foco.
     struct Back {
         GameSession& s;
         ~Back() { s.UsePlayer(s.focusPlayer_); }
     } back{*this};
+    // Cada burbuja avanza por su cuenta, con su reloj y su motor. Luego, las naves que han salido de una
+    // o han entrado en el sistema de otra cambian de burbuja.
+    for (std::size_t b = 0; b < bubbles_.size(); ++b)
+        if (bubbles_[b].active && CountIn(static_cast<int>(b)) > 0) StepBubble(static_cast<int>(b), realSeconds, controls, focalPixels);
+    Regroup();
+}
+
+void GameSession::StepBubble(int index, double realSeconds, const std::vector<ShipControls>& controls, float focalPixels) {
+    const std::size_t count = fleet_.size();
+    std::vector<std::size_t> ships;  // las naves de esta burbuja
+    for (std::size_t i = 0; i < count; ++i)
+        if (fleet_[i].bubble == index) ships.push_back(i);
+    const int eye = EyeOf(index);
     std::vector<VesselStep> t(count);
     std::vector<StepClock> k(count);
     const auto use = [&](std::size_t i) { Use(static_cast<int>(i)); };
@@ -4358,6 +4397,7 @@ void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls
     // viendo todos los que comparten la burbuja. La toma dura en tiempo real.
     bool everyoneWatching = true;
     for (std::size_t p = 0; p < players_.size(); ++p) {
+        if (fleet_[static_cast<std::size_t>(players_[p].vessel)].bubble != index) continue;
         UsePlayer(static_cast<int>(p));
         pilot_->strikeAge += realSeconds;
         everyoneWatching = everyoneWatching && CinematicView();
@@ -4367,29 +4407,29 @@ void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls
     // El reloj de la burbuja (docs/multijugador.md, 2.3): manda la nave que mas despacio quiere ir, en
     // el foco y en la dilatacion. Con una sola nave es el reloj de siempre.
     double focus = 1.0e300, exterior = 1.0e300;
-    for (std::size_t i = 0; i < count; ++i) {
+    for (const std::size_t i : ships) {
         use(i);
         if (vessel_->respawnPending) FinishRespawn();
         PrepareVessel(realSeconds, t[i]);
         focus = std::min(focus, vessel_->timeFocus);
         exterior = std::min(exterior, vessel_->exteriorFactor);
     }
-    bubble_.timeFocus = focus;
+    bubble_->timeFocus = focus;
     const double base = realSeconds * world_.timeScale * focus;
     const double seconds = base * exterior;
-    bubble_.simTime += seconds;
-    ++bubble_.steps;
-    for (std::size_t i = 0; i < count; ++i) {
+    bubble_->simTime += seconds;
+    ++bubble_->steps;
+    for (const std::size_t i : ships) {
         k[i].real = realSeconds;
         // A bordo de la que dilata mas que la burbuja pasa menos tiempo: no acelera el mundo de las demas.
         k[i].proper = fleet_[i].exteriorFactor == exterior ? base : seconds / fleet_[i].exteriorFactor;
         k[i].seconds = seconds;
         k[i].hours = seconds / 3600.0;
     }
-    UsePlayer(focusPlayer_);
+    Use(eye);
     UpdateLostPieces(seconds, realSeconds);
 
-    for (std::size_t i = 0; i < count; ++i) {
+    for (const std::size_t i : ships) {
         // Cada jugador de a bordo: su tutorial y, si va a pie, su mando de andar.
         for (std::size_t p = 0; p < players_.size(); ++p) {
             if (players_[p].vessel != static_cast<int>(i)) continue;
@@ -4406,16 +4446,16 @@ void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls
         StepVessel(input(HolderOf(static_cast<int>(i), Seat::Pilot)), k[i], t[i]);
     }
 
-    AdvanceBubble(realSeconds, seconds, t, focalPixels);
+    AdvanceBubble(index, realSeconds, seconds, t, focalPixels);
 
     std::vector<char> alive(count, 0);
     bool anyone = false;
-    for (std::size_t i = 0; i < count; ++i) {
+    for (const std::size_t i : ships) {
         use(i);
         alive[i] = SettleVessel(k[i], t[i]) ? 1 : 0;  // perdida o recien perdida: para ella nada mas se mueve
         anyone = anyone || alive[i];
     }
-    for (std::size_t i = 0; i < count; ++i) {
+    for (const std::size_t i : ships) {
         if (!alive[i]) continue;
         use(i);
         UpdateExploration(k[i].hours);
@@ -4424,11 +4464,11 @@ void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls
     }
     // Lo que se mueve en la burbuja. Sin ninguna nave en vuelo, se queda quieto, como siempre.
     if (anyone) {
-        UsePlayer(focusPlayer_);
+        Use(eye);
         UpdateAnomalies(seconds);
         UpdateCombat(seconds);
     }
-    for (std::size_t i = 0; i < count; ++i) {
+    for (const std::size_t i : ships) {
         if (!alive[i]) continue;
         for (std::size_t p = 0; p < players_.size(); ++p) {
             if (players_[p].vessel != static_cast<int>(i)) continue;
@@ -4449,13 +4489,13 @@ void GameSession::PrepareVessel(double realSeconds, VesselStep& t) {
     vessel_->exteriorFactor = ExteriorRate(vessel_->orbiting ? 0.0 : vessel_->ship.speed, GravityWell(), rules_.world.maxTimeFactor);
     UpdateFocus(realSeconds);
     // La estacion junto a la que vuela, donde estaba antes de que avance el reloj: una mina de un
-    // cinturon se mueve con bubble_.simTime, y medirla despues dejaria a la nave atras en cada paso.
+    // cinturon se mueve con bubble_->simTime, y medirla despues dejaria a la nave atras en cada paso.
     t.anchorCandidate = vessel_->phase == GamePhase::Flying ? StationFrame() : -1;
     t.anchorStart = t.anchorCandidate >= 0 ? StationPosition(*world_.stations.Find(t.anchorCandidate)) : Vec3d{};
 }
 
 void GameSession::StepVessel(const ShipControls& controls, const StepClock& k, VesselStep& t) {
-    const World& w = engine_.GetWorld();
+    const World& w = engine_->GetWorld();
     if (vessel_->phase == GamePhase::Exploding) {
         vessel_->wreckAge += k.real;
         if (vessel_->wreckAge >= kWreckSeconds) vessel_->phase = GamePhase::GameOver;
@@ -4548,44 +4588,186 @@ void GameSession::StepVessel(const ShipControls& controls, const StepClock& k, V
     }
 }
 
-void GameSession::AdvanceBubble(double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels) {
-    World& w = engine_.GetWorld();
-    // Los planetas que alguna nave orbita no se descargan.
-    bubble_.pins.clear();
+void GameSession::AdvanceBubble(int index, double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels) {
+    World& w = engine_->GetWorld();
+    // Los planetas que alguna nave de la burbuja orbita no se descargan.
+    bubble_->pins.clear();
     for (const Vessel& v : fleet_) {
-        if (!v.orbiting || v.orbiting->kind != Kind::Planet) continue;
-        if (const Body* body = FindPlanet(w, v.orbiting->system, v.orbiting->index)) bubble_.pins.push_back(static_cast<int>(body - w.bodies.data()));
+        if (v.bubble != index || !v.orbiting || v.orbiting->kind != Kind::Planet) continue;
+        if (const Body* body = FindPlanet(w, v.orbiting->system, v.orbiting->index)) bubble_->pins.push_back(static_cast<int>(body - w.bodies.data()));
     }
-    // El origen del mundo y lo que el motor carga siguen a la nave del foco.
-    Vessel& eye = fleet_[static_cast<std::size_t>(focus_)];
+    // El origen del mundo y lo que el motor carga siguen a una nave: la del foco si esta aqui.
+    Vessel& eye = fleet_[static_cast<std::size_t>(EyeOf(index))];
     Vec3d position = eye.ship.position;
-    engine_.Recenter(position);
+    engine_->Recenter(position);
     const Vec3d shift = position - eye.ship.position;
     for (std::size_t i = 0; i < fleet_.size(); ++i) {
         Vessel& v = fleet_[i];
+        if (v.bubble != index) continue;
         t[i].shift = shift;
         v.ship.position += shift;
         v.wreckPosition += shift;
         for (MiningDrone& d : v.drones) d.position += shift;
     }
     eye.ship.position = position;  // exacta: es la que el motor ha dejado junto al origen
-    for (Projectile& p : bubble_.projectiles) {
+    for (Projectile& p : bubble_->projectiles) {
         p.position += shift;
         p.origin += shift;
     }
-    for (ImpactFlash& f : bubble_.impacts) {
+    for (ImpactFlash& f : bubble_->impacts) {
         f.position += shift;
         f.origin += shift;
         f.age += realSeconds;
     }
-    bubble_.impacts.erase(std::remove_if(bubble_.impacts.begin(), bubble_.impacts.end(), [](const ImpactFlash& f) { return f.age > 0.6; }), bubble_.impacts.end());
+    bubble_->impacts.erase(std::remove_if(bubble_->impacts.begin(), bubble_->impacts.end(), [](const ImpactFlash& f) { return f.age > 0.6; }), bubble_->impacts.end());
 
-    engine_.Advance(eye.ship.position, focalPixels, bubble_.simTime, bubble_.pins, realSeconds);
+    engine_->Advance(eye.ship.position, focalPixels, bubble_->simTime, bubble_->pins, realSeconds);
 
-    for (Vessel& v : fleet_) v.nearestSystem = eps::NearestSystem(w, v.ship.position);
-    // Por sello de tiempo: cada estacion produce hasta el reloj de esta burbuja.
-    world_.stations.ProduceUntil(bubble_.simTime, bubble_.simTime - seconds);
-    world_.stations.Age(realSeconds);
+    for (Vessel& v : fleet_)
+        if (v.bubble == index) v.nearestSystem = eps::NearestSystem(w, v.ship.position);
+    // Por sello de tiempo: cada estacion produce hasta el reloj de la burbuja que tiene una nave en su
+    // sistema; las de sistemas donde no hay nadie, hasta el de cualquiera (docs/multijugador.md, 2.3).
+    const auto hosted = [&](int system) {
+        for (const Vessel& v : fleet_)
+            if (v.nearestSystem == system && v.phase == GamePhase::Flying) return v.bubble;
+        return -1;
+    };
+    world_.stations.ProduceUntil(bubble_->simTime, bubble_->simTime - seconds, [&](const Station& s) {
+        const int host = hosted(s.site.system);
+        return host < 0 || host == index;
+    });
+    if (fleet_[static_cast<std::size_t>(focus_)].bubble == index) world_.stations.Age(realSeconds);
+}
+
+// ---- Burbujas ----
+
+int GameSession::CountIn(int bubble) const {
+    int count = 0;
+    for (const Vessel& v : fleet_) count += v.bubble == bubble ? 1 : 0;
+    return count;
+}
+
+int GameSession::BubbleCount() const {
+    int count = 0;
+    for (std::size_t b = 0; b < bubbles_.size(); ++b) count += bubbles_[b].active && CountIn(static_cast<int>(b)) > 0 ? 1 : 0;
+    return count;
+}
+
+double GameSession::WorldTime() const {
+    double latest = 0.0;
+    for (std::size_t b = 0; b < bubbles_.size(); ++b)
+        if (bubbles_[b].active && CountIn(static_cast<int>(b)) > 0) latest = std::max(latest, bubbles_[b].simTime);
+    return latest;
+}
+
+int GameSession::EyeOf(int bubble) const {
+    if (fleet_[static_cast<std::size_t>(focus_)].bubble == bubble) return focus_;
+    for (std::size_t i = 0; i < fleet_.size(); ++i)
+        if (fleet_[i].bubble == bubble) return static_cast<int>(i);
+    return -1;
+}
+
+// Una burbuja para una nave que se va: reutiliza una vacia o crea su motor, con el reloj de la que deja.
+// El motor se pone ya donde esta la nave, para que al usarlo tenga cargado lo que hay alrededor.
+int GameSession::OpenBubble(const Bubble& from, const Vec3d& absolute) {
+    int index = -1;
+    for (std::size_t b = 0; b < bubbles_.size() && index < 0; ++b)
+        if (!bubbles_[b].active && bubbles_[b].engine) index = static_cast<int>(b);
+    if (index < 0) {
+        if (!engineFactory_) return -1;
+        std::unique_ptr<eps::Engine> made = engineFactory_();
+        if (!made) return -1;
+        bubbles_.emplace_back(world_.seed + static_cast<std::uint32_t>(bubbles_.size()) * 7919u);
+        bubbles_.back().owned = std::move(made);
+        bubbles_.back().engine = bubbles_.back().owned.get();
+        index = static_cast<int>(bubbles_.size()) - 1;
+    }
+    Bubble& b = bubbles_[static_cast<std::size_t>(index)];
+    b.active = true;
+    b.system = -1;
+    b.simTime = from.simTime;
+    b.timeFocus = from.timeFocus;
+    b.steps = 0;
+    b.projectiles.clear();
+    b.impacts.clear();
+    b.lostPieces.clear();
+    World& w = b.engine->GetWorld();
+    Vec3d eye = absolute - w.origin;
+    for (int i = 0; i < 8; ++i) {
+        b.engine->Recenter(eye);
+        b.engine->Advance(eye, 800.0f, b.simTime, {}, 0.0);
+    }
+    return index;
+}
+
+// Pasa una nave a otra burbuja: mismo sitio del universo, en las coordenadas del otro mundo.
+void GameSession::Transfer(int vessel, int bubble) {
+    Vessel& v = fleet_[static_cast<std::size_t>(vessel)];
+    if (v.bubble == bubble) return;
+    const Vec3d shift = bubbles_[static_cast<std::size_t>(v.bubble)].engine->GetWorld().origin - bubbles_[static_cast<std::size_t>(bubble)].engine->GetWorld().origin;
+    v.ship.position += shift;
+    v.wreckPosition += shift;
+    for (MiningDrone& d : v.drones) d.position += shift;
+    v.frame = {};
+    // Lo que tenia fijado en otra nave ya no esta a su lado.
+    const auto drop = [](std::optional<TargetRef>& ref) {
+        if (ref && ref->kind == Kind::Ship) ref.reset();
+    };
+    drop(v.orbiting);
+    drop(v.autopilot);
+    drop(v.tracking);
+    v.contacts.clear();
+    v.bubble = bubble;
+}
+
+// Tras el paso: la nave que sale del sistema de una burbuja con mas naves se lleva la suya, y la que
+// llega sola al sistema donde hay otra burbuja entra en ella y adopta su reloj (reglas 3 a 5 del 2.3).
+void GameSession::Regroup() {
+    const auto distanceTo = [&](const Vessel& v, int system) {
+        const World& w = bubbles_[static_cast<std::size_t>(v.bubble)].engine->GetWorld();
+        return Length(v.ship.position - w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(system)])) / w.extents[static_cast<std::size_t>(system)];
+    };
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        Vessel& v = fleet_[i];
+        if (v.phase != GamePhase::Flying) continue;
+        const int here = v.bubble;
+        Bubble& mine = bubbles_[static_cast<std::size_t>(here)];
+        const int members = CountIn(here);
+        if (members >= 2) {
+            // Sale: a 1,5 radios del sistema.
+            if (mine.system < 0 || distanceTo(v, mine.system) <= 1.5) continue;
+            const int opened = OpenBubble(mine, v.ship.position + mine.engine->GetWorld().origin);
+            if (opened < 0) continue;  // sin fabrica: la frena LeashToFleet
+            Transfer(static_cast<int>(i), opened);
+            if (CountIn(here) < 2) mine.system = -1;
+            continue;
+        }
+        // Va sola: si entra (a 1,4 radios) en el sistema donde hay otra burbuja, se une a ella. Entra la
+        // que llega, no la que estaba: es la que adopta el reloj de la otra. Si llegan a la vez, o las dos
+        // estaban ya, entra la de numero mas alto.
+        for (std::size_t b = 0; b < bubbles_.size(); ++b) {
+            if (static_cast<int>(b) == here || !bubbles_[b].active) continue;
+            const int eye = EyeOf(static_cast<int>(b));
+            if (eye < 0) continue;
+            const Vessel& host = fleet_[static_cast<std::size_t>(eye)];
+            const int system = bubbles_[b].system >= 0 ? bubbles_[b].system : host.nearestSystem;
+            if (v.nearestSystem != system || distanceTo(v, system) >= 1.4 || distanceTo(host, system) >= 1.4) continue;
+            const bool hostWasHere = host.settled == system, wasHere = v.settled == system;
+            if (hostWasHere == wasHere ? eye > static_cast<int>(i) : wasHere) continue;  // es la otra la que entra
+            Transfer(static_cast<int>(i), static_cast<int>(b));
+            bubbles_[b].system = system;
+            mine.active = false;  // vacia: su motor queda para la siguiente
+            mine.system = -1;
+            break;
+        }
+    }
+    // En que sistema queda asentada cada una: dentro de 1,4 radios, y hasta 1,5 si ya lo estaba.
+    for (Vessel& v : fleet_) {
+        if (v.phase != GamePhase::Flying) continue;
+        const double d = distanceTo(v, v.nearestSystem);
+        v.settled = d < 1.4 || (v.settled == v.nearestSystem && d <= 1.5) ? v.nearestSystem : -1;
+    }
+    UsePlayer(focusPlayer_);
 }
 
 bool GameSession::SettleVessel(const StepClock& k, VesselStep& t) {
@@ -4606,7 +4788,7 @@ bool GameSession::SettleVessel(const StepClock& k, VesselStep& t) {
         if (d.state != DroneState::Docked) d.position += carried;
     if (!t.flying) {
         vessel_->wreckPosition += carried;  // los restos siguen al planeta, no se quedan atras
-        if (bubble_.steps % kContactEvery == 1) UpdateContacts();
+        if (bubble_->steps % kContactEvery == 1) UpdateContacts();
         else RefreshContacts();
         return false;
     }
@@ -4640,7 +4822,7 @@ void GameSession::FinishVessel(const StepClock& k, VesselStep& t) {
     UpdateHeat(k.proper);
     UpdateThermal(k.proper, k.real);
     UpdateRepair(k.seconds);
-    if (bubble_.steps % kContactEvery == 1) UpdateContacts();
+    if (bubble_->steps % kContactEvery == 1) UpdateContacts();
     else RefreshContacts();
     SpreadWound(t.hullStart - vessel_->ship.hull - vessel_->directedLoss);  // calor, presion de ariete: sin direccion
 

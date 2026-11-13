@@ -293,7 +293,30 @@ Lo que falta o es provisional:
 
 Con 3a y 3b terminadas, **toda la lógica multijugador existe y se prueba en un proceso**, sin red.
 
-### Fase 4 — Varias burbujas
+### Fase 4 — Varias burbujas — **hecha el 13-11-2026**
+
+**Medido antes de empezar** (`epsilon_game_tests.exe --medir-motor`, galaxia del juego, 40 sistemas): un motor más cuesta unos 5 ms en crearse, unos 2 MB de memoria y 0,08 ms por paso. El riesgo R3 no existe: un `Engine` por burbuja es barato.
+
+Cómo quedó:
+
+- **Burbuja = motor + reloj + lo que vuela.** `GameSession::bubbles_`; cada `Bubble` tiene su `Engine` (su mundo cargado y su origen flotante), su reloj, su foco de tiempo, sus proyectiles y sus restos. Cada nave dice en cuál está (`Vessel::bubble`). `bubble_` y `engine_` son los de la nave en curso, igual que `vessel_` y `pilot_`. La primera burbuja usa el motor que recibe la sesión; las demás, uno que hace la **fábrica de motores** (`SetEngineFactory`).
+- **Paso.** `StepPlayers` avanza cada burbuja por separado (`StepBubble`) y luego `Regroup` mueve las naves que han cambiado de sitio.
+- **Salir (regla 3).** Con dos naves o más en un sistema, la que pasa de 1,5 radios se lleva una burbuja propia, con una copia del reloj. Su motor se coloca ya donde está la nave, para que tenga cargado lo de alrededor. Se reutilizan los motores de burbujas vacías.
+- **Entrar (regla 5).** Una nave que va sola y entra (a 1,4 radios) en el sistema donde hay otra burbuja se une a ella y adopta su reloj, aunque sea anterior. Entra la que llega, no la que estaba (`Vessel::settled`).
+- **Estaciones (reglas 4 y 7).** Cada estación produce con el reloj de la burbuja que tiene una nave en su sistema; las de sistemas vacíos, con el de cualquiera. El sello nunca retrocede, así que nada se produce dos veces.
+- **Lo que no se comparte.** Las naves de burbujas distintas no se ven, no chocan ni se disparan, y no salen en los sensores de las otras.
+- **Guardado.** Cada nave lleva la línea `reloj` con el de su burbuja; `tiempo` del mundo es el más adelantado (`WorldTime`). Al cargar, cada nave vuelve a su burbuja con su reloj.
+- **Juego.** Se dibuja el motor de la burbuja de la nave que se lleva (`ViewEngine`); `nave` dice burbuja, sistema y fecha de cada una.
+- **Sin fábrica de motores** (pruebas antiguas, herramientas) sigue el límite de la fase 3a.
+
+Lo que falta o es provisional:
+
+- **Dos naves no viajan juntas entre sistemas**: una burbuja con varias naves está atada a un sistema, y cada nave que sale se lleva la suya. En el vacío no se ven aunque vayan una al lado de otra.
+- **El reloj de una nave no salta hacia delante** al entrar en un sistema vacío cuyas estaciones llevan un sello posterior (la regla 4 lo pedía): esas estaciones simplemente esperan a que el reloj las alcance.
+- La alerta de la especie y la rendición usan el reloj de la burbuja que las toca; con relojes muy distintos, una rendición puede acabar antes para unos que para otros.
+- Cargar sin fábrica de motores una partida con naves en sistemas distintos las junta a la fuerza en uno.
+- Con N burbujas hay N motores avanzando en el mismo hilo.
+- Cada burbuja tiene su propio generador aleatorio; las anomalías y los cascos perdidos siguen siendo del mundo.
 
 `Bubble` con su propio `Engine`/`World`. Entrar, salir y fundir burbujas (reglas 3–5 del §2.3). Se quita el límite de 3a.7. Hay que medir antes cuánto ocupa un `World` (riesgo R3).
 
