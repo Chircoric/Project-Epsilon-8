@@ -5154,6 +5154,178 @@ static std::string PlayGolden() {
     return WriteSave(g.Snapshot());
 }
 
+// Dos naves en el mismo mundo, cada una con su mando (fase 3a de docs/multijugador.md).
+static void TestFleet() {
+    using C = CommandType;
+    Balance rules;
+    const auto logHas = [](const PlayerState& p, const std::string& text) {
+        for (const std::string& line : p.log)
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    };
+    {
+        auto engine = MakeEngine(rules, 9);
+        GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+        Run(g, 0.5);
+        CHECK(g.VesselCount() == 1 && g.Focus() == 0 && g.VesselId() == 1);
+        const Vec3d first = g.Ship().position;
+
+        // La segunda aparece al costado, parada, y cada una ve a la otra en sus sensores.
+        const int id = g.AddVessel(50.0);
+        CHECK(id == 2 && g.VesselCount() == 2 && g.Focus() == 0 && g.VesselId() == 1);
+        CHECK(std::abs(Length(g.VesselAt(1).ship.position - first) - 50.0) < 1e-6);
+        Run(g, 1.0);
+        const TargetRef other{Kind::Ship, 0, 2}, self{Kind::Ship, 0, 1};
+        CHECK(g.Resolve(other).has_value() && !g.Resolve(self));  // la propia no es un objetivo
+        const auto sees = [&](int index, int shipId) {
+            for (const Contact& c : g.VesselAt(index).contacts)
+                if (c.target.kind == Kind::Ship && c.target.index == shipId && c.identified) return true;
+            return false;
+        };
+        CHECK(sees(0, 2) && sees(1, 1) && !sees(0, 1));
+
+        // Una orden a la segunda no toca a la primera, y al reves.
+        CHECK(g.ApplyTo(2, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))));
+        CHECK(g.VesselAt(1).ship.mode == DriveMode::Cruise && g.Ship().mode == DriveMode::Impulse);
+        CHECK(!g.ApplyTo(7, Order(C::HoldPosition)));
+        CHECK(g.ApplyTo(2, Order(C::SetDrive, static_cast<int>(DriveMode::Impulse))));
+
+        // Un mando por nave: la segunda acelera y gira; la primera sigue donde estaba, mirando a lo mismo.
+        std::vector<ShipControls> controls(2);
+        controls[1].throttleChange = 0.5;
+        controls[1].turnYaw = 0.002f;
+        const Vec3d heading = Heading(g.Ship());
+        const Vec3d apart = g.VesselAt(1).ship.position - g.Ship().position;
+        for (int i = 0; i < 240; ++i) g.StepAll(1.0 / 60.0, controls);
+        CHECK(g.VesselAt(1).ship.throttle > 0.9 && g.Ship().throttle == 0.0);
+        CHECK(g.VesselAt(1).ship.speed > 1.0 && g.Ship().speed < 0.5);
+        CHECK(Length(Heading(g.VesselAt(1).ship) - heading) > 1e-3 && Length(Heading(g.Ship()) - heading) < 1e-9);
+        CHECK(Length(g.VesselAt(1).ship.position - g.Ship().position - apart) > 10.0);
+        CHECK(g.VesselId() == 1);  // fuera del paso, la nave en curso vuelve a ser la del foco
+
+        // El foco decide de que nave hablan Ship(), Apply() y lo demas.
+        CHECK(g.SetFocus(1) && g.VesselId() == 2 && g.Ship().throttle > 0.9);
+        CHECK(g.Apply(Order(C::HoldPosition)) && g.Ship().throttle == 0.0 && g.VesselAt(1).ship.throttle == 0.0);
+        CHECK(!g.SetFocus(5) && g.Focus() == 1);
+        Run(g, 3.0);
+
+        // La primera va con el piloto hasta la segunda y se queda a su lado.
+        CHECK(g.SetFocus(0));
+        CHECK(g.Apply(Order(C::Autopilot, other)));
+        for (int i = 0; i < 4000 && g.Autopilot(); ++i) g.Step(0.05, {});
+        CHECK(g.Orbiting() && *g.Orbiting() == other);
+        CHECK(Length(g.VesselAt(1).ship.position - g.Ship().position) < 200.0);
+
+        // Dos naves no ocupan el mismo sitio: la que se mete en la otra sale empujada.
+        g.Apply(Order(C::HoldPosition));
+        g.Ship().throttle = 0.01;  // suelta la orbita en el siguiente paso
+        g.Step(0.05, {});
+        g.Apply(Order(C::HoldPosition));
+        g.Ship().position = g.VesselAt(1).ship.position + Vec3d{0.2, 0.0, 0.0};
+        g.Step(0.05, {});
+        CHECK(Length(g.VesselAt(1).ship.position - g.Ship().position) > rules.ship.radius * 2.0 - 0.05);
+
+        // Limite provisional: con dos naves, ninguna sale del sistema.
+        const World& w = g.GetWorld();
+        const Vec3d center = w.scene.WorldPosition(w.sectors[0]);
+        g.Ship().position = center + Vec3d{w.extents[0] * 3.0, 0.0, 0.0};
+        g.Step(0.05, {});
+        CHECK(Length(g.Ship().position - w.scene.WorldPosition(w.sectors[0])) < w.extents[0] * 1.5001);
+        CHECK(logHas(g.PlayerAt(0), "ninguna puede salir") && !logHas(g.PlayerAt(1), "ninguna puede salir"));
+
+        // El guardado lleva las dos naves en el mundo y al jugador del foco; al cargar vuelven las dos.
+        const SaveData saved = g.Snapshot();
+        CHECK(saved.world.ships.size() == 2 && saved.player.ship == 1);
+        CHECK(g.SnapshotPlayer(1).ship == 2 && g.SnapshotPlayer(1).id != saved.player.id);
+        const std::string text = WriteSave(saved);
+        const std::optional<SaveData> read = ReadSave(text);
+        CHECK(read && read->world.ships.size() == 2 && WriteSave(*read) == text);
+        if (read) {
+            auto engineB = MakeEngine(rules, 9);
+            GameSession h(*engineB, rules, 9, GameModeId::Peaceful);
+            h.Step(0.05, {});
+            CHECK(h.Restore(*read));
+            CHECK(h.VesselCount() == 2 && h.Focus() == 0 && h.VesselId() == 1);
+            const Vec3d gap = g.VesselAt(1).ship.position - g.VesselAt(0).ship.position;
+            CHECK(Length(h.VesselAt(1).ship.position - h.VesselAt(0).ship.position - gap) < 1e-3);
+            Run(h, 0.5);
+            CHECK(h.AddVessel() == 3);  // los numeros de nave no se repiten
+            // Quien lleva la segunda nave, al cargar, la lleva.
+            SaveData second = *read;
+            second.player = g.SnapshotPlayer(1);
+            auto engineC = MakeEngine(rules, 9);
+            GameSession k(*engineC, rules, 9, GameModeId::Peaceful);
+            k.Step(0.05, {});
+            CHECK(k.Restore(second) && k.Focus() == 1 && k.VesselId() == 2);
+        }
+    }
+
+    // El reloj de la burbuja: con una nave dilatando y otra quieta, manda la quieta. El mundo no corre
+    // mas para la segunda, y a bordo de la primera pasa menos tiempo.
+    {
+        auto engine = MakeEngine(rules, 9);
+        GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+        Run(g, 0.5);
+        g.AddVessel(1000.0);
+        g.Ship().mode = DriveMode::Cruise;
+        g.Ship().holding = false;
+        std::vector<ShipControls> controls(2);
+        controls[0].throttleChange = 1.0;
+        for (int i = 0; i < 2400 && g.VesselAt(0).exteriorFactor < 1.05; ++i) g.StepAll(1.0 / 60.0, controls);
+        CHECK(g.VesselAt(0).exteriorFactor > 1.05);
+        const double still = g.VesselAt(1).exteriorFactor;  // la quieta solo dilata lo poco que da la gravedad
+        CHECK(still >= 1.0 && still < 1.001);
+        const double clock = g.SimTime(), fast = g.VesselAt(0).ship.shipHours, slow = g.VesselAt(1).ship.shipHours;
+        double expected = 0.0;
+        for (int i = 0; i < 60; ++i) {
+            g.StepAll(1.0 / 60.0, controls);
+            expected += g.TimeFocus() * g.TimeScale() / 60.0 * g.VesselAt(1).exteriorFactor;
+        }
+        const double passed = g.SimTime() - clock;
+        CHECK(passed > 0.0 && std::abs(passed - expected) < 1e-6 * expected);  // con el factor de la quieta, no el de la que dilata
+        const double aboardFast = (g.VesselAt(0).ship.shipHours - fast) * 3600.0, aboardSlow = (g.VesselAt(1).ship.shipHours - slow) * 3600.0;
+        CHECK(std::abs(aboardSlow * still - passed) < 1e-5 * passed);
+        CHECK(aboardFast < passed * 0.97 && aboardFast > 0.0);
+    }
+
+    // Los hostiles atienden a la nave que tienen mas cerca, y la baja es de quien dispara.
+    {
+        auto engine = MakeEngine(rules, 9);
+        GameSession g(*engine, rules, 9, GameModeId::Normal);
+        Run(g, 0.5);
+        g.AddVessel(400000.0);  // lejos: fuera del alcance de las armas del hostil
+        CHECK(g.SetFocus(1));
+        const auto guard = [](const ShipState& s) {
+            double total = s.hull;
+            for (const double c : s.defense.charge) total += c;
+            return total;
+        };
+        const double before = guard(g.Ship());
+        const int enemy = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 30000.0);
+        CHECK(enemy > 0);
+        const TargetRef foe{Kind::Anomaly, g.NearestSystem(), enemy};
+        g.Ship().computerTier = 5;
+        const auto alive = [&] {
+            for (const Anomaly& a : g.Anomalies())
+                if (a.id == enemy) return true;
+            return false;
+        };
+        // Primero sin responder: el hostil va a por la segunda nave, que es la que tiene cerca.
+        for (int i = 0; i < 600 && guard(g.Ship()) >= before; ++i) Run(g, 0.1);
+        CHECK(guard(g.Ship()) < before);
+        CHECK(logHas(g.PlayerAt(1), "Impactos de") && !logHas(g.PlayerAt(0), "Impactos de"));
+        for (int i = 0; i < 1500 && alive(); ++i) {
+            Run(g, 0.1);
+            g.Apply(Order(C::FireAll, foe));
+        }
+        CHECK(!alive());
+        CHECK(g.PlayerAt(1).kills == 1 && g.PlayerAt(0).kills == 0);
+        const ShipState& second = g.VesselAt(1).ship;
+        CHECK(g.VesselAt(0).ship.hull == rules.ship.hull);  // a la primera no le llego nada
+        CHECK(g.VesselAt(0).ship.cargo.Get(Resource::Metal) == 0.0 && second.cargo.Get(Resource::Metal) > 0.0);  // el botin, a quien la derribo
+    }
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -5361,6 +5533,7 @@ int main(int argc, char** argv) {
         {"Partida dorada", TestGoldenGame},
         {"Ordenes y paso fijo", TestOrdersAndFixedStep},
         {"Sellos de tiempo", TestTimeStamps},
+        {"Flota: dos naves", TestFleet},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},

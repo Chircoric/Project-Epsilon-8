@@ -152,6 +152,12 @@ Se escriben con F1 dentro del juego, o se pasan con `--cmd`. Cada uno deja su re
 | `plano [id]` | Fabrica el plano de un arma humana (0 a 9); solo atracada en la origami o en creativo. Sin nada, lista los planos |
 | `misiles <ranura> [n]` | Fabrica misiles para una bahía (atracada): gasta energía, metal y Pt/Pd/Ir (nuclear: U/Th). Sin número, hasta llenarla |
 | `puntual [n]` | Monta n puntos de defensa puntual (30 en la fragata ligera). Las plataformas son el módulo 9 |
+| `nave` | Lista las naves de la partida; la del asterisco es la que llevas |
+| `nave nueva [km]` | Otra nave a tu costado (20 km si no se dice; nunca a menos de cuatro radios), parada, con su propio jugador. Queda como objetivo. Mientras haya más de una, ninguna puede salir del sistema |
+| `nave ver <id>` | Pasas a llevar esa nave: la cámara, la interfaz y las órdenes son las suyas. En el juego, **F2** pasa a la siguiente |
+| `nave <id> <orden...>` | Ejecuta cualquier comando con esa nave: `nave 2 motor crucero`, `nave 2 mando 40`, `nave 2 ir`. El objetivo es uno solo para toda la consola |
+
+Receta (dos naves a la vista): `--cmd "nave nueva 2.5" --cmd "plegar 0" --cmd "plegar 1" --cmd "plegar 2" --cmd "plegar 3"` deja la segunda a la derecha de la pantalla. Para verla moverse por su cuenta: `--cmd "nave 2 mando 40" --cmd-at 300 "nave 2 frenar"`.
 
 Receta (armamento humano sin ir a ninguna estación): `--cmd creativo --cmd "plano 0" --cmd "modulo 2 10"` monta una coilgun ligera; `--cmd "modulo 3 16" --cmd "misiles 3"` una bahía de 10 llena. `FireAll` (el botón de fuego) dispara también estas armas.
 

@@ -28,9 +28,9 @@ namespace game {
 
 // Algo a lo que se puede apuntar. Usa indices estables: sobrevive a descargar un sistema.
 struct TargetRef {
-    enum class Kind : int { None, Star, Planet, Belt, Station, Anomaly } kind = Kind::None;
+    enum class Kind : int { None, Star, Planet, Belt, Station, Anomaly, Ship } kind = Kind::None;
     int system = 0;
-    int index = -1;  // estrella: StarAt; planeta: bodies; campo: belts; el resto: su id
+    int index = -1;  // estrella: StarAt; planeta: bodies; campo: belts; el resto: su id (Ship: Vessel::id de otra nave de la flota)
     bool operator==(const TargetRef&) const = default;
 };
 
@@ -287,6 +287,7 @@ struct Vessel {
     bool fuelWarned = false;  // ya se aviso de que esta ruta no puede formar burbuja
     std::optional<CollisionWarning> warning;
     double exteriorFactor = 1.0;  // cuantas veces mas rapido pasa el tiempo fuera que a bordo
+    double timeFocus = 1.0;       // la parte del tiempo normal que esta nave pide ahora; la burbuja usa la menor
     int nearestSystem = 0;
     bool inHeatZone = false;
     bool creative = false;
@@ -299,6 +300,7 @@ struct Vessel {
     std::optional<ApproachInfo> approach;
     int homeStation = -1;      // la ultima estacion propia donde atraco: ahi reaparece si se pierde
     bool respawnPending = false;  // ha reaparecido en el sistema de su estacion y aun no ha podido atracar
+    bool leashWarned = false;     // ya se le aviso de que no puede salir del sistema de la flota (fase 3a)
 
     // Danos, calor y perdida.
     int hitStreak = 0;
@@ -394,6 +396,27 @@ public:
 
     // Avanza la partida. Llama a Engine::Advance: el juego no debe llamarlo por su cuenta.
     void Step(double realSeconds, const ShipControls& controls, float focalPixels = 800.0f);
+    // Con varias naves: un mando por nave, en el orden de la flota (las que falten, sin mando). El de
+    // arriba le da el suyo a la nave del foco.
+    void StepAll(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels = 800.0f);
+
+    // ---- Flota (fase 3a de docs/multijugador.md): varias naves en el mismo mundo ----
+    // Todo lo demas de esta clase (Ship(), Apply(), Contacts(), Route()...) habla de UNA nave: la del
+    // foco, que es la que se mira y se maneja desde fuera. SetFocus cambia cual es.
+    int VesselCount() const { return static_cast<int>(fleet_.size()); }
+    int Focus() const { return focus_; }
+    bool SetFocus(int index);
+    int VesselId() const { return vessel_->id; }
+    const Vessel& VesselAt(int index) const { return fleet_[static_cast<std::size_t>(index)]; }
+    const PlayerState& PlayerAt(int index) const { return crews_[static_cast<std::size_t>(index)]; }
+    int IndexOfVessel(int id) const { return IndexOfId(id); }  // -1 si no existe
+    // Una nave mas, a km del costado de la del foco, parada, con su jugador. Devuelve su id. Mientras
+    // haya varias, ninguna puede salir del sistema donde estan (limite provisional hasta las burbujas).
+    int AddVessel(double km = 20.0);
+    // Una orden para una nave concreta, por su id.
+    CommandResult ApplyTo(int vesselId, const ShipCommand& command);
+    GameSession(const GameSession&) = delete;  // guarda punteros a sus propias naves
+    GameSession& operator=(const GameSession&) = delete;
 
     // Como Step, pero a paso fijo: acumula el tiempo real y da los pasos enteros de kFixedStep que
     // quepan (ninguno si aun no llega). Asi la partida no depende de los fotogramas por segundo, y es
@@ -416,8 +439,8 @@ public:
     // Piloto automatico: orienta, acelera, frena y se queda en orbita del objetivo.
     bool SetAutopilot(const TargetRef& target);
     void CancelAutopilot();
-    const std::optional<TargetRef>& Autopilot() const { return vessel_.autopilot; }
-    const std::optional<TargetRef>& Orbiting() const { return vessel_.orbiting; }
+    const std::optional<TargetRef>& Autopilot() const { return vessel_->autopilot; }
+    const std::optional<TargetRef>& Orbiting() const { return vessel_->orbiting; }
 
     // Acciones sobre el objetivo. Devuelven false y dejan el motivo en los mensajes.
     bool DeployPower(const TargetRef& target);
@@ -441,13 +464,13 @@ public:
     // recogen, la nave se aleja demasiado o enciende algo mas que el impulso.
     bool DeployDrones(const TargetRef& target);
     void RecallDrones();
-    const std::vector<MiningDrone>& Drones() const { return vessel_.drones; }
-    const std::optional<TargetRef>& DroneSite() const { return vessel_.droneSite; }
+    const std::vector<MiningDrone>& Drones() const { return vessel_->drones; }
+    const std::optional<TargetRef>& DroneSite() const { return vessel_->droneSite; }
     int DronesOut() const;
     // Extraccion selectiva: el elemento (1 a 118) que sacan los drones al volver a cargar; 0 = a
     // granel. Se elige en la ventana de analisis. Lo extraido va al inventario de elementos, en kg.
     void SetExtractElement(int z);
-    int ExtractElement() const { return vessel_.extractZ; }
+    int ExtractElement() const { return vessel_->extractZ; }
     // Los 118 elementos de un astro analizado (con la semilla del astro), o nada si no se conoce.
     std::optional<eps::astro::PeriodicShares> ElementSharesOf(const TargetRef& target) const;
     // kt/h de ese elemento por dron en ese astro: ritmo x riqueza x fraccion x recuperacion. 0 si no se mina.
@@ -474,12 +497,12 @@ public:
 
     // El rumbo sigue la solucion del canon espinal hasta que el raton lo mueva o el blanco desaparezca.
     void TrackTarget(const TargetRef& target);
-    void StopTracking() { vessel_.tracking.reset(); }
-    const std::optional<TargetRef>& Tracking() const { return vessel_.tracking; }
+    void StopTracking() { vessel_->tracking.reset(); }
+    const std::optional<TargetRef>& Tracking() const { return vessel_->tracking; }
     double ShipRadius() const { return rules_.ship.radius; }
     eps::Vec3d ShipVelocity() const;             // en el mundo
     std::vector<GravitySource> GravitySources() const;  // astros que tiran de los proyectiles aqui
-    int Kills() const { return pilot_.kills; }
+    int Kills() const { return pilot_->kills; }
 
     // Escudos y calor (Defense.h). Solo un campo encendido a la vez; los conos van siempre puestos.
     bool SetShield(ShieldKind kind);            // elige el campo y lo enciende; false si no se tiene
@@ -488,50 +511,50 @@ public:
     bool FieldActive() const;                   // encendido, con energia, con polvo y sin sobrecalentar
     bool Overheated() const;
     void SetCoolant(CoolantKind kind, bool on);
-    double RadiatorEfficiency() const { return vessel_.radiators; }  // 0 junto a una estrella, 1 lejos
-    bool Ramming() const { return vessel_.ramming; }   // en curvatura, con la presion de ariete encima
+    double RadiatorEfficiency() const { return vessel_->radiators; }  // 0 junto a una estrella, 1 lejos
+    bool Ramming() const { return vessel_->ramming; }   // en curvatura, con la presion de ariete encima
 
     // Atraque en estaciones propias. Si esta lejos, primero va la ruta. Un haz guia los ultimos km:
     // no hay rebotes ni forma de pasarse. Al dar mando, o con Undock, la nave se suelta.
     bool Dock(const TargetRef& target, bool instant = false);
     void Undock();
-    DockPhase Docking() const { return vessel_.dockPhase; }
-    bool Docked() const { return vessel_.dockPhase == DockPhase::Docked; }
+    DockPhase Docking() const { return vessel_->dockPhase; }
+    bool Docked() const { return vessel_->dockPhase == DockPhase::Docked; }
     // La estacion mas cercana a menos de 3000 km, y la velocidad maxima que permite ahora.
     using ApproachInfo = game::ApproachInfo;
-    const std::optional<ApproachInfo>& Approach() const { return vessel_.approach; }
+    const std::optional<ApproachInfo>& Approach() const { return vessel_->approach; }
     const Station* DockedStation() const;
 
     // A pie, en la cubierta de la estacion donde esta atracada.
     bool Disembark();
     bool Board(bool anywhere = false);
-    bool OnFoot() const { return pilot_.onFoot; }
+    bool OnFoot() const { return pilot_->onFoot; }
     bool CanBoard() const;
-    const eps::HumanoidState& Player() const { return pilot_.avatar; }
+    const eps::HumanoidState& Player() const { return pilot_->avatar; }
     const eps::HumanoidRules& PersonRules() const { return body_; }
     const std::vector<Person>& Crew() const { return bubble_.crew; }
     const DeckPlan& Deck() const { return bubble_.deck; }
     StationKind DeckKind() const { return bubble_.deckKind; }
-    eps::Vec3d DeckOrigin() const { return vessel_.ship.position; }  // km: la cubierta va donde esta la nave
-    bool FirstPerson() const { return pilot_.firstPerson; }
-    void ToggleFootView() { pilot_.firstPerson = !pilot_.firstPerson; }
+    eps::Vec3d DeckOrigin() const { return vessel_->ship.position; }  // km: la cubierta va donde esta la nave
+    bool FirstPerson() const { return pilot_->firstPerson; }
+    void ToggleFootView() { pilot_->firstPerson = !pilot_->firstPerson; }
 
     // Escaner: gasta mucha energia, exige la nave parada y encuentra lo que alcance su nivel.
     bool StartScan();
     void CancelScan();
-    bool Scanning() const { return vessel_.scanProgress >= 0.0; }
-    double ScanProgress() const { return vessel_.scanProgress; }
+    bool Scanning() const { return vessel_->scanProgress >= 0.0; }
+    double ScanProgress() const { return vessel_->scanProgress; }
     double ScanRange() const;
     double EchoRange() const;    // hasta donde oye el eco de lo frio: ScannerRules::echoFactor veces el alcance
-    const std::string& LastScan() const { return vessel_.lastScan; }
-    const EchoHint& Echo() const { return vessel_.echo; }
+    const std::string& LastScan() const { return vessel_->lastScan; }
+    const EchoHint& Echo() const { return vessel_->echo; }
     std::optional<eps::Vec3d> EchoPosition() const;  // el punto estimado, en el mundo; nada sin pista
     bool EchoGuaranteed() const;  // el tutorial esta en el paso de la estructura: pista exacta
 
     // Perder la nave.
-    GamePhase Phase() const { return vessel_.phase; }
-    double WreckAge() const { return vessel_.wreckAge; }
-    const eps::Vec3d& WreckPosition() const { return vessel_.wreckPosition; }
+    GamePhase Phase() const { return vessel_->phase; }
+    double WreckAge() const { return vessel_->wreckAge; }
+    const eps::Vec3d& WreckPosition() const { return vessel_->wreckPosition; }
     void SaveCheckpoint(const std::string& reason);  // avisa y pide guardar la partida; no hay vuelta atras
     // La nave reaparece reparada en la ultima estacion propia donde atraco (o en el punto de partida),
     // con la bodega que deje el modo; el mundo sigue como esta. En modo realista, todo a cero.
@@ -540,12 +563,13 @@ public:
     // Partidas guardadas. Si la nave acaba de perderse, se guarda como esta, con una marca: al cargar, reaparece.
     // Quien juega: su identificador (el nombre de su archivo en la partida) y como se llama.
     void SetPlayer(const std::string& id, const std::string& name) {
-        pilot_.id = SafePlayerId(id);
-        pilot_.name = name;
+        pilot_->id = SafePlayerId(id);
+        pilot_->name = name;
     }
-    const std::string& PlayerId() const { return pilot_.id; }
+    const std::string& PlayerId() const { return pilot_->id; }
     // El mundo con sus naves y lo de este jugador (SaveGame.h).
     SaveData Snapshot() const;
+    PlayerSave SnapshotPlayer(int index) const;  // lo del jugador de esa nave (indice en la flota)
     bool Restore(const SaveData& data, std::string* error = nullptr);
     bool TakeSaveRequest();      // hay algo nuevo que guardar: ha pasado un punto de control
     bool TakeSaveDeletion();     // modo realista: la partida se ha perdido para siempre
@@ -564,14 +588,14 @@ public:
 
     // Un astro no se conoce hasta analizarlo: nombre, recursos y estadisticas salen del barrido.
     bool Scanned(const TargetRef& target) const;
-    int ScannedCount() const { return static_cast<int>(pilot_.scanned.size()); }
+    int ScannedCount() const { return static_cast<int>(pilot_->scanned.size()); }
     void MarkScanned(int system);  // para pruebas y comandos
     void MarkKnown(int system);    // localiza un sistema y analiza todo lo que tiene
 
     // Modo creativo, desde la consola: nave invulnerable, energia, antimateria y materiales sin fin,
     // todos los motores y niveles, y todos los sistemas localizados. No se guarda.
     void SetCreative(bool on);
-    bool Creative() const { return vessel_.creative; }
+    bool Creative() const { return vessel_->creative; }
     // Crea una anomalia a km de la nave, delante de ella. Devuelve su id, o -1.
     // level: nivel de estacion (1 a 6; 6 es el planeta coraza, 0 lo elige su id). shipClass: clase de
     // la nave (-1, la que le toque por su id), en su variante normal.
@@ -581,8 +605,8 @@ public:
     SpeciesState& Species() { return world_.species; }
     double SystemAlert(int system) const;
     bool Surrender() const { return Surrendered(world_.species, bubble_.simTime); }
-    void MarkAnalysisUsed() { pilot_.analysisUsed = true; }
-    bool AnalysisUsed() const { return pilot_.analysisUsed; }
+    void MarkAnalysisUsed() { pilot_->analysisUsed = true; }
+    bool AnalysisUsed() const { return pilot_->analysisUsed; }
 
     // Parte del tiempo normal que corre ahora: se frena en los momentos criticos.
     double TimeFocus() const { return bubble_.timeFocus; }
@@ -595,23 +619,23 @@ public:
     double Visibility() const;  // km; depende de lo espesa que este la nebulosa aqui
     float NebulaTone() const;   // de 0 a 1: punto de la paleta de la nebulosa en esta zona
 
-    const ShipState& Ship() const { return vessel_.ship; }
-    ShipState& Ship() { return vessel_.ship; }
+    const ShipState& Ship() const { return vessel_->ship; }
+    ShipState& Ship() { return vessel_->ship; }
     const StationNetwork& Stations() const { return world_.stations; }
     StationNetwork& Stations() { return world_.stations; }
     const std::vector<Anomaly>& Anomalies() const { return world_.anomalies; }
     std::vector<Anomaly>& Anomalies() { return world_.anomalies; }
-    const std::vector<Contact>& Contacts() const { return vessel_.contacts; }
-    const std::deque<std::string>& Log() const { return pilot_.log; }
+    const std::vector<Contact>& Contacts() const { return vessel_->contacts; }
+    const std::deque<std::string>& Log() const { return pilot_->log; }
     const Balance& Rules() const { return rules_; }
     double SimTime() const { return bubble_.simTime; }
     double& TimeScale() { return world_.timeScale; }
-    int NearestSystem() const { return vessel_.nearestSystem; }
-    bool InHeatZone() const { return vessel_.inHeatZone; }
-    bool Exploring() const { return vessel_.exploring >= 0; }
+    int NearestSystem() const { return vessel_->nearestSystem; }
+    bool InHeatZone() const { return vessel_->inHeatZone; }
+    bool Exploring() const { return vessel_->exploring >= 0; }
 
     // Tiempo: cuantas veces mas rapido pasa fuera que a bordo, por velocidad y por gravedad.
-    double ExteriorFactor() const { return vessel_.exteriorFactor; }
+    double ExteriorFactor() const { return vessel_->exteriorFactor; }
 
     // Vuelo. Espacio frena y mantiene la nave quieta. En orbita no hace falta motor.
     void HoldPosition();
@@ -620,17 +644,17 @@ public:
     std::string DominantName() const;             // vacio = espacio abierto
     RouteReport Route() const;
     OrbitReport OrbitNow() const;
-    const std::optional<CollisionWarning>& Warning() const { return vessel_.warning; }
+    const std::optional<CollisionWarning>& Warning() const { return vessel_->warning; }
     std::vector<eps::Vec3d> PredictedPath() const;  // lo que va a recorrer, para dibujarlo
-    const std::string& LossReason() const { return vessel_.lossReason; }
+    const std::string& LossReason() const { return vessel_->lossReason; }
     eps::World& GetWorld() { return engine_.GetWorld(); }
     const eps::World& GetWorld() const { return engine_.GetWorld(); }
 
-    Dialogue& Conversation() { return pilot_.dialogue; }
-    const Dialogue& Conversation() const { return pilot_.dialogue; }
-    void MarkCursorUsed() { pilot_.cursorUsed = true; }
-    bool CursorUsed() const { return pilot_.cursorUsed; }
-    int Collected() const { return pilot_.collected; }      // veces que se ha recogido de una estacion
+    Dialogue& Conversation() { return pilot_->dialogue; }
+    const Dialogue& Conversation() const { return pilot_->dialogue; }
+    void MarkCursorUsed() { pilot_->cursorUsed = true; }
+    bool CursorUsed() const { return pilot_->cursorUsed; }
+    int Collected() const { return pilot_->collected; }      // veces que se ha recogido de una estacion
     int RevealedStructures() const;
 
     eps::Vec3d StationPosition(const Station& s) const;  // km; solo vale con su sistema cargado
@@ -653,7 +677,7 @@ public:
     using LostPiece = game::LostPiece;
     const std::vector<LostPiece>& LostPieces() const { return bubble_.lostPieces; }
     // De 0 a 1 por zona: lo recien golpeado, que aun brilla. Se enfria en unos segundos.
-    const HullZones& ZoneHeat() const { return vessel_.zoneHeat; }
+    const HullZones& ZoneHeat() const { return vessel_->zoneHeat; }
     // Golpe en una zona concreta, en unidades de casco: para pruebas y la consola. Con from (unitaria,
     // en el modelo de la nave), cuenta como un impacto sin escudos que deja su crater.
     void DamageZone(int zone, double hullAmount, const eps::Vec3d* from = nullptr);
@@ -669,20 +693,20 @@ public:
     bool StrikeAnomaly(int id, DamageType type, double amount);
 
     using StrikeMark = game::StrikeMark;
-    const StrikeMark& LastStrike() const { return pilot_.lastStrike; }
+    const StrikeMark& LastStrike() const { return pilot_->lastStrike; }
     // Modo cinematica (CinematicRules): tras cada impacto del jugador en un blanco, la camara lo rodea
     // mirando al punto del golpe y el tiempo va mas despacio. Se activa con la N o con la consola.
-    bool Cinematic() const { return pilot_.cinematic; }
+    bool Cinematic() const { return pilot_->cinematic; }
     void SetCinematic(bool on);
     // La toma esta en marcha: modo activo e impacto reciente (segundos reales).
     bool CinematicView() const;
-    double StrikeAge() const { return pilot_.strikeAge; }
+    double StrikeAge() const { return pilot_->strikeAge; }
     // Donde va la camara de la toma y hacia donde mira (+Z adelante, -Y arriba). false sin toma.
     bool CinematicShot(eps::Vec3d& eye, eps::Quatd& look) const;
 
     // Taller: se cambian modulos y motor atracado en una estacion propia (ShipModules.h). Montar
     // cuesta metal y silicato de la bodega; lo que se quita devuelve la mitad. why dice por que no.
-    bool CanRefit() const { return Docked() || vessel_.creative; }  // en creativo, en cualquier sitio
+    bool CanRefit() const { return Docked() || vessel_->creative; }  // en creativo, en cualquier sitio
     void Notice(const std::string& text) { Say(text, Audience::Player); }  // una linea en el registro, desde fuera
     bool InstallModule(int slot, ShipModuleKind kind, std::string* why = nullptr);
     bool SetImpulseEngine(int tier, std::string* why = nullptr);
@@ -706,12 +730,12 @@ public:
     void RefitToDesign();
 
     using HullHit = game::HullHit;
-    const std::vector<HullHit>& HullHits() const { return vessel_.hullHits; }
+    const std::vector<HullHit>& HullHits() const { return vessel_->hullHits; }
 
     // La zona roja que acabo con la nave (-1 = ninguna) y si la apago o la hizo estallar.
-    int FailedZone() const { return vessel_.failedZone; }
-    bool ShutDown() const { return vessel_.failedZone >= 0 && ZoneInfo(vessel_.failedZone).red == RedZone::Shutdown; }
-    eps::Vec3d DriftVelocity() const { return vessel_.driftVelocity; }
+    int FailedZone() const { return vessel_->failedZone; }
+    bool ShutDown() const { return vessel_->failedZone >= 0 && ZoneInfo(vessel_->failedZone).red == RedZone::Shutdown; }
+    eps::Vec3d DriftVelocity() const { return vessel_->driftVelocity; }
 
 private:
     // A quien va un mensaje del registro. Hoy todos acaban en el del unico jugador; con varios, Crew
@@ -761,7 +785,7 @@ private:
     void WoundPiece(int zone, const eps::Vec3d& point, double fraction);  // la pieza que recibe el golpe
     void DetachPiece(int piece);
     void LoseModules(int zone, int piece);  // lo montado en esa zona o en esa pieza se pierde
-    void SyncModuleWeapons();               // las torretas de los modulos, en vessel_.ship.weapons
+    void SyncModuleWeapons();               // las torretas de los modulos, en vessel_->ship.weapons
     void WoundZone(int zone, double fraction);  // fraction: parte de la integridad de la zona
     void RecordHit(int zone, const eps::Vec3d& localFrom, double intensity, bool blunt, const eps::Vec3d* point = nullptr);
     void FailRedZone(int zone);
@@ -815,9 +839,9 @@ private:
         eps::Vec3d anchorBefore, anchorOffset;
         eps::Vec3d shift;              // lo que se ha movido el origen del mundo
     };
-    StepClock BeginBubble(double realSeconds, VesselStep& t);
+    void PrepareVessel(double realSeconds, VesselStep& t);
     void StepVessel(const ShipControls& controls, const StepClock& k, VesselStep& t);
-    void AdvanceBubble(const StepClock& k, VesselStep& t, float focalPixels);
+    void AdvanceBubble(double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels);
     bool SettleVessel(const StepClock& k, VesselStep& t);
     void FinishVessel(const StepClock& k, VesselStep& t);
 
@@ -826,8 +850,39 @@ private:
     eps::HumanoidRules body_;
     WorldState world_;
     Bubble bubble_;
-    Vessel vessel_;
-    PlayerState pilot_;
+    // Las naves y sus jugadores (fase 3a: un jugador por nave, en el mismo orden). En deque: sus
+    // direcciones no cambian al anadir. vessel_ y pilot_ son la nave y el jugador EN CURSO: todo el
+    // codigo de la sesion trabaja sobre ellos, y Use() los cambia. Fuera de Step son siempre los del
+    // foco (focus_): la nave que se mira y se maneja desde fuera.
+    std::deque<Vessel> fleet_;
+    std::deque<PlayerState> crews_;
+    Vessel* vessel_ = nullptr;
+    PlayerState* pilot_ = nullptr;
+    int focus_ = 0;
+    int nextVessel_ = 1;  // id de la proxima nave
+    int fleetSystem_ = -1;  // con varias naves, el sistema del que ninguna sale (fase 3a)
+    int IndexOfId(int id) const;  // -1 si no hay nave con ese id
+    eps::Vec3d VelocityOf(const Vessel& v) const;  // en el mundo
+    void LeashToFleet();
+    void RestoreVessel(const ShipSave& v);
+    void Use(int index) {
+        vessel_ = &fleet_[static_cast<std::size_t>(index)];
+        pilot_ = &crews_[static_cast<std::size_t>(index)];
+    }
+    int IndexOf(const Vessel& v) const;
+    // Trabaja sobre otra nave mientras viva, y luego vuelve a la que estaba en curso.
+    struct Using {
+        Using(GameSession& s, int index) : session(s), vessel(s.vessel_), pilot(s.pilot_) { s.Use(index); }
+        ~Using() {
+            session.vessel_ = vessel;
+            session.pilot_ = pilot;
+        }
+        Using(const Using&) = delete;
+        Using& operator=(const Using&) = delete;
+        GameSession& session;
+        Vessel* vessel;
+        PlayerState* pilot;
+    };
     bool saveWanted_ = false, saveLost_ = false;
 
     // Paso fijo: tiempo real aun sin simular y mando acumulado desde el ultimo paso.
