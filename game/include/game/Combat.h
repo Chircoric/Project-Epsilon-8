@@ -47,7 +47,8 @@ struct Projectile {
     DamageType type = DamageType::Kinetic;
     int team = 0;           // 0 jugador, 1 alienigenas hostiles, 2 neutrales
     int owner = 0;          // id de la anomalia que lo lanzo; 0 = el jugador
-    int target = -1;        // guiados: id de la anomalia; 0 = el jugador; -1 = ninguno
+    int target = -1;        // guiados: id de la anomalia; 0 = una nave de jugador (la de ship); -1 = ninguno
+    int ship = 0;           // id de nave (Vessel::id): la que lo disparo si es de un jugador; si no, a la que apunta
     eps::Vec3d position;    // km
     eps::Vec3d velocity;    // km/s
     eps::Vec3d origin;      // desde donde salio: la estela y el haz parten de aqui

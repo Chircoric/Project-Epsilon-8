@@ -224,6 +224,44 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
     // llamando a la sesion directamente son trucos de prueba (saltar, regalo, nivel, aparecer...):
     // en red se ejecutaran en el servidor, con el texto del comando.
     using C = CommandType;
+    // ---- Flota: varias naves en el mismo mundo (docs/multijugador.md, fase 3a) ----
+    commands.Add("nave", "varias naves: nave (lista) | nave nueva [km] | nave ver <id> (pasa a llevarla; tambien F2) | nave <id> <orden...> (cualquier comando, para esa nave)",
+                 [&](const CommandRegistry::Args& args) -> std::string {
+        if (args.empty()) {
+            std::string list = "Naves:";
+            for (int i = 0; i < g.VesselCount(); ++i) {
+                const Vessel& v = g.VesselAt(i);
+                char line[96];
+                std::snprintf(line, sizeof(line), " %d%s (%s, casco %.0f %%)", v.id, i == g.Focus() ? "*" : "", v.phase == GamePhase::Flying ? Name(v.ship.mode) : "perdida", 100.0 * v.ship.hull / g.Rules().ship.hull);
+                list += line;
+            }
+            return list;
+        }
+        if (args[0] == "nueva") {
+            const int id = g.AddVessel(args.size() >= 2 ? std::atof(args[1].c_str()) : 20.0);
+            target = TargetRef{Kind::Ship, g.NearestSystem(), id};
+            return "Nave " + std::to_string(id) + " a tu costado; es el objetivo";
+        }
+        const bool look = args[0] == "ver";
+        if (look && args.size() < 2) return commands.Fail("Uso: nave ver <id>");
+        const int index = g.IndexOfVessel(std::atoi(args[look ? 1 : 0].c_str()));
+        if (index < 0) return commands.Fail("No hay ninguna nave con ese numero");
+        if (look) {
+            g.SetFocus(index);
+            target = {};
+            return "Llevas la nave " + std::to_string(g.VesselId());
+        }
+        if (args.size() < 2) return commands.Fail("Uso: nave <id> <orden...>");
+        // El resto de la linea es un comando cualquiera, que se ejecuta con esa nave como la del foco.
+        std::string line;
+        for (std::size_t i = 1; i < args.size(); ++i) line += (i > 1 ? " " : "") + args[i];
+        // El objetivo es uno solo para toda la consola: "nave 2 objetivo planeta" y luego "nave 2 ir".
+        const int back = g.Focus();
+        g.SetFocus(index);
+        const std::string answer = commands.Execute(line);
+        g.SetFocus(back);
+        return "[nave " + args[0] + "] " + answer;
+    });
     commands.Add("ir", "piloto automatico al objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Autopilot, target)) ? "Rumbo fijado" : commands.Fail("Sin objetivo"); });
     commands.Add("drones", "manda los drones mineros al objetivo (planeta o campo)", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::DeployDrones, target)) ? "Drones fuera" : commands.Fail("No se pudo"); });
     commands.Add("recoger-drones", "los drones mineros vuelven a sus bahias", [&](const CommandRegistry::Args&) -> std::string {
@@ -1283,6 +1321,12 @@ int Run(Options options) {
                         consoleOpen = !consoleOpen;
                         if (consoleOpen) SDL_StartTextInput(window);
                         else SDL_StopTextInput(window);
+                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F2 && !e.key.repeat && session.VesselCount() > 1) {
+                        // Con varias naves, F2 pasa a llevar la siguiente.
+                        session.SetFocus((session.Focus() + 1) % session.VesselCount());
+                        target = {};
+                        contactIndex = -1;
+                        session.Announce("Llevas la nave " + std::to_string(session.VesselId()) + ".");
                     } else if (e.type == SDL_EVENT_KEY_DOWN && consoleOpen) {
                         if (e.key.key == SDLK_ESCAPE) {
                             consoleOpen = false;

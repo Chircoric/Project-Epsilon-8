@@ -77,16 +77,20 @@ double NebulaDensity(const Vec3d& absolute) {
 
 GameSession::GameSession(Engine& engine, const Balance& rules, std::uint32_t seed, GameModeId mode)
     : engine_(engine), rules_(rules), world_(rules, seed, mode), bubble_(seed) {
-    vessel_.ship = MakeShip(rules);
+    fleet_.emplace_back();
+    crews_.emplace_back();
+    Use(0);
+    vessel_->id = nextVessel_++;
+    vessel_->ship = MakeShip(rules);
     World& w = engine_.GetWorld();
     world_.anomalies = GenerateAnomalies(w.extents, rules_.anomalies, seed);
     ResizeSpecies(world_.species, w.extents.size());
     w.scene.UpdateWorld(engine_.Jobs());
-    pilot_.known.assign(w.state.size(), 0);
-    pilot_.known[0] = 1;
-    pilot_.visited = pilot_.known;
+    pilot_->known.assign(w.state.size(), 0);
+    pilot_->known[0] = 1;
+    pilot_->visited = pilot_->known;
     PlaceAtStart();
-    pilot_.dialogue.Start(MakeTutorial());
+    pilot_->dialogue.Start(MakeTutorial());
 }
 
 void GameSession::PlaceAtStart() { PlaceInSystem(0); }
@@ -96,42 +100,42 @@ void GameSession::PlaceInSystem(int system) {
     const World& w = engine_.GetWorld();
     const std::size_t i = static_cast<std::size_t>(system);
     const Vec3d center = w.scene.WorldPosition(w.sectors[i]);
-    vessel_.ship.position = center + Vec3d{w.extents[i] * 0.25, 0.0, -w.extents[i] * 0.15};
-    const Vec3d toStar = Normalize(center - vessel_.ship.position);
-    FaceTo(vessel_.ship, toStar);
-    vessel_.ship.moveDirection = toStar;
-    vessel_.ship.warpHeading = toStar;
+    vessel_->ship.position = center + Vec3d{w.extents[i] * 0.25, 0.0, -w.extents[i] * 0.15};
+    const Vec3d toStar = Normalize(center - vessel_->ship.position);
+    FaceTo(vessel_->ship, toStar);
+    vessel_->ship.moveDirection = toStar;
+    vessel_->ship.warpHeading = toStar;
 }
 
 void GameSession::Say(const std::string& text, Audience) {
-    pilot_.log.push_back(text);
-    while (pilot_.log.size() > kMaxLog) pilot_.log.pop_front();
+    pilot_->log.push_back(text);
+    while (pilot_->log.size() > kMaxLog) pilot_->log.pop_front();
 }
 
 double GameSession::Visibility() const {
     const World& w = engine_.GetWorld();
-    return rules_.world.fogDistance / NebulaDensity(vessel_.ship.position + w.origin);
+    return rules_.world.fogDistance / NebulaDensity(vessel_->ship.position + w.origin);
 }
 
 // Grandes zonas de un color a otro. Cambia despacio: hay que viajar para notarlo.
 float GameSession::NebulaTone() const {
-    const Vec3d p = (vessel_.ship.position + engine_.GetWorld().origin) * (1.0 / 1.0e11);
+    const Vec3d p = (vessel_->ship.position + engine_.GetWorld().origin) * (1.0 / 1.0e11);
     return static_cast<float>(std::clamp(0.5 + 0.36 * std::sin(p.x * 1.1 + 0.4) * std::cos(p.z * 0.8 - 0.6) + 0.14 * std::sin(p.y * 1.4 + p.z * 0.5), 0.0, 1.0));
 }
 
-bool GameSession::KnownSystem(int system) const { return system >= 0 && static_cast<std::size_t>(system) < pilot_.known.size() && pilot_.known[static_cast<std::size_t>(system)]; }
+bool GameSession::KnownSystem(int system) const { return system >= 0 && static_cast<std::size_t>(system) < pilot_->known.size() && pilot_->known[static_cast<std::size_t>(system)]; }
 
 int GameSession::KnownSystems() const {
     int count = 0;
-    for (const char k : pilot_.known) count += k ? 1 : 0;
+    for (const char k : pilot_->known) count += k ? 1 : 0;
     return count;
 }
 
-bool GameSession::Visited(int system) const { return system >= 0 && static_cast<std::size_t>(system) < pilot_.visited.size() && pilot_.visited[static_cast<std::size_t>(system)]; }
+bool GameSession::Visited(int system) const { return system >= 0 && static_cast<std::size_t>(system) < pilot_->visited.size() && pilot_->visited[static_cast<std::size_t>(system)]; }
 
 int GameSession::VisitedSystems() const {
     int count = 0;
-    for (const char v : pilot_.visited) count += v ? 1 : 0;
+    for (const char v : pilot_->visited) count += v ? 1 : 0;
     return count;
 }
 
@@ -205,37 +209,37 @@ std::vector<AtlasRow> GameSession::AtlasRows(int system) const {
 }
 
 bool GameSession::SetDrive(DriveMode mode) {
-    if (!DriveAvailable(vessel_.ship, mode, rules_.drive)) {
+    if (!DriveAvailable(vessel_->ship, mode, rules_.drive)) {
         Say(mode == DriveMode::Warp ? "Sin energía negativa: el emisor está en una estructura abandonada."
                                     : "El hiper pide otro emisor de energía negativa, de otra estructura.");
         return false;
     }
-    if (Curves(mode) && !CanCurve(vessel_.ship, mode, rules_.drive)) {
-        Say("Antimateria insuficiente: formar la burbuja pide " + MassText(FormationCost(vessel_.ship, mode, rules_.drive)) + ".");
+    if (Curves(mode) && !CanCurve(vessel_->ship, mode, rules_.drive)) {
+        Say("Antimateria insuficiente: formar la burbuja pide " + MassText(FormationCost(vessel_->ship, mode, rules_.drive)) + ".");
         return false;
     }
-    vessel_.ship.mode = mode;
+    vessel_->ship.mode = mode;
     return true;
 }
 
-void GameSession::SetThrottle(double value) { vessel_.ship.throttle = std::clamp(value, -1.0, 1.0); }
+void GameSession::SetThrottle(double value) { vessel_->ship.throttle = std::clamp(value, -1.0, 1.0); }
 
 bool GameSession::SetAutopilot(const TargetRef& target) {
     if (!Resolve(target)) {
         Say("Sin datos de ese objetivo: acérquese más.");
         return false;
     }
-    if (vessel_.orbiting && *vessel_.orbiting == target) return true;  // ya esta alli
-    vessel_.autopilot = target;
-    vessel_.orbiting.reset();
-    vessel_.dockPhase = DockPhase::None;
-    vessel_.exploring = -1;
-    vessel_.fuelWarned = false;
+    if (vessel_->orbiting && *vessel_->orbiting == target) return true;  // ya esta alli
+    vessel_->autopilot = target;
+    vessel_->orbiting.reset();
+    vessel_->dockPhase = DockPhase::None;
+    vessel_->exploring = -1;
+    vessel_->fuelWarned = false;
     CancelScan();
     return true;
 }
 
-void GameSession::CancelAutopilot() { vessel_.autopilot.reset(); }
+void GameSession::CancelAutopilot() { vessel_->autopilot.reset(); }
 
 std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
     const World& w = engine_.GetWorld();
@@ -276,7 +280,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             if (!belt) return std::nullopt;
             // El cumulo mas cercano: es donde se puede trabajar.
             Vec3d near;
-            if (!AsteroidLayer::NearestFamily(w, vessel_.ship.position, bubble_.simTime, near, slot)) return std::nullopt;
+            if (!AsteroidLayer::NearestFamily(w, vessel_->ship.position, bubble_.simTime, near, slot)) return std::nullopt;
             info.position = near;
             info.radius = 220.0;
             info.arrival = 2000.0;
@@ -322,13 +326,28 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
             }
             return std::nullopt;
         }
+        case Kind::Ship: {
+            // Otra nave de la flota, mientras vuele. La propia no es un objetivo.
+            for (std::size_t i = 0; i < fleet_.size(); ++i) {
+                const Vessel& v = fleet_[i];
+                if (v.id != t.index || &v == vessel_ || v.phase != GamePhase::Flying) continue;
+                info.position = v.ship.position;
+                info.velocity = VelocityOf(v);
+                info.radius = rules_.ship.radius;
+                info.arrival = rules_.ship.radius * 3.0 + 2.0;
+                info.name = "Nave " + std::to_string(v.id) + " (" + crews_[i].name + ")";
+                info.detail = "Aliada, casco " + Fixed(100.0 * v.ship.hull / rules_.ship.hull, 0) + " %";
+                return info;
+            }
+            return std::nullopt;
+        }
         default: return std::nullopt;
     }
 }
 
 bool GameSession::InRange(const TargetRef& target, double range) const {
     const std::optional<TargetInfo> info = Resolve(target);
-    return info && Length(info->position - vessel_.ship.position) <= range + info->arrival;
+    return info && Length(info->position - vessel_->ship.position) <= range + info->arrival;
 }
 
 Vec3d GameSession::AnomalyPosition(const Anomaly& a) const {
@@ -465,12 +484,12 @@ Vec3d GameSession::DockGoal(const Station& s) const {
 GameSession::DockTube GameSession::Tube() const {
     DockTube t;
     const Station* s = DockedStation();
-    if (!s || vessel_.dockPhase != DockPhase::Docked || !StationVisible(*s)) return t;
+    if (!s || vessel_->dockPhase != DockPhase::Docked || !StationVisible(*s)) return t;
     const DockPort port = Port(*s);
     t.active = true;
     t.stationEnd = port.position;
-    t.shipEnd = vessel_.ship.position + vessel_.ship.orientation.ToMatrix().TransformDirection(CurrentShipDesign().dockPort * 0.001);
-    t.extension = std::clamp(vessel_.dockedAge / kDockTubeSeconds, 0.0, 1.0);
+    t.shipEnd = vessel_->ship.position + vessel_->ship.orientation.ToMatrix().TransformDirection(CurrentShipDesign().dockPort * 0.001);
+    t.extension = std::clamp(vessel_->dockedAge / kDockTubeSeconds, 0.0, 1.0);
     return t;
 }
 
@@ -487,7 +506,7 @@ bool GameSession::DeployPower(const TargetRef& target) {
     }
     const StarData& star = w.systems[static_cast<std::size_t>(target.system)]->StarAt(target.index);
     const StarYield yield = YieldOf(star);
-    if (vessel_.ship.heatShieldTier < yield.requiredTier) {
+    if (vessel_->ship.heatShieldTier < yield.requiredTier) {
         Say("Blindaje insuficiente: esta órbita pide nivel " + std::to_string(yield.requiredTier) + ".");
         return false;
     }
@@ -501,12 +520,12 @@ bool GameSession::DeployPower(const TargetRef& target) {
     site.star = target.index;
     const bool free = world_.stations.NextIsFree(StationKind::Power);
     std::string error;
-    const int id = world_.stations.Deploy(StationKind::Power, site, "Central " + std::to_string(world_.stations.All().size() + 1) + " en " + info->name, yield, vessel_.ship.cargo, &error);
+    const int id = world_.stations.Deploy(StationKind::Power, site, "Central " + std::to_string(world_.stations.All().size() + 1) + " en " + info->name, yield, vessel_->ship.cargo, &error);
     if (id < 0) {
         Say(error);
         return false;
     }
-    const Vec3d fromStar = vessel_.ship.position - info->position;
+    const Vec3d fromStar = vessel_->ship.position - info->position;
     world_.stations.Find(id)->angle = std::atan2(fromStar.z, fromStar.x);
     Say(std::string(free ? "Central desplegada sin coste: " : "Central desplegada: ") + PowerText(yield.energyPerHour) + " para " + MassRateText(world_.stations.AntimatterFrom(yield.energyPerHour)) + " de antimateria.");
     SaveCheckpoint("Partida guardada");
@@ -540,14 +559,14 @@ bool GameSession::CanDeployShipyard(std::string* why) const {
         return false;
     };
     const World& w = engine_.GetWorld();
-    if (!vessel_.ship.stationAboard) return fail("La estación origami ya está desplegada.");
-    if (vessel_.phase != GamePhase::Flying || pilot_.onFoot) return fail("Ahora no se puede soltar la estación.");
-    if (vessel_.dockPhase != DockPhase::None) return fail("Suelte antes la nave de la estación.");
+    if (!vessel_->ship.stationAboard) return fail("La estación origami ya está desplegada.");
+    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return fail("Ahora no se puede soltar la estación.");
+    if (vessel_->dockPhase != DockPhase::None) return fail("Suelte antes la nave de la estación.");
     // La estacion no orbita: se queda quieta junto al planeta, como la nave cuando frena con Espacio.
-    if (vessel_.orbiting) return fail("Salga de la órbita y quede quieta (Espacio) para soltar la estación.");
-    if (vessel_.ship.mode != DriveMode::Impulse) return fail("La estación solo se suelta con el impulso.");
-    if (vessel_.ship.speed > rules_.stations.shipyardDeploySpeed) return fail("Demasiado rápido: frene antes de soltar la estación.");
-    if (vessel_.nearestSystem < 0 || static_cast<std::size_t>(vessel_.nearestSystem) >= w.state.size() || !w.state[static_cast<std::size_t>(vessel_.nearestSystem)].loaded)
+    if (vessel_->orbiting) return fail("Salga de la órbita y quede quieta (Espacio) para soltar la estación.");
+    if (vessel_->ship.mode != DriveMode::Impulse) return fail("La estación solo se suelta con el impulso.");
+    if (vessel_->ship.speed > rules_.stations.shipyardDeploySpeed) return fail("Demasiado rápido: frene antes de soltar la estación.");
+    if (vessel_->nearestSystem < 0 || static_cast<std::size_t>(vessel_->nearestSystem) >= w.state.size() || !w.state[static_cast<std::size_t>(vessel_->nearestSystem)].loaded)
         return fail("La estación se despliega dentro de un sistema solar.");
     return true;
 }
@@ -559,32 +578,32 @@ bool GameSession::DeployShipyard() {
         return false;
     }
     const World& w = engine_.GetWorld();
-    const Mat4d turn = vessel_.ship.orientation.ToMatrix();
-    const Vec3d stowed = vessel_.ship.position + turn.TransformDirection(Vec3d{0, 0, -kShipyardMountAft});
+    const Mat4d turn = vessel_->ship.orientation.ToMatrix();
+    const Vec3d stowed = vessel_->ship.position + turn.TransformDirection(Vec3d{0, 0, -kShipyardMountAft});
     const Vec3d aft = turn.TransformDirection(Vec3d{0, 0, -1});
     StationSite site;
-    site.system = vessel_.nearestSystem;
+    site.system = vessel_->nearestSystem;
     // Junto a un planeta se queda con el; si no, quieta en el sistema.
-    Vec3d base = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_.nearestSystem)]);
-    if (vessel_.frame.body >= 0) {
-        const Body& body = w.bodies[static_cast<std::size_t>(vessel_.frame.body)];
-        if (!body.isStar && body.extra < 0 && body.data >= 0 && body.system == vessel_.nearestSystem) {
+    Vec3d base = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_->nearestSystem)]);
+    if (vessel_->frame.body >= 0) {
+        const Body& body = w.bodies[static_cast<std::size_t>(vessel_->frame.body)];
+        if (!body.isStar && body.extra < 0 && body.data >= 0 && body.system == vessel_->nearestSystem) {
             site.body = body.data;
             base = w.scene.WorldPosition(body.node);
         }
     }
     site.offset = stowed + aft * rules_.stations.shipyardSlide - base;
     std::string error;
-    const int id = world_.stations.Deploy(StationKind::Shipyard, site, "Estación Origami en " + SystemName(vessel_.nearestSystem), {}, vessel_.ship.cargo, &error);
+    const int id = world_.stations.Deploy(StationKind::Shipyard, site, "Estación Origami en " + SystemName(vessel_->nearestSystem), {}, vessel_->ship.cargo, &error);
     if (id < 0) {
         Say(error);
         return false;
     }
     Station* s = world_.stations.Find(id);
     s->launch = stowed - base;
-    s->attitude = (vessel_.ship.orientation * kShipyardMount).Normalized();
-    vessel_.ship.stationAboard = false;
-    vessel_.undockGrace = id;  // se abre alrededor de la nave: no choca hasta que se aparte
+    s->attitude = (vessel_->ship.orientation * kShipyardMount).Normalized();
+    vessel_->ship.stationAboard = false;
+    vessel_->undockGrace = id;  // se abre alrededor de la nave: no choca hasta que se aparte
     Say("Estación origami soltada: se abre alrededor de las bodegas y se aparta a popa.");
     SaveCheckpoint("Partida guardada");
     return true;
@@ -594,30 +613,30 @@ bool GameSession::DeployShipyard() {
 
 int GameSession::DronesOut() const {
     int out = 0;
-    for (const MiningDrone& d : vessel_.drones) out += d.state != DroneState::Docked ? 1 : 0;
+    for (const MiningDrone& d : vessel_->drones) out += d.state != DroneState::Docked ? 1 : 0;
     return out;
 }
 
 Vec3d GameSession::DroneBayPosition(int slot) const {
     const ShipDesign& design = CurrentShipDesign();
-    if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return vessel_.ship.position;
+    if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return vessel_->ship.position;
     const ModuleSlot& s = design.slots[static_cast<std::size_t>(slot)];
-    return vessel_.ship.position + vessel_.ship.orientation.ToMatrix().TransformDirection((s.position + s.normal * 26.0) * 0.001);
+    return vessel_->ship.position + vessel_->ship.orientation.ToMatrix().TransformDirection((s.position + s.normal * 26.0) * 0.001);
 }
 
 Vec3d GameSession::DroneBayNormal(int slot) const {
     const ShipDesign& design = CurrentShipDesign();
-    if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return Heading(vessel_.ship);
-    return vessel_.ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(slot)].normal);
+    if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return Heading(vessel_->ship);
+    return vessel_->ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(slot)].normal);
 }
 
 std::optional<Vec3d> GameSession::DroneWorkPoint() const {
-    if (!vessel_.droneSite) return std::nullopt;
-    const std::optional<TargetInfo> info = Resolve(*vessel_.droneSite);
+    if (!vessel_->droneSite) return std::nullopt;
+    const std::optional<TargetInfo> info = Resolve(*vessel_->droneSite);
     if (!info) return std::nullopt;
-    if (vessel_.droneSite->kind != Kind::Planet) return info->position;
+    if (vessel_->droneSite->kind != Kind::Planet) return info->position;
     // En la superficie, del lado por el que llega la nave.
-    const Vec3d toShip = vessel_.ship.position - info->position;
+    const Vec3d toShip = vessel_->ship.position - info->position;
     const Vec3d up = Length(toShip) > 1e-9 ? Normalize(toShip) : Vec3d{0, -1, 0};
     return info->position + up * info->radius;
 }
@@ -625,25 +644,25 @@ std::optional<Vec3d> GameSession::DroneWorkPoint() const {
 void GameSession::SyncDrones() {
     const ShipDesign& design = CurrentShipDesign();
     std::vector<MiningDrone> kept;
-    for (std::size_t i = 0; i < vessel_.ship.loadout.modules.size() && i < design.slots.size(); ++i) {
-        if (vessel_.ship.loadout.modules[i] != ShipModuleKind::DroneBay || !SlotWorking(vessel_.ship, static_cast<int>(i))) continue;
+    for (std::size_t i = 0; i < vessel_->ship.loadout.modules.size() && i < design.slots.size(); ++i) {
+        if (vessel_->ship.loadout.modules[i] != ShipModuleKind::DroneBay || !SlotWorking(vessel_->ship, static_cast<int>(i))) continue;
         for (int k = 0; k < rules_.drones.perBay; ++k) {
             MiningDrone drone;
             drone.slot = static_cast<int>(i);
             drone.index = k;
-            for (const MiningDrone& d : vessel_.drones)
+            for (const MiningDrone& d : vessel_->drones)
                 if (d.slot == drone.slot && d.index == k) drone = d;
             kept.push_back(drone);
         }
     }
     int lost = 0;
-    for (const MiningDrone& d : vessel_.drones) {
+    for (const MiningDrone& d : vessel_->drones) {
         bool found = false;
         for (const MiningDrone& k : kept) found = found || (k.slot == d.slot && k.index == d.index);
         if (!found && d.state != DroneState::Docked) ++lost;
     }
     if (lost > 0) Say(lost == 1 ? "Un dron minero se ha quedado sin bahía: perdido." : std::to_string(lost) + " drones mineros se han quedado sin bahía: perdidos.");
-    vessel_.drones = std::move(kept);
+    vessel_->drones = std::move(kept);
 }
 
 bool GameSession::DeployDrones(const TargetRef& target) {
@@ -658,16 +677,16 @@ bool GameSession::DeployDrones(const TargetRef& target) {
         return false;
     }
     SyncDrones();
-    if (vessel_.drones.empty()) {
+    if (vessel_->drones.empty()) {
         Say("No hay bahías de drones que funcionen.");
         return false;
     }
-    if (vessel_.ship.mode != DriveMode::Impulse) {
+    if (vessel_->ship.mode != DriveMode::Impulse) {
         Say("Los drones solo salen con el impulso.");
         return false;
     }
     if (!InRange(target, rules_.drones.range)) {
-        Say("Demasiado lejos para los drones: está a " + Fixed(Length(info->position - vessel_.ship.position), 0) + " km y hace falta menos de " + Fixed(rules_.drones.range + info->arrival, 0) + " km.");
+        Say("Demasiado lejos para los drones: está a " + Fixed(Length(info->position - vessel_->ship.position), 0) + " km y hace falta menos de " + Fixed(rules_.drones.range + info->arrival, 0) + " km.");
         return false;
     }
     Deposit deposit;
@@ -683,18 +702,18 @@ bool GameSession::DeployDrones(const TargetRef& target) {
         if (!belt) return false;
         deposit = DepositOf(belt->profile);
     }
-    vessel_.droneSite = target;
-    vessel_.droneDeposit = deposit;
-    vessel_.dronesFullWarned = false;
-    vessel_.droneYield = 0.0;
-    if (vessel_.extractZ > 0) {
+    vessel_->droneSite = target;
+    vessel_->droneDeposit = deposit;
+    vessel_->dronesFullWarned = false;
+    vessel_->droneYield = 0.0;
+    if (vessel_->extractZ > 0) {
         const std::optional<astro::PeriodicShares> shares = ElementSharesOf(target);
-        const double fraction = shares ? (*shares)[static_cast<std::size_t>(vessel_.extractZ - 1)] : 0.0;
+        const double fraction = shares ? (*shares)[static_cast<std::size_t>(vessel_->extractZ - 1)] : 0.0;
         if (fraction > 0.0) {
-            vessel_.droneYield = fraction * rules_.drones.recovery;
-            Say("Extracción selectiva: " + std::string(astro::Periodic(vessel_.extractZ).name) + ".");
+            vessel_->droneYield = fraction * rules_.drones.recovery;
+            Say("Extracción selectiva: " + std::string(astro::Periodic(vessel_->extractZ).name) + ".");
         } else {
-            Say(std::string(astro::Periodic(vessel_.extractZ).name) + " no hay aquí: los drones mineran a granel.");
+            Say(std::string(astro::Periodic(vessel_->extractZ).name) + " no hay aquí: los drones mineran a granel.");
         }
     }
     Say("Drones mineros hacia " + info->name + ": minan, vuelven y descargan hasta que se les recoja.");
@@ -702,12 +721,12 @@ bool GameSession::DeployDrones(const TargetRef& target) {
 }
 
 void GameSession::SetExtractElement(int z) {
-    vessel_.extractZ = ElementStock::Valid(z) ? z : 0;
+    vessel_->extractZ = ElementStock::Valid(z) ? z : 0;
     // Con drones ya trabajando, el cambio vale desde su siguiente carga.
-    vessel_.droneYield = 0.0;
-    if (vessel_.extractZ > 0 && vessel_.droneSite) {
-        const std::optional<astro::PeriodicShares> shares = ElementSharesOf(*vessel_.droneSite);
-        if (shares) vessel_.droneYield = (*shares)[static_cast<std::size_t>(vessel_.extractZ - 1)] * rules_.drones.recovery;
+    vessel_->droneYield = 0.0;
+    if (vessel_->extractZ > 0 && vessel_->droneSite) {
+        const std::optional<astro::PeriodicShares> shares = ElementSharesOf(*vessel_->droneSite);
+        if (shares) vessel_->droneYield = (*shares)[static_cast<std::size_t>(vessel_->extractZ - 1)] * rules_.drones.recovery;
     }
 }
 
@@ -748,54 +767,54 @@ double GameSession::ElementYieldRate(const TargetRef& t, int z) const {
 
 void GameSession::RecallDrones() {
     const bool out = DronesOut() > 0;
-    vessel_.droneSite.reset();
-    for (MiningDrone& d : vessel_.drones)
+    vessel_->droneSite.reset();
+    for (MiningDrone& d : vessel_->drones)
         if (d.state != DroneState::Docked) d.state = DroneState::Returning;
     if (out) Say("Drones mineros: vuelven a sus bahías.");
 }
 
 void GameSession::UpdateDrones(double seconds, double hours) {
     SyncDrones();
-    if (vessel_.drones.empty()) {
-        vessel_.droneSite.reset();
+    if (vessel_->drones.empty()) {
+        vessel_->droneSite.reset();
         return;
     }
     const DroneRules& r = rules_.drones;
     const auto unload = [&](MiningDrone& d) {
         if (d.element > 0) {  // extraccion selectiva: va al inventario de elementos (kg) y no ocupa bodega
-            vessel_.ship.elements.Add(d.element, d.load * d.yield * 1.0e6);
+            vessel_->ship.elements.Add(d.element, d.load * d.yield * 1.0e6);
             d.load = 0.0;
             return;
         }
-        const double room = std::max(CargoCapacity(vessel_.ship, rules_.ship) - vessel_.ship.cargo.Total(), 0.0);
+        const double room = std::max(CargoCapacity(vessel_->ship, rules_.ship) - vessel_->ship.cargo.Total(), 0.0);
         const double amount = std::min(d.load, room);
-        for (std::size_t k = 0; k < vessel_.droneDeposit.share.size(); ++k) vessel_.ship.cargo.Add(static_cast<Resource>(k), amount * vessel_.droneDeposit.share[k]);
+        for (std::size_t k = 0; k < vessel_->droneDeposit.share.size(); ++k) vessel_->ship.cargo.Add(static_cast<Resource>(k), amount * vessel_->droneDeposit.share[k]);
         d.load -= amount;
-        if (d.load > 1e-9 && !vessel_.dronesFullWarned) {
+        if (d.load > 1e-9 && !vessel_->dronesFullWarned) {
             Say("Bodega llena: los drones esperan en sus bahías con el mineral.");
-            vessel_.dronesFullWarned = true;
+            vessel_->dronesFullWarned = true;
         } else if (d.load <= 1e-9) {
             d.load = 0.0;
         }
     };
     // Con otro motor que el impulso se repliegan de golpe: no pueden seguir a la nave.
-    if (vessel_.ship.mode != DriveMode::Impulse && DronesOut() > 0) {
-        for (MiningDrone& d : vessel_.drones) {
+    if (vessel_->ship.mode != DriveMode::Impulse && DronesOut() > 0) {
+        for (MiningDrone& d : vessel_->drones) {
             d.state = DroneState::Docked;
             unload(d);
         }
-        vessel_.droneSite.reset();
+        vessel_->droneSite.reset();
         Say("Los drones se repliegan a sus bahías antes de acelerar.");
     }
     std::optional<Vec3d> work = DroneWorkPoint();
-    if (vessel_.droneSite && (!work || Length(*work - vessel_.ship.position) > r.leash)) {
-        vessel_.droneSite.reset();
+    if (vessel_->droneSite && (!work || Length(*work - vessel_->ship.position) > r.leash)) {
+        vessel_->droneSite.reset();
         work.reset();
-        for (MiningDrone& d : vessel_.drones)
+        for (MiningDrone& d : vessel_->drones)
             if (d.state != DroneState::Docked) d.state = DroneState::Returning;
         Say("Drones mineros: el sitio queda fuera de alcance; vuelven a la nave.");
     }
-    const double room = CargoCapacity(vessel_.ship, rules_.ship) - vessel_.ship.cargo.Total();
+    const double room = CargoCapacity(vessel_->ship, rules_.ship) - vessel_->ship.cargo.Total();
     const auto fly = [&](MiningDrone& d, const Vec3d& goal, double speed) {
         const Vec3d gap = goal - d.position;
         const double distance = Length(gap);
@@ -808,14 +827,14 @@ void GameSession::UpdateDrones(double seconds, double hours) {
         d.position += d.heading * step;
         return false;
     };
-    for (MiningDrone& d : vessel_.drones) {
+    for (MiningDrone& d : vessel_->drones) {
         // Cada uno trabaja en su sitio, a unos km de los demas.
         const double a = static_cast<double>(d.slot * 2 + d.index) * 2.399963;
         const Vec3d spot = Vec3d{std::cos(a), 0.25 * std::sin(a * 1.7), std::sin(a)} * 2.5;
         switch (d.state) {
             case DroneState::Docked:
                 if (d.load > 0.0) unload(d);
-                if (vessel_.droneSite && work && d.load <= 0.0 && (room > 0.0 || vessel_.droneYield > 0.0)) {
+                if (vessel_->droneSite && work && d.load <= 0.0 && (room > 0.0 || vessel_->droneYield > 0.0)) {
                     d.state = DroneState::Outbound;
                     d.position = DroneBayPosition(d.slot);
                     d.heading = DroneBayNormal(d.slot);
@@ -832,10 +851,10 @@ void GameSession::UpdateDrones(double seconds, double hours) {
                 }
                 d.position = *work + spot;
                 if (d.load <= 0.0) {  // cada carga es de un solo tipo: lo elegido al empezarla
-                    d.element = vessel_.droneYield > 0.0 ? vessel_.extractZ : 0;
-                    d.yield = vessel_.droneYield;
+                    d.element = vessel_->droneYield > 0.0 ? vessel_->extractZ : 0;
+                    d.yield = vessel_->droneYield;
                 }
-                d.load +=r.rate * vessel_.droneDeposit.richness * hours;
+                d.load +=r.rate * vessel_->droneDeposit.richness * hours;
                 if (d.load >= r.hold) {
                     d.load = r.hold;
                     d.state = DroneState::Returning;
@@ -843,7 +862,7 @@ void GameSession::UpdateDrones(double seconds, double hours) {
                 break;
             case DroneState::Returning:
                 // Si la nave se mueve, la alcanzan: van algo mas rapido que ella.
-                if (fly(d, DroneBayPosition(d.slot), std::max(r.speed, vessel_.ship.speed * 1.5))) {
+                if (fly(d, DroneBayPosition(d.slot), std::max(r.speed, vessel_->ship.speed * 1.5))) {
                     d.state = DroneState::Docked;
                     unload(d);
                 }
@@ -863,28 +882,28 @@ bool GameSession::Interact(const TargetRef& target) {
                 Say("Hay que estar junto a la estación para entregarle material.");
                 return false;
             }
-            const double metal = vessel_.ship.cargo.Get(Resource::Metal);
-            const double silicate = std::max(vessel_.ship.cargo.Get(Resource::Silicate) - rules_.ship.startSilicate, 0.0);
+            const double metal = vessel_->ship.cargo.Get(Resource::Metal);
+            const double silicate = std::max(vessel_->ship.cargo.Get(Resource::Silicate) - rules_.ship.startSilicate, 0.0);
             if (metal + silicate <= 0.0) {
                 Say("No hay metal ni silicato en la bodega para entregar.");
                 return false;
             }
-            vessel_.ship.cargo.Add(Resource::Metal, -metal);
-            vessel_.ship.cargo.Add(Resource::Silicate, -silicate);
+            vessel_->ship.cargo.Add(Resource::Metal, -metal);
+            vessel_->ship.cargo.Add(Resource::Silicate, -silicate);
             s->stored.Add(Resource::Metal, metal);
             s->stored.Add(Resource::Silicate, silicate);
             Say("Entregado a " + s->name + ": " + MassText(metal) + " de metal y " + MassText(silicate) + " de silicato. Tiene " + MassText(s->stored.Total()) + " para construir.");
             SaveCheckpoint("Partida guardada");
             return true;
         }
-        if (!s || (vessel_.ship.relayTier <= 0 && !InRange(target, rules_.ship.interactRange))) {
+        if (!s || (vessel_->ship.relayTier <= 0 && !InRange(target, rules_.ship.interactRange))) {
             Say("Hay que estar junto a la estación para recoger.");
             return false;
         }
-        const double antimatterBefore = vessel_.ship.antimatter, cargoBefore = vessel_.ship.cargo.Total();
-        world_.stations.Collect(target.index, vessel_.ship.cargo, CargoCapacity(vessel_.ship, rules_.ship), vessel_.ship.antimatter, AntimatterCapacity(vessel_.ship, rules_.ship));
-        ++pilot_.collected;
-        Say("Recogido: " + MassText(vessel_.ship.cargo.Total() - cargoBefore) + " de carga y " + MassText(vessel_.ship.antimatter - antimatterBefore) + " de antimateria.");
+        const double antimatterBefore = vessel_->ship.antimatter, cargoBefore = vessel_->ship.cargo.Total();
+        world_.stations.Collect(target.index, vessel_->ship.cargo, CargoCapacity(vessel_->ship, rules_.ship), vessel_->ship.antimatter, AntimatterCapacity(vessel_->ship, rules_.ship));
+        ++pilot_->collected;
+        Say("Recogido: " + MassText(vessel_->ship.cargo.Total() - cargoBefore) + " de carga y " + MassText(vessel_->ship.antimatter - antimatterBefore) + " de antimateria.");
         SaveCheckpoint("Partida guardada");
         return true;
     }
@@ -903,7 +922,7 @@ bool GameSession::Interact(const TargetRef& target) {
                 Say("Ya no queda nada dentro.");
                 return false;
             }
-            vessel_.exploring = a.id;
+            vessel_->exploring = a.id;
             Say("Explorando " + a.name + ".");
             return true;
         }
@@ -914,7 +933,7 @@ bool GameSession::Interact(const TargetRef& target) {
 
 bool GameSession::UpgradeStation(int id, ModuleKind module) {
     std::string error;
-    if (!world_.stations.AddOrUpgradeModule(id, module, vessel_.ship.cargo, &error)) {
+    if (!world_.stations.AddOrUpgradeModule(id, module, vessel_->ship.cargo, &error)) {
         Say(error);
         return false;
     }
@@ -924,7 +943,7 @@ bool GameSession::UpgradeStation(int id, ModuleKind module) {
 
 double GameSession::ScanRange() const {
     // Cada antena de sensores montada suma alcance.
-    return rules_.scanner.range * (1.0 + rules_.scanner.rangePerTier * (vessel_.ship.scannerTier - 1)) * (1.0 + kSensorBoost * WorkingModules(vessel_.ship, ShipModuleKind::SensorArray));
+    return rules_.scanner.range * (1.0 + rules_.scanner.rangePerTier * (vessel_->ship.scannerTier - 1)) * (1.0 + kSensorBoost * WorkingModules(vessel_->ship, ShipModuleKind::SensorArray));
 }
 
 bool GameSession::StartScan() {
@@ -933,57 +952,57 @@ bool GameSession::StartScan() {
         Say("El barrido exige la nave quieta: pulse Espacio o entre en órbita.");
         return false;
     }
-    if (vessel_.ship.energy < rules_.scanner.energy) {
+    if (vessel_->ship.energy < rules_.scanner.energy) {
         Say("Energía insuficiente para el barrido.");
         return false;
     }
-    vessel_.ship.energy -= rules_.scanner.energy;
-    vessel_.scanProgress = 0.0;
+    vessel_->ship.energy -= rules_.scanner.energy;
+    vessel_->scanProgress = 0.0;
     Say("Barrido de microondas y ultravioleta en curso.");
     return true;
 }
 
-void GameSession::CancelScan() { vessel_.scanProgress = -1.0; }
+void GameSession::CancelScan() { vessel_->scanProgress = -1.0; }
 
 // En una orbita asistida la nave no enciende nada: para el escaner, es tan estable como estar quieta.
-bool GameSession::CanScan() const { return !vessel_.autopilot && vessel_.ship.throttle == 0.0 && (vessel_.orbiting || vessel_.ship.speed <= 1.0); }
+bool GameSession::CanScan() const { return !vessel_->autopilot && vessel_->ship.throttle == 0.0 && (vessel_->orbiting || vessel_->ship.speed <= 1.0); }
 
 bool GameSession::Scanned(const TargetRef& t) const {
     if (t.kind != Kind::Star && t.kind != Kind::Planet && t.kind != Kind::Belt) return true;
-    return pilot_.scanned.count(ScanKey(t)) != 0;
+    return pilot_->scanned.count(ScanKey(t)) != 0;
 }
 
 void GameSession::MarkScanned(int system) {
     const StarSystemData& data = *engine_.GetWorld().systems[static_cast<std::size_t>(system)];
-    for (int m = 0; m < data.StarCount(); ++m) pilot_.scanned.insert(ScanKey({Kind::Star, system, m}));
-    for (std::size_t b = 0; b < data.bodies.size(); ++b) pilot_.scanned.insert(ScanKey({Kind::Planet, system, static_cast<int>(b)}));
-    for (std::size_t b = 0; b < data.belts.size(); ++b) pilot_.scanned.insert(ScanKey({Kind::Belt, system, static_cast<int>(b)}));
+    for (int m = 0; m < data.StarCount(); ++m) pilot_->scanned.insert(ScanKey({Kind::Star, system, m}));
+    for (std::size_t b = 0; b < data.bodies.size(); ++b) pilot_->scanned.insert(ScanKey({Kind::Planet, system, static_cast<int>(b)}));
+    for (std::size_t b = 0; b < data.belts.size(); ++b) pilot_->scanned.insert(ScanKey({Kind::Belt, system, static_cast<int>(b)}));
 }
 
 void GameSession::MarkKnown(int system) {
-    if (system < 0 || static_cast<std::size_t>(system) >= pilot_.known.size()) return;
-    pilot_.known[static_cast<std::size_t>(system)] = 1;
+    if (system < 0 || static_cast<std::size_t>(system) >= pilot_->known.size()) return;
+    pilot_->known[static_cast<std::size_t>(system)] = 1;
     MarkScanned(system);
 }
 
 void GameSession::SetCreative(bool on) {
-    vessel_.creative = on;
+    vessel_->creative = on;
     if (!on) {
         Say("Modo creativo desactivado.");
         return;
     }
-    vessel_.ship.emitters = std::max(vessel_.ship.emitters, 8);
-    vessel_.ship.scannerTier = std::max(vessel_.ship.scannerTier, 5);
-    vessel_.ship.heatShieldTier = std::max(vessel_.ship.heatShieldTier, 5);
-    vessel_.ship.handlingTier = std::max(vessel_.ship.handlingTier, 3);
-    vessel_.ship.relayTier = std::max(vessel_.ship.relayTier, 1);
-    vessel_.ship.computerTier = std::max(vessel_.ship.computerTier, rules_.combat.maxTier);
-    for (WeaponMount& m : vessel_.ship.weapons) m.tier = std::max(m.tier, rules_.combat.maxTier);
-    DefenseState& d = vessel_.ship.defense;
+    vessel_->ship.emitters = std::max(vessel_->ship.emitters, 8);
+    vessel_->ship.scannerTier = std::max(vessel_->ship.scannerTier, 5);
+    vessel_->ship.heatShieldTier = std::max(vessel_->ship.heatShieldTier, 5);
+    vessel_->ship.handlingTier = std::max(vessel_->ship.handlingTier, 3);
+    vessel_->ship.relayTier = std::max(vessel_->ship.relayTier, 1);
+    vessel_->ship.computerTier = std::max(vessel_->ship.computerTier, rules_.combat.maxTier);
+    for (WeaponMount& m : vessel_->ship.weapons) m.tier = std::max(m.tier, rules_.combat.maxTier);
+    DefenseState& d = vessel_->ship.defense;
     for (int& t : d.shieldTier) t = std::max(t, rules_.combat.maxTier);  // el Amor incluido, para probarlo
     for (int& t : d.coolantTier) t = std::max(t, rules_.combat.maxTier);
     for (int k = 0; k < static_cast<int>(ShieldKind::Count); ++k) d.charge[static_cast<std::size_t>(k)] = ShieldCapacity(rules_.defense, static_cast<ShieldKind>(k), d.shieldTier[static_cast<std::size_t>(k)]);
-    for (std::size_t s = 0; s < pilot_.known.size(); ++s) MarkKnown(static_cast<int>(s));
+    for (std::size_t s = 0; s < pilot_->known.size(); ++s) MarkKnown(static_cast<int>(s));
     Say("Modo creativo: nave invulnerable, todo sin fin y todos los sistemas localizados.");
 }
 
@@ -993,14 +1012,14 @@ double GameSession::SystemAlert(int system) const {
 
 int GameSession::SpawnAnomaly(AnomalyKind kind, Stance stance, double km, int level, int shipClass) {
     const World& w = engine_.GetWorld();
-    const int system = vessel_.nearestSystem;
+    const int system = vessel_->nearestSystem;
     if (system < 0 || static_cast<std::size_t>(system) >= w.sectors.size()) return -1;
     Anomaly a;
     for (const Anomaly& o : world_.anomalies) a.id = std::max(a.id, o.id + 1);
     a.kind = kind;
     a.stance = kind == AnomalyKind::Derelict ? Stance::None : stance;
     a.system = system;
-    a.offset = vessel_.ship.position + Heading(vessel_.ship) * std::max(km, 1.0) - w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(system)]);
+    a.offset = vessel_->ship.position + Heading(vessel_->ship) * std::max(km, 1.0) - w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(system)]);
     a.home = a.offset;
     a.radius = kind == AnomalyKind::Derelict ? 12.0 : kind == AnomalyKind::AlienStation ? 2.5 : (stance == Stance::Hostile ? 0.5 : 0.7);
     a.emitter = kind == AnomalyKind::Derelict;
@@ -1011,7 +1030,7 @@ int GameSession::SpawnAnomaly(AnomalyKind kind, Stance stance, double km, int le
     if (kind == AnomalyKind::AlienStation) a.stationLevel = level;
     if (kind == AnomalyKind::AlienStation && level == kArmorPlanetLevel) {
         // Con su radio de Jupiter: se pone a km de su superficie, no de su centro.
-        a.offset += Heading(vessel_.ship) * rules_.anomalies.armorPlanetRadius;
+        a.offset += Heading(vessel_->ship) * rules_.anomalies.armorPlanetRadius;
         a.home = a.offset;
         a.discovered = false;  // como el de verdad: avisa al entrar en su percepcion
         MakeArmorPlanet(a, rules_.anomalies);
@@ -1033,13 +1052,13 @@ int GameSession::SpawnAnomaly(AnomalyKind kind, Stance stance, double km, int le
 // Lo que alcanza el barrido en este sistema: estrellas, planetas y campos.
 void GameSession::ScanBodies(double range, int& found) {
     const World& w = engine_.GetWorld();
-    const int system = vessel_.nearestSystem;
+    const int system = vessel_->nearestSystem;
     const StarSystemData& data = *w.systems[static_cast<std::size_t>(system)];
     const auto consider = [&](const TargetRef& t) {
         if (Scanned(t)) return;
         const std::optional<TargetInfo> info = Resolve(t);
-        if (!info || Length(info->position - vessel_.ship.position) > range) return;
-        pilot_.scanned.insert(ScanKey(t));
+        if (!info || Length(info->position - vessel_->ship.position) > range) return;
+        pilot_->scanned.insert(ScanKey(t));
         ++found;
     };
     for (int m = 0; m < data.StarCount(); ++m) consider({Kind::Star, system, m});
@@ -1057,25 +1076,25 @@ void GameSession::UpdateScan(double realSeconds) {
         CancelScan();
         return;
     }
-    vessel_.scanProgress += realSeconds / rules_.scanner.seconds;
-    if (vessel_.scanProgress < 1.0) return;
+    vessel_->scanProgress += realSeconds / rules_.scanner.seconds;
+    if (vessel_->scanProgress < 1.0) return;
     CancelScan();
 
     const double range = ScanRange();
     World& w = engine_.GetWorld();
-    const double systemRange = rules_.scanner.systemRange * (1.0 + rules_.scanner.rangePerTier * (vessel_.ship.scannerTier - 1));
+    const double systemRange = rules_.scanner.systemRange * (1.0 + rules_.scanner.rangePerTier * (vessel_->ship.scannerTier - 1));
     int systems = 0;
-    for (std::size_t s = 0; s < pilot_.known.size(); ++s) {
-        if (pilot_.known[s] || Length(w.scene.WorldPosition(w.sectors[s]) - vessel_.ship.position) > systemRange) continue;
-        pilot_.known[s] = 1;
+    for (std::size_t s = 0; s < pilot_->known.size(); ++s) {
+        if (pilot_->known[s] || Length(w.scene.WorldPosition(w.sectors[s]) - vessel_->ship.position) > systemRange) continue;
+        pilot_->known[s] = 1;
         ++systems;
     }
     int bodies = 0;
-    ScanBodies(rules_.scanner.bodyRange * (1.0 + rules_.scanner.rangePerTier * (vessel_.ship.scannerTier - 1)), bodies);
+    ScanBodies(rules_.scanner.bodyRange * (1.0 + rules_.scanner.rangePerTier * (vessel_->ship.scannerTier - 1)), bodies);
     int found = 0, weak = 0, strongest = 0;
     for (Anomaly& a : world_.anomalies) {
-        if (Length(AnomalyPosition(a) - vessel_.ship.position) > range) continue;
-        if (a.signature > vessel_.ship.scannerTier) {
+        if (Length(AnomalyPosition(a) - vessel_->ship.position) > range) continue;
+        if (a.signature > vessel_->ship.scannerTier) {
             ++weak;
             strongest = std::max(strongest, a.signature);
         } else if (!a.revealed) {
@@ -1083,32 +1102,32 @@ void GameSession::UpdateScan(double realSeconds) {
             ++found;
         }
     }
-    ++vessel_.scansDone;
+    ++vessel_->scansDone;
     ListenForEcho(range);
-    vessel_.lastScan = found > 0 ? "Barrido completo: " + std::to_string(found) + " anomalías nuevas." : "Barrido completo: nada nuevo en este radio.";
-    if (weak > 0) vessel_.lastScan += " Señal débil: pide escáner de nivel " + std::to_string(strongest) + ".";
-    if (vessel_.echo.active) {
+    vessel_->lastScan = found > 0 ? "Barrido completo: " + std::to_string(found) + " anomalías nuevas." : "Barrido completo: nada nuevo en este radio.";
+    if (weak > 0) vessel_->lastScan += " Señal débil: pide escáner de nivel " + std::to_string(strongest) + ".";
+    if (vessel_->echo.active) {
         const double au = astro::kAstronomicalUnit;
-        const std::string course = ", rumbo " + Fixed(vessel_.echo.bearing, 0) + "°, elevación " + (vessel_.echo.elevation >= 0.0 ? "+" : "") + Fixed(vessel_.echo.elevation, 0) + "°.";
-        vessel_.lastScan += vessel_.echo.exact ? " Eco frío exacto a " + Fixed(vessel_.echo.distance / au, 1) + " UA" + course
-                                 : " Eco frío a ~" + Fixed(vessel_.echo.distance / au, 1) + " UA (±" + Fixed(vessel_.echo.error / au, 1) + ")" + course;
+        const std::string course = ", rumbo " + Fixed(vessel_->echo.bearing, 0) + "°, elevación " + (vessel_->echo.elevation >= 0.0 ? "+" : "") + Fixed(vessel_->echo.elevation, 0) + "°.";
+        vessel_->lastScan += vessel_->echo.exact ? " Eco frío exacto a " + Fixed(vessel_->echo.distance / au, 1) + " UA" + course
+                                 : " Eco frío a ~" + Fixed(vessel_->echo.distance / au, 1) + " UA (±" + Fixed(vessel_->echo.error / au, 1) + ")" + course;
     }
-    if (vessel_.echo.weak > 0) vessel_.lastScan += " Señal débil más allá del alcance: nivel " + std::to_string(vessel_.echo.needTier) + ".";
-    if (bodies > 0) vessel_.lastScan += " Astros analizados: " + std::to_string(bodies) + ".";
-    if (systems > 0) vessel_.lastScan += " Sistemas localizados: " + std::to_string(systems) + ".";
-    Say(vessel_.lastScan);
+    if (vessel_->echo.weak > 0) vessel_->lastScan += " Señal débil más allá del alcance: nivel " + std::to_string(vessel_->echo.needTier) + ".";
+    if (bodies > 0) vessel_->lastScan += " Astros analizados: " + std::to_string(bodies) + ".";
+    if (systems > 0) vessel_->lastScan += " Sistemas localizados: " + std::to_string(systems) + ".";
+    Say(vessel_->lastScan);
     if (found + systems + bodies > 0) saveWanted_ = true;
     bubble_.steps = 0;  // que aparezca en sensores ya
 }
 
 double GameSession::EchoRange() const { return ScanRange() * rules_.scanner.echoFactor; }
 
-bool GameSession::EchoGuaranteed() const { return pilot_.dialogue.Tag() == kStructureStep; }
+bool GameSession::EchoGuaranteed() const { return pilot_->dialogue.Tag() == kStructureStep; }
 
 std::optional<Vec3d> GameSession::EchoPosition() const {
     const World& w = engine_.GetWorld();
-    if (!vessel_.echo.active || vessel_.echo.system < 0 || static_cast<std::size_t>(vessel_.echo.system) >= w.sectors.size()) return std::nullopt;
-    return w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_.echo.system)]) + vessel_.echo.offset;
+    if (!vessel_->echo.active || vessel_->echo.system < 0 || static_cast<std::size_t>(vessel_->echo.system) >= w.sectors.size()) return std::nullopt;
+    return w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_->echo.system)]) + vessel_->echo.offset;
 }
 
 // Tras un barrido: lo frio y sin revelar que queda fuera del alcance pero dentro del eco. Si su firma
@@ -1116,10 +1135,10 @@ std::optional<Vec3d> GameSession::EchoPosition() const {
 // si la pasa, solo avisa de una senal debil. En el paso de la estructura del tutorial, la pista es
 // exacta y llega aunque el eco no alcance.
 void GameSession::ListenForEcho(double range) {
-    vessel_.echo = {};
-    vessel_.echoTarget = -1;
+    vessel_->echo = {};
+    vessel_->echoTarget = -1;
     const World& w = engine_.GetWorld();
-    const int system = vessel_.nearestSystem;
+    const int system = vessel_->nearestSystem;
     if (system < 0 || static_cast<std::size_t>(system) >= w.sectors.size()) return;
     const bool guaranteed = EchoGuaranteed();
     const double reach = EchoRange();
@@ -1127,13 +1146,13 @@ void GameSession::ListenForEcho(double range) {
     double nearestDistance = 0.0;
     for (const Anomaly& a : world_.anomalies) {
         if (a.system != system || !a.cold || a.revealed) continue;
-        const double d = Length(AnomalyPosition(a) - vessel_.ship.position);
+        const double d = Length(AnomalyPosition(a) - vessel_->ship.position);
         if (d <= range) continue;  // eso ya lo ha visto, o es senal debil, el barrido normal
         const bool heard = d <= reach;
-        if (a.signature > vessel_.ship.scannerTier) {
+        if (a.signature > vessel_->ship.scannerTier) {
             if (!heard) continue;
-            ++vessel_.echo.weak;  // la regla de la firma: sin rumbo, solo el aviso
-            vessel_.echo.needTier = std::max(vessel_.echo.needTier, a.signature);
+            ++vessel_->echo.weak;  // la regla de la firma: sin rumbo, solo el aviso
+            vessel_->echo.needTier = std::max(vessel_->echo.needTier, a.signature);
             continue;
         }
         if (!heard && !guaranteed) continue;
@@ -1144,13 +1163,13 @@ void GameSession::ListenForEcho(double range) {
     }
     if (!nearest) return;
 
-    const Vec3d truth = AnomalyPosition(*nearest) - vessel_.ship.position;
+    const Vec3d truth = AnomalyPosition(*nearest) - vessel_->ship.position;
     Vec3d direction = truth * (1.0 / nearestDistance);
     double distance = nearestDistance;
     if (!guaranteed) {
         // Un error fijo para cada barrido: sale de la semilla, la anomalia y la cuenta de barridos.
         const auto unit = [&](std::uint32_t salt) {
-            std::uint32_t x = world_.seed * 2654435761u ^ static_cast<std::uint32_t>(nearest->id) * 40503u ^ static_cast<std::uint32_t>(vessel_.scansDone) * 97u ^ salt;
+            std::uint32_t x = world_.seed * 2654435761u ^ static_cast<std::uint32_t>(nearest->id) * 40503u ^ static_cast<std::uint32_t>(vessel_->scansDone) * 97u ^ salt;
             x ^= x >> 16;
             x *= 0x7feb352du;
             x ^= x >> 15;
@@ -1158,7 +1177,7 @@ void GameSession::ListenForEcho(double range) {
             x ^= x >> 16;
             return static_cast<double>(x) / 4294967296.0;
         };
-        const double scale = std::pow(rules_.scanner.echoErrorPerTier, std::max(vessel_.ship.scannerTier - 1, 0));
+        const double scale = std::pow(rules_.scanner.echoErrorPerTier, std::max(vessel_->ship.scannerTier - 1, 0));
         const double bearingError = rules_.scanner.echoBearingError * scale * kPi / 180.0;
         const double distanceError = rules_.scanner.echoDistanceError * scale;
         // Se gira el rumbo un angulo de hasta bearingError alrededor de un eje perpendicular cualquiera.
@@ -1168,17 +1187,17 @@ void GameSession::ListenForEcho(double range) {
         const Vec3d axis = side * std::cos(spin) + up * std::sin(spin);
         direction = Normalize(direction * std::cos(tilt) + Cross(axis, direction) * std::sin(tilt));
         distance *= 1.0 + distanceError * (2.0 * unit(0x3u) - 1.0);
-        vessel_.echo.error = distance * std::hypot(distanceError, bearingError);
+        vessel_->echo.error = distance * std::hypot(distanceError, bearingError);
     }
     const Vec3d center = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(system)]);
-    vessel_.echo.active = true;
-    vessel_.echo.exact = guaranteed;
-    vessel_.echo.system = system;
-    vessel_.echo.offset = vessel_.ship.position + direction * distance - center;
-    vessel_.echo.distance = distance;
-    vessel_.echo.bearing = std::fmod(std::atan2(direction.z, direction.x) * 180.0 / kPi + 360.0, 360.0);
-    vessel_.echo.elevation = std::asin(std::clamp(direction.y, -1.0, 1.0)) * 180.0 / kPi;
-    vessel_.echoTarget = nearest->id;
+    vessel_->echo.active = true;
+    vessel_->echo.exact = guaranteed;
+    vessel_->echo.system = system;
+    vessel_->echo.offset = vessel_->ship.position + direction * distance - center;
+    vessel_->echo.distance = distance;
+    vessel_->echo.bearing = std::fmod(std::atan2(direction.z, direction.x) * 180.0 / kPi + 360.0, 360.0);
+    vessel_->echo.elevation = std::asin(std::clamp(direction.y, -1.0, 1.0)) * 180.0 / kPi;
+    vessel_->echoTarget = nearest->id;
 }
 
 int GameSession::RevealedStructures() const {
@@ -1190,7 +1209,7 @@ int GameSession::RevealedStructures() const {
 // Un momento que merece guardarse: lo dice en el registro y pide al juego que escriba la partida.
 // Ya no guarda nada a lo que volver: al perder la nave el mundo sigue como esta (ver Respawn).
 void GameSession::SaveCheckpoint(const std::string& reason) {
-    if (vessel_.phase != GamePhase::Flying || reason.empty()) return;
+    if (vessel_->phase != GamePhase::Flying || reason.empty()) return;
     Say(reason + ".");
     saveWanted_ = true;
 }
@@ -1218,37 +1237,47 @@ SaveData GameSession::Snapshot() const {
     w.anomalies = world_.anomalies;
     w.species = world_.species;
 
-    ShipSave v;
-    v.id = vessel_.id;
-    v.ship = vessel_.ship;
-    v.absolutePosition = vessel_.ship.position + engine_.GetWorld().origin;
-    v.homeStation = vessel_.homeStation;
-    // Con la nave recien perdida se guarda todo como esta y esta marca: al cargar, reaparece.
-    v.lost = vessel_.phase != GamePhase::Flying;
-    if (vessel_.orbiting) {
-        v.orbitKind = static_cast<int>(vessel_.orbiting->kind);
-        v.orbitSystem = vessel_.orbiting->system;
-        v.orbitIndex = vessel_.orbiting->index;
-        v.orbitOffset = vessel_.orbitOffset;
-        v.orbitNormal = vessel_.orbitNormal;
-        v.orbitRate = vessel_.orbitRate;
-        v.docked = vessel_.dockPhase == DockPhase::Docked;  // a pie tambien: al cargar se empieza a bordo
+    // Todas las naves van en el mundo.
+    for (const Vessel& from : fleet_) {
+        ShipSave v;
+        v.id = from.id;
+        v.ship = from.ship;
+        v.absolutePosition = from.ship.position + engine_.GetWorld().origin;
+        v.homeStation = from.homeStation;
+        // Con la nave recien perdida se guarda todo como esta y esta marca: al cargar, reaparece.
+        v.lost = from.phase != GamePhase::Flying;
+        if (from.orbiting) {
+            v.orbitKind = static_cast<int>(from.orbiting->kind);
+            v.orbitSystem = from.orbiting->system;
+            v.orbitIndex = from.orbiting->index;
+            v.orbitOffset = from.orbitOffset;
+            v.orbitNormal = from.orbitNormal;
+            v.orbitRate = from.orbitRate;
+            v.docked = from.dockPhase == DockPhase::Docked;  // a pie tambien: al cargar se empieza a bordo
+        }
+        w.ships.push_back(std::move(v));
     }
-    w.ships.push_back(std::move(v));
 
-    PlayerSave& p = d.player;
-    p.id = pilot_.id;
-    p.name = pilot_.name;
-    p.ship = vessel_.id;
-    p.tutorialStep = pilot_.dialogue.Active() ? pilot_.dialogue.Step() : 1000000;  // terminado o apagado
-    p.cursorUsed = pilot_.cursorUsed;
-    p.analysisUsed = pilot_.analysisUsed;
-    p.collected = pilot_.collected;
-    p.kills = pilot_.kills;
-    p.knownSystems = pilot_.known;
-    p.visitedSystems = pilot_.visited;
-    p.scanned.assign(pilot_.scanned.begin(), pilot_.scanned.end());
+    // El jugador es el de la nave del foco. Los de las demas naves se piden con SnapshotPlayer.
+    d.player = SnapshotPlayer(focus_);
     return d;
+}
+
+PlayerSave GameSession::SnapshotPlayer(int index) const {
+    const PlayerState& from = crews_[static_cast<std::size_t>(index)];
+    PlayerSave p;
+    p.id = from.id;
+    p.name = from.name;
+    p.ship = fleet_[static_cast<std::size_t>(index)].id;
+    p.tutorialStep = from.dialogue.Active() ? from.dialogue.Step() : 1000000;  // terminado o apagado
+    p.cursorUsed = from.cursorUsed;
+    p.analysisUsed = from.analysisUsed;
+    p.collected = from.collected;
+    p.kills = from.kills;
+    p.knownSystems = from.known;
+    p.visitedSystems = from.visited;
+    p.scanned.assign(from.scanned.begin(), from.scanned.end());
+    return p;
 }
 
 bool GameSession::Restore(const SaveData& d, std::string* error) {
@@ -1261,32 +1290,10 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
         if (error) *error = "la partida no tiene ninguna nave";
         return false;
     }
-    const ShipSave& v = *mine;
     const World& w = engine_.GetWorld();
-    vessel_.id = v.id;
-    pilot_.id = d.player.id;
-    pilot_.name = d.player.name;
-    pilot_.analysisUsed = d.player.analysisUsed;
-    pilot_.kills = d.player.kills;
+
+    // El mundo.
     world_.mode = d.world.mode;
-    vessel_.echo = {};  // la pista no se guarda: se vuelve a barrer
-    vessel_.echoTarget = -1;
-    vessel_.ship = v.ship;
-    bubble_.lostPieces.clear();
-    vessel_.hullHits.clear();
-    vessel_.failedZone = -1;
-    vessel_.zoneHeat = {};
-    vessel_.ship.position = v.absolutePosition - w.origin;
-    vessel_.ship.aim = vessel_.ship.orientation;
-    vessel_.ship.angularRate = {};
-    if (vessel_.ship.weapons.empty()) vessel_.ship.weapons = DefaultWeapons(rules_.ship);
-    vessel_.ship.loadout.starter = false;  // lo montado es lo que dice la partida
-    RefitToDesign();  // modulos y piezas a la nave cargada; sus torretas salen de los modulos
-    vessel_.drones.clear();  // los drones no se guardan: al cargar estan todos en sus bahias, vacios
-    vessel_.droneSite.reset();
-    vessel_.droneYield = 0.0;
-    bubble_.projectiles.clear();
-    vessel_.tracking.reset();
     world_.stations.Restore(d.world.stations, d.world.nextStation);
     world_.anomalies = d.world.anomalies;
     for (Anomaly& a : world_.anomalies) {
@@ -1304,53 +1311,102 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     world_.species = d.world.species;
     ResizeSpecies(world_.species, w.extents.size());
     bubble_.simTime = d.world.simTime;
-    pilot_.collected = d.player.collected;
-    pilot_.known = d.player.knownSystems;
-    pilot_.known.resize(w.state.size(), 0);
-    pilot_.known[0] = 1;
-    pilot_.visited = d.player.visitedSystems;
-    pilot_.visited.resize(w.state.size(), 0);
-    pilot_.visited[0] = 1;
-    pilot_.scanned = std::set<std::uint64_t>(d.player.scanned.begin(), d.player.scanned.end());
-    pilot_.cursorUsed = d.player.cursorUsed;
-    pilot_.dialogue.Resume(d.player.tutorialStep);
+    bubble_.lostPieces.clear();
+    bubble_.projectiles.clear();
+    bubble_.steps = 0;
 
-    vessel_.phase = GamePhase::Flying;
-    vessel_.wreckAge = 0;
-    vessel_.autopilot.reset();
-    vessel_.orbiting.reset();
-    vessel_.exploring = -1;
-    vessel_.frame = {};
-    CancelScan();
+    // Las naves: una por cada una del mundo, con un jugador en blanco. El foco, en la de quien carga.
+    const bool cinematic = pilot_->cinematic, firstPerson = pilot_->firstPerson;
+    fleet_.clear();
+    crews_.clear();
+    focus_ = 0;
+    nextVessel_ = 1;
+    for (std::size_t i = 0; i < d.world.ships.size(); ++i) {
+        fleet_.emplace_back();
+        crews_.emplace_back();
+        if (&d.world.ships[i] == mine) focus_ = static_cast<int>(i);
+        nextVessel_ = std::max(nextVessel_, d.world.ships[i].id + 1);
+    }
+    for (std::size_t i = 0; i < d.world.ships.size(); ++i) {
+        Use(static_cast<int>(i));
+        RestoreVessel(d.world.ships[i]);
+    }
+
+    // El jugador que carga; los de las demas naves saben lo mismo que el, hasta que carguen lo suyo.
+    Use(focus_);
+    pilot_->id = d.player.id;
+    pilot_->name = d.player.name;
+    pilot_->analysisUsed = d.player.analysisUsed;
+    pilot_->kills = d.player.kills;
+    pilot_->collected = d.player.collected;
+    pilot_->known = d.player.knownSystems;
+    pilot_->known.resize(w.state.size(), 0);
+    pilot_->known[0] = 1;
+    pilot_->visited = d.player.visitedSystems;
+    pilot_->visited.resize(w.state.size(), 0);
+    pilot_->visited[0] = 1;
+    pilot_->scanned = std::set<std::uint64_t>(d.player.scanned.begin(), d.player.scanned.end());
+    pilot_->cursorUsed = d.player.cursorUsed;
+    pilot_->cinematic = cinematic;
+    pilot_->firstPerson = firstPerson;
+    pilot_->dialogue.Start(MakeTutorial());
+    pilot_->dialogue.Resume(d.player.tutorialStep);
+    for (std::size_t i = 0; i < crews_.size(); ++i) {
+        if (static_cast<int>(i) == focus_) continue;
+        PlayerState& other = crews_[i];
+        other.id = "local-" + std::to_string(fleet_[i].id);
+        other.name = "Piloto " + std::to_string(fleet_[i].id);
+        other.known = pilot_->known;
+        other.visited = pilot_->visited;
+        other.scanned = pilot_->scanned;
+        other.cursorUsed = other.analysisUsed = true;
+    }
+    fleetSystem_ = fleet_.size() > 1 ? eps::NearestSystem(w, vessel_->ship.position) : -1;
+
+    // Las que se guardaron perdidas reaparecen ahora.
+    for (std::size_t i = 0; i < d.world.ships.size(); ++i) {
+        if (!d.world.ships[i].lost) continue;
+        Use(static_cast<int>(i));
+        if (ModeInfo(world_.mode).permadeath && static_cast<int>(i) == focus_) ResetCampaign();
+        else Respawn();
+    }
+    Use(focus_);
+    return true;
+}
+
+// Deja la nave en curso como dice el guardado.
+void GameSession::RestoreVessel(const ShipSave& v) {
+    const World& w = engine_.GetWorld();
+    vessel_->id = v.id;
+    vessel_->ship = v.ship;
+    vessel_->ship.position = v.absolutePosition - w.origin;
+    vessel_->ship.aim = vessel_->ship.orientation;
+    vessel_->ship.angularRate = {};
+    if (vessel_->ship.weapons.empty()) vessel_->ship.weapons = DefaultWeapons(rules_.ship);
+    vessel_->ship.loadout.starter = false;  // lo montado es lo que dice la partida
+    RefitToDesign();  // modulos y piezas a la nave cargada; sus torretas salen de los modulos
+    // Lo demas empieza de cero: los drones en sus bahias, sin pista del escaner, sin ruta.
+    vessel_->phase = GamePhase::Flying;
     if (v.orbitKind != 0) {
         TargetRef orbit;
         orbit.kind = static_cast<Kind>(v.orbitKind);
         orbit.system = v.orbitSystem;
         orbit.index = v.orbitIndex;
-        vessel_.orbiting = orbit;
-        vessel_.orbitOffset = v.orbitOffset;
-        vessel_.orbitNormal = v.orbitNormal;
-        vessel_.orbitRate = v.orbitRate;
+        vessel_->orbiting = orbit;
+        vessel_->orbitOffset = v.orbitOffset;
+        vessel_->orbitNormal = v.orbitNormal;
+        vessel_->orbitRate = v.orbitRate;
     }
-    pilot_.onFoot = false;
-    vessel_.dockWanted = -1;
-    vessel_.dockPhase = v.docked && vessel_.orbiting && vessel_.orbiting->kind == Kind::Station ? DockPhase::Docked : DockPhase::None;
-    pilot_.log.clear();
-    bubble_.steps = 0;
-    vessel_.homeStation = v.homeStation;
-    vessel_.respawnPending = false;
-    if (v.lost) {
-        if (ModeInfo(world_.mode).permadeath) ResetCampaign();
-        else Respawn();
-    }
-    return true;
+    vessel_->dockPhase = v.docked && vessel_->orbiting && vessel_->orbiting->kind == Kind::Station ? DockPhase::Docked : DockPhase::None;
+    vessel_->homeStation = v.homeStation;
+    vessel_->nearestSystem = eps::NearestSystem(w, vessel_->ship.position);
 }
 
 void GameSession::ContinueAfterDefeat() {
-    if (vessel_.phase != GamePhase::GameOver) return;
+    if (vessel_->phase != GamePhase::GameOver) return;
     if (ModeInfo(world_.mode).permadeath) {
-        vessel_.phase = GamePhase::Flying;
-        vessel_.wreckAge = 0;
+        vessel_->phase = GamePhase::Flying;
+        vessel_->wreckAge = 0;
         ResetCampaign();
         return;
     }
@@ -1364,7 +1420,7 @@ void GameSession::ContinueAfterDefeat() {
 // montado y se perdio en combate, se queda perdido.
 void GameSession::Respawn() {
     const GameMode& mode = ModeInfo(world_.mode);
-    ShipState& s = vessel_.ship;
+    ShipState& s = vessel_->ship;
     s.speed = 0;
     s.velocity = {};
     s.warpSpeed = 0;
@@ -1384,29 +1440,29 @@ void GameSession::Respawn() {
     if (mode.cargoLoss > 0.0) {
         for (const Resource r : {Resource::Metal, Resource::Silicate, Resource::Ice, Resource::Gas, Resource::StellarMatter}) s.cargo.Add(r, -s.cargo.Get(r) * mode.cargoLoss);
     }
-    vessel_.phase = GamePhase::Flying;
-    vessel_.wreckAge = 0;
-    vessel_.failedZone = -1;
-    vessel_.zoneHeat = {};
-    vessel_.hullHits.clear();
-    vessel_.frame = {};
-    vessel_.autopilot.reset();
-    vessel_.orbiting.reset();
-    vessel_.tracking.reset();
-    vessel_.dockPhase = DockPhase::None;
-    vessel_.dockWanted = -1;
-    vessel_.exploring = -1;
-    vessel_.drones.clear();
-    vessel_.droneSite.reset();
-    vessel_.droneYield = 0.0;
+    vessel_->phase = GamePhase::Flying;
+    vessel_->wreckAge = 0;
+    vessel_->failedZone = -1;
+    vessel_->zoneHeat = {};
+    vessel_->hullHits.clear();
+    vessel_->frame = {};
+    vessel_->autopilot.reset();
+    vessel_->orbiting.reset();
+    vessel_->tracking.reset();
+    vessel_->dockPhase = DockPhase::None;
+    vessel_->dockWanted = -1;
+    vessel_->exploring = -1;
+    vessel_->drones.clear();
+    vessel_->droneSite.reset();
+    vessel_->droneYield = 0.0;
     CancelScan();
-    pilot_.onFoot = false;
+    pilot_->onFoot = false;
     bubble_.lostPieces.clear();
     bubble_.projectiles.clear();
 
-    const Station* home = world_.stations.Find(vessel_.homeStation);
+    const Station* home = world_.stations.Find(vessel_->homeStation);
     PlaceInSystem(home ? home->site.system : 0);
-    vessel_.respawnPending = home != nullptr;
+    vessel_->respawnPending = home != nullptr;
     if (!home) Say("De vuelta en el punto de partida: no hay estación propia en la que hayas atracado.");
     else if (!FinishRespawn()) Say("De vuelta en el sistema de " + home->name + ".");
 }
@@ -1414,15 +1470,15 @@ void GameSession::Respawn() {
 // Atraca la nave que reaparece en su estacion. Si el sistema de la estacion aun no esta cargado, no
 // puede: Step lo vuelve a intentar hasta que lo este.
 bool GameSession::FinishRespawn() {
-    const Station* home = world_.stations.Find(vessel_.homeStation);
-    if (!home || vessel_.phase != GamePhase::Flying) {
-        vessel_.respawnPending = false;
+    const Station* home = world_.stations.Find(vessel_->homeStation);
+    if (!home || vessel_->phase != GamePhase::Flying) {
+        vessel_->respawnPending = false;
         return false;
     }
     const TargetRef ref{Kind::Station, home->site.system, home->id};
     const std::optional<TargetInfo> info = Resolve(ref);
     if (!info) return false;
-    vessel_.respawnPending = false;
+    vessel_->respawnPending = false;
     JumpTo(ref, info->arrival);
     Dock(ref, true);
     Say("De vuelta en " + home->name + ".");
@@ -1432,89 +1488,89 @@ bool GameSession::FinishRespawn() {
 // Modo realista: no queda nada. Nave nueva, sin estaciones, y las anomalias vuelven a su sitio.
 void GameSession::ResetCampaign() {
     const World& w = engine_.GetWorld();
-    vessel_.ship = MakeShip(rules_);
+    vessel_->ship = MakeShip(rules_);
     bubble_.lostPieces.clear();
-    vessel_.hullHits.clear();
-    vessel_.failedZone = -1;
-    vessel_.zoneHeat = {};
+    vessel_->hullHits.clear();
+    vessel_->failedZone = -1;
+    vessel_->zoneHeat = {};
     world_.stations = StationNetwork(rules_.stations);
     world_.anomalies = GenerateAnomalies(w.extents, rules_.anomalies, world_.seed);
-    vessel_.echo = {};
-    vessel_.echoTarget = -1;
+    vessel_->echo = {};
+    vessel_->echoTarget = -1;
     world_.species = SpeciesState{};
     ResizeSpecies(world_.species, w.extents.size());
-    vessel_.drones.clear();
-    vessel_.droneSite.reset();
-    vessel_.droneYield = 0.0;
+    vessel_->drones.clear();
+    vessel_->droneSite.reset();
+    vessel_->droneYield = 0.0;
     bubble_.projectiles.clear();
-    pilot_.kills = 0;
-    pilot_.collected = 0;
-    pilot_.known.assign(pilot_.known.size(), 0);
-    pilot_.known[0] = 1;
-    pilot_.visited = pilot_.known;
-    pilot_.scanned.clear();
+    pilot_->kills = 0;
+    pilot_->collected = 0;
+    pilot_->known.assign(pilot_->known.size(), 0);
+    pilot_->known[0] = 1;
+    pilot_->visited = pilot_->known;
+    pilot_->scanned.clear();
     PlaceAtStart();
-    vessel_.autopilot.reset();
-    vessel_.orbiting.reset();
-    vessel_.dockPhase = DockPhase::None;
-    pilot_.onFoot = false;
-    vessel_.exploring = -1;
-    vessel_.homeStation = -1;
-    vessel_.respawnPending = false;
+    vessel_->autopilot.reset();
+    vessel_->orbiting.reset();
+    vessel_->dockPhase = DockPhase::None;
+    pilot_->onFoot = false;
+    vessel_->exploring = -1;
+    vessel_->homeStation = -1;
+    vessel_->respawnPending = false;
     Say("Otra tripulación, otro intento.");
 }
 
 void GameSession::LoseShip() {
-    vessel_.phase = GamePhase::Exploding;
-    vessel_.wreckAge = 0;
-    vessel_.wreckPosition = vessel_.ship.position;
-    vessel_.autopilot.reset();
-    vessel_.tracking.reset();
-    vessel_.orbiting.reset();
-    vessel_.dockPhase = DockPhase::None;
-    vessel_.dockWanted = -1;
-    pilot_.onFoot = false;
-    vessel_.exploring = -1;
+    vessel_->phase = GamePhase::Exploding;
+    vessel_->wreckAge = 0;
+    vessel_->wreckPosition = vessel_->ship.position;
+    vessel_->autopilot.reset();
+    vessel_->tracking.reset();
+    vessel_->orbiting.reset();
+    vessel_->dockPhase = DockPhase::None;
+    vessel_->dockWanted = -1;
+    pilot_->onFoot = false;
+    vessel_->exploring = -1;
     CancelScan();
-    vessel_.ship.speed = 0;
-    vessel_.ship.velocity = {};
-    vessel_.ship.warpSpeed = 0;
-    vessel_.ship.throttle = 0;
-    Say(vessel_.lossReason.empty() ? "Casco destruido." : vessel_.lossReason);
+    vessel_->ship.speed = 0;
+    vessel_->ship.velocity = {};
+    vessel_->ship.warpSpeed = 0;
+    vessel_->ship.throttle = 0;
+    Say(vessel_->lossReason.empty() ? "Casco destruido." : vessel_->lossReason);
     if (ModeInfo(world_.mode).permadeath) saveLost_ = true;
 }
 
 bool GameSession::JumpTo(const TargetRef& target, double distance) {
     const std::optional<TargetInfo> info = Resolve(target);
     if (!info) return false;
-    const Vec3d away = Length(vessel_.ship.position - info->position) > 1.0 ? Normalize(vessel_.ship.position - info->position) : Vec3d{0, 0, -1};
-    vessel_.ship.position = info->position + away * distance;
-    vessel_.autopilot.reset();
-    vessel_.dockPhase = DockPhase::None;
+    const Vec3d away = Length(vessel_->ship.position - info->position) > 1.0 ? Normalize(vessel_->ship.position - info->position) : Vec3d{0, 0, -1};
+    vessel_->ship.position = info->position + away * distance;
+    vessel_->autopilot.reset();
+    vessel_->dockPhase = DockPhase::None;
     const Vec3d look = away * -1.0;
-    FaceTo(vessel_.ship, look);
-    vessel_.ship.moveDirection = look;
-    vessel_.ship.warpHeading = look;
+    FaceTo(vessel_->ship, look);
+    vessel_->ship.moveDirection = look;
+    vessel_->ship.warpHeading = look;
     EnterOrbit(target, *info, distance);
     return true;
 }
 
 void GameSession::Steer(const ShipControls& c, double realSeconds) {
-    if (!vessel_.autopilot && (c.turnYaw != 0.0f || c.turnPitch != 0.0f || c.turnRoll != 0.0f)) {
+    if (!vessel_->autopilot && (c.turnYaw != 0.0f || c.turnPitch != 0.0f || c.turnRoll != 0.0f)) {
         // Sobre los ejes de la camara: lo que se ve a la derecha queda a la derecha, sin importar
         // desde donde se mire la nave ni como este girada.
         const Quatd turn = Quatd::FromAxisAngle({0, 1, 0}, static_cast<double>(c.turnYaw)) * Quatd::FromAxisAngle({1, 0, 0}, -static_cast<double>(c.turnPitch)) * Quatd::FromAxisAngle({0, 0, 1}, -static_cast<double>(c.turnRoll));
-        vessel_.ship.aim = (vessel_.ship.aim * c.view * turn * c.view.Conjugate()).Normalized();
-        LimitAim(vessel_.ship, rules_.ship.aimLead);
+        vessel_->ship.aim = (vessel_->ship.aim * c.view * turn * c.view.Conjugate()).Normalized();
+        LimitAim(vessel_->ship, rules_.ship.aimLead);
     }
-    vessel_.ship.throttle = std::clamp(vessel_.ship.throttle + c.throttleChange * realSeconds, -1.0, 1.0);
+    vessel_->ship.throttle = std::clamp(vessel_->ship.throttle + c.throttleChange * realSeconds, -1.0, 1.0);
     if (c.manualBrake) HoldPosition();
 }
 
 void GameSession::HoldPosition() {
-    vessel_.ship.throttle = 0.0;
-    vessel_.ship.holding = true;
-    if (vessel_.autopilot) CancelAutopilot();
+    vessel_->ship.throttle = 0.0;
+    vessel_->ship.holding = true;
+    if (vessel_->autopilot) CancelAutopilot();
 }
 
 double GameSession::ObjectMass(const Body& b) const {
@@ -1555,7 +1611,7 @@ void GameSession::RefreshFrame(LocalFrame& f) const {
 // tener que perseguirlo, y al cruzar de una zona a otra su velocidad real no cambia.
 void GameSession::UpdateFrame() {
     const World& w = engine_.GetWorld();
-    const std::size_t system = static_cast<std::size_t>(vessel_.nearestSystem);
+    const std::size_t system = static_cast<std::size_t>(vessel_->nearestSystem);
     const SystemState& state = w.state[system];
     LocalFrame best;
     best.reach = 1.0e300;
@@ -1572,7 +1628,7 @@ void GameSession::UpdateFrame() {
             const double hostMass = ObjectMass(*host);
             const double reach = std::max(Length(center - w.scene.WorldPosition(host->node)) * std::pow(mass / std::max(hostMass, 1.0), 0.4), b.radius * 5.0);
             if (b.kind == PlanetClass::Asteroid || b.kind == PlanetClass::Comet) continue;  // apenas atraen
-            if (Length(vessel_.ship.position - center) >= reach || reach >= best.reach) continue;
+            if (Length(vessel_->ship.position - center) >= reach || reach >= best.reach) continue;
             best = {};
             best.body = index;
             best.mu = kGravity * mass;
@@ -1585,11 +1641,11 @@ void GameSession::UpdateFrame() {
         for (std::size_t bi = 0; bi < w.belts.size() && best.belt < 0; ++bi) {
             const AsteroidBelt& belt = w.belts[bi];
             if (!belt.used || belt.parent == kNoNode) continue;
-            const double fromCenter = Length(vessel_.ship.position - w.scene.WorldPosition(belt.parent));
+            const double fromCenter = Length(vessel_->ship.position - w.scene.WorldPosition(belt.parent));
             if (fromCenter > belt.outer * 1.4 + 1000.0) continue;
             for (std::size_t f = 0; f < belt.families.size(); ++f) {
                 const AsteroidFamily& family = belt.families[f];
-                if (Length(vessel_.ship.position - FamilyPosition(w.scene, belt, family, bubble_.simTime)) < family.radius * 1.3) {
+                if (Length(vessel_->ship.position - FamilyPosition(w.scene, belt, family, bubble_.simTime)) < family.radius * 1.3) {
                     best = {};
                     best.belt = static_cast<int>(bi);
                     best.family = static_cast<int>(f);
@@ -1605,7 +1661,7 @@ void GameSession::UpdateFrame() {
         double nearest = w.extents[system] * 3.0;
         for (const int index : state.starBodies) {
             const Body& b = w.bodies[static_cast<std::size_t>(index)];
-            const double distance = Length(vessel_.ship.position - w.scene.WorldPosition(b.node));
+            const double distance = Length(vessel_->ship.position - w.scene.WorldPosition(b.node));
             if (distance >= nearest) continue;
             nearest = distance;
             best.body = index;
@@ -1617,24 +1673,24 @@ void GameSession::UpdateFrame() {
     RefreshFrame(best);
 
     // La velocidad real se conserva: solo cambia respecto a quien se mide.
-    if (best.body != vessel_.frame.body || best.belt != vessel_.frame.belt || best.family != vessel_.frame.family) vessel_.ship.velocity += vessel_.frame.velocity - best.velocity;
-    vessel_.frame = best;
+    if (best.body != vessel_->frame.body || best.belt != vessel_->frame.belt || best.family != vessel_->frame.family) vessel_->ship.velocity += vessel_->frame.velocity - best.velocity;
+    vessel_->frame = best;
 }
 
 std::string GameSession::DominantName() const {
     const World& w = engine_.GetWorld();
-    if (vessel_.frame.body >= 0) return w.bodies[static_cast<std::size_t>(vessel_.frame.body)].name;
-    if (vessel_.frame.belt >= 0) return w.beltInfo[static_cast<std::size_t>(vessel_.frame.belt)].name;
+    if (vessel_->frame.body >= 0) return w.bodies[static_cast<std::size_t>(vessel_->frame.body)].name;
+    if (vessel_->frame.belt >= 0) return w.beltInfo[static_cast<std::size_t>(vessel_->frame.belt)].name;
     return "";
 }
 
 // Radio de Schwarzschild entre distancia: mide cuanto se frena el tiempo en un pozo gravitatorio.
 double GameSession::GravityWell() const {
-    if (vessel_.frame.body < 0 || vessel_.frame.mu <= 0.0) return 0.0;
+    if (vessel_->frame.body < 0 || vessel_->frame.mu <= 0.0) return 0.0;
     const World& w = engine_.GetWorld();
-    const Body& b = w.bodies[static_cast<std::size_t>(vessel_.frame.body)];
-    const double radius = std::max(Length(vessel_.ship.position - vessel_.frame.position), b.radius);
-    const double rs = 2.0 * vessel_.frame.mu / (kLightSpeed * kLightSpeed);
+    const Body& b = w.bodies[static_cast<std::size_t>(vessel_->frame.body)];
+    const double radius = std::max(Length(vessel_->ship.position - vessel_->frame.position), b.radius);
+    const double rs = 2.0 * vessel_->frame.mu / (kLightSpeed * kLightSpeed);
     const bool hole = b.isStar && w.systems[static_cast<std::size_t>(b.system)]->StarAt(b.member).kind == StarClass::BlackHole;
     return rs * (hole ? 1.0 : rules_.world.gravityBoost) / radius;
 }
@@ -1651,88 +1707,88 @@ double GameSession::OrbitMu(const TargetRef& target) const {
 
 // Orbita circular asistida: la nave da vueltas sola, sin gastar nada y sin decaer.
 void GameSession::EnterOrbit(const TargetRef& target, const TargetInfo& info, double radius) {
-    const Vec3d offset = vessel_.ship.position - info.position;
+    const Vec3d offset = vessel_->ship.position - info.position;
     const double distance = Length(offset);
     const Vec3d side = distance > 1.0 ? offset * (1.0 / distance) : Vec3d{0, 0, -1};
-    Vec3d normal = Cross(side, vessel_.ship.velocity + vessel_.ship.warpHeading * 0.001);
-    if (Length(normal) < 1e-6) normal = Cross(side, Heading(vessel_.ship));
+    Vec3d normal = Cross(side, vessel_->ship.velocity + vessel_->ship.warpHeading * 0.001);
+    if (Length(normal) < 1e-6) normal = Cross(side, Heading(vessel_->ship));
     if (Length(normal) < 1e-6) normal = Cross(side, std::abs(side.y) < 0.9 ? Vec3d{0, 1, 0} : Vec3d{1, 0, 0});
-    vessel_.orbitNormal = Normalize(normal);
-    vessel_.orbitOffset = side * radius;
+    vessel_->orbitNormal = Normalize(normal);
+    vessel_->orbitOffset = side * radius;
     const double mu = OrbitMu(target);
-    vessel_.orbitRate = mu > 0.0 ? std::sqrt(mu / (radius * radius * radius)) : 0.0;
-    vessel_.orbiting = target;
-    vessel_.autopilot.reset();
-    vessel_.routePhase = RoutePhase::None;
-    vessel_.ship.velocity = {};
-    vessel_.ship.warpSpeed = 0;
-    vessel_.ship.warpCharge = 0;
-    vessel_.ship.throttle = 0;
-    vessel_.ship.holding = false;
-    vessel_.ship.mode = DriveMode::Impulse;
-    vessel_.ship.speed = vessel_.orbitRate * radius;
+    vessel_->orbitRate = mu > 0.0 ? std::sqrt(mu / (radius * radius * radius)) : 0.0;
+    vessel_->orbiting = target;
+    vessel_->autopilot.reset();
+    vessel_->routePhase = RoutePhase::None;
+    vessel_->ship.velocity = {};
+    vessel_->ship.warpSpeed = 0;
+    vessel_->ship.warpCharge = 0;
+    vessel_->ship.throttle = 0;
+    vessel_->ship.holding = false;
+    vessel_->ship.mode = DriveMode::Impulse;
+    vessel_->ship.speed = vessel_->orbitRate * radius;
 }
 
 // Al encender el motor sale con la velocidad que llevaba en la orbita.
 void GameSession::LeaveOrbit() {
-    if (const std::optional<TargetInfo> info = Resolve(*vessel_.orbiting)) {
-        const Vec3d tangent = Cross(vessel_.orbitNormal, vessel_.orbitOffset) * vessel_.orbitRate;
-        vessel_.ship.velocity = tangent + info->velocity - vessel_.frame.velocity;
+    if (const std::optional<TargetInfo> info = Resolve(*vessel_->orbiting)) {
+        const Vec3d tangent = Cross(vessel_->orbitNormal, vessel_->orbitOffset) * vessel_->orbitRate;
+        vessel_->ship.velocity = tangent + info->velocity - vessel_->frame.velocity;
     }
     // Recien soltada, la proa aun toca la escotilla: esa estacion no choca hasta que se aparte.
-    if (vessel_.dockPhase != DockPhase::None && vessel_.orbiting->kind == Kind::Station) vessel_.undockGrace = vessel_.orbiting->index;
-    vessel_.orbiting.reset();
-    vessel_.ship.holding = false;
-    if (vessel_.dockPhase != DockPhase::None) Say("Amarras sueltas.");
-    vessel_.dockPhase = DockPhase::None;
+    if (vessel_->dockPhase != DockPhase::None && vessel_->orbiting->kind == Kind::Station) vessel_->undockGrace = vessel_->orbiting->index;
+    vessel_->orbiting.reset();
+    vessel_->ship.holding = false;
+    if (vessel_->dockPhase != DockPhase::None) Say("Amarras sueltas.");
+    vessel_->dockPhase = DockPhase::None;
 }
 
 // ---- Atraque ---------------------------------------------------------------------------------
 
 const Station* GameSession::DockedStation() const {
-    return vessel_.dockPhase != DockPhase::None && vessel_.orbiting && vessel_.orbiting->kind == Kind::Station ? world_.stations.Find(vessel_.orbiting->index) : nullptr;
+    return vessel_->dockPhase != DockPhase::None && vessel_->orbiting && vessel_->orbiting->kind == Kind::Station ? world_.stations.Find(vessel_->orbiting->index) : nullptr;
 }
 
 bool GameSession::Dock(const TargetRef& target, bool instant) {
-    if (vessel_.phase != GamePhase::Flying || pilot_.onFoot) return false;
+    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
     if (target.kind != Kind::Station || !world_.stations.Find(target.index) || !Resolve(target)) {
         Say("Solo se puede atracar en una estación propia.");
         return false;
     }
-    if (vessel_.orbiting && *vessel_.orbiting == target && vessel_.dockPhase != DockPhase::None) return true;
-    if (InRange(target, rules_.ship.interactRange) && vessel_.ship.warpSpeed <= rules_.drive.impulseSpeed) {
+    if (vessel_->orbiting && *vessel_->orbiting == target && vessel_->dockPhase != DockPhase::None) return true;
+    if (InRange(target, rules_.ship.interactRange) && vessel_->ship.warpSpeed <= rules_.drive.impulseSpeed) {
         BeginDock(target);
         if (instant) {
             const Station* s = world_.stations.Find(target.index);
-            vessel_.orbitOffset = DockGoal(*s);
-            vessel_.ship.orientation = vessel_.ship.aim = DockAttitude(*s);
-            vessel_.ship.angularRate = {};
-            vessel_.dockPhase = DockPhase::Docked;
+            vessel_->orbitOffset = DockGoal(*s);
+            vessel_->ship.orientation = vessel_->ship.aim = DockAttitude(*s);
+            vessel_->ship.angularRate = {};
+            vessel_->dockPhase = DockPhase::Docked;
         }
         return true;
     }
-    vessel_.dockWanted = target.index;
+    vessel_->dockWanted = target.index;
     if (SetAutopilot(target)) return true;
-    vessel_.dockWanted = -1;
+    vessel_->dockWanted = -1;
     return false;
 }
 
 void GameSession::BeginDock(const TargetRef& target) {
     const std::optional<TargetInfo> info = Resolve(target);
     if (!info) return;
-    vessel_.autopilot.reset();
-    vessel_.exploring = -1;
+    vessel_->autopilot.reset();
+    vessel_->exploring = -1;
     CancelScan();
-    EnterOrbit(target, *info, std::max(Length(vessel_.ship.position - info->position), info->radius + rules_.ship.bow));
-    vessel_.orbitRate = 0.0;
-    vessel_.dockedAge = 0.0;
-    vessel_.dockPhase = DockPhase::Approaching;
-    vessel_.dockWanted = -1;
+    EnterOrbit(target, *info, std::max(Length(vessel_->ship.position - info->position), info->radius + rules_.ship.bow));
+    vessel_->orbitRate = 0.0;
+    vessel_->dockedAge = 0.0;
+    vessel_->dockPhase = DockPhase::Approaching;
+    vessel_->dockWanted = -1;
     Say("Haz de atraque enganchado.");
 }
 
 void GameSession::Undock() {
-    if (vessel_.dockPhase == DockPhase::None || !vessel_.orbiting) return;
+    if (vessel_->dockPhase == DockPhase::None || !vessel_->orbiting) return;
     LeaveOrbit();
 }
 
@@ -1740,43 +1796,43 @@ void GameSession::Undock() {
 // la rodea, sin atravesarla, hasta ponerla frente a la escotilla; despues la mete en linea recta,
 // con la proa por delante. Atracada, la sigue aunque la estacion gire.
 void GameSession::StepDock(double realSeconds) {
-    if (vessel_.dockPhase == DockPhase::None) return;
+    if (vessel_->dockPhase == DockPhase::None) return;
     const Station* s = DockedStation();
     if (!s || !StationVisible(*s)) return;
     const DockPort port = Port(*s);
     const Vec3d goal = DockGoal(*s);
     // De costado: el haz la gira hasta que su compuerta de estribor mira a la escotilla.
-    vessel_.ship.aim = DockAttitude(*s);
-    if (vessel_.dockPhase == DockPhase::Docked) {
-        vessel_.orbitOffset = goal;
-        vessel_.ship.orientation = vessel_.ship.aim;
-        vessel_.ship.angularRate = {};
-        vessel_.dockedAge += realSeconds;
+    vessel_->ship.aim = DockAttitude(*s);
+    if (vessel_->dockPhase == DockPhase::Docked) {
+        vessel_->orbitOffset = goal;
+        vessel_->ship.orientation = vessel_->ship.aim;
+        vessel_->ship.angularRate = {};
+        vessel_->dockedAge += realSeconds;
         return;
     }
     const double keep = std::exp(-realSeconds / rules_.ship.dockTime);
     const Vec3d corridor = goal + port.normal * rules_.ship.dockCorridor;
-    const Vec3d fromGoal = vessel_.orbitOffset - goal;
+    const Vec3d fromGoal = vessel_->orbitOffset - goal;
     const double along = Dot(fromGoal, port.normal);
     const double aside = Length(fromGoal - port.normal * along);
     if (along > -0.01 && aside < 0.03) {
         // En el pasillo: recta hacia la escotilla.
-        vessel_.orbitOffset = goal + fromGoal * keep;
+        vessel_->orbitOffset = goal + fromGoal * keep;
     } else {
         // Alrededor: el angulo y la altura bajan a la vez, sin pasar nunca mas cerca que el pasillo.
-        const double radius = Length(vessel_.orbitOffset), target = Length(corridor);
-        const Vec3d from = vessel_.orbitOffset * (1.0 / std::max(radius, 1e-9)), to = Normalize(corridor);
+        const double radius = Length(vessel_->orbitOffset), target = Length(corridor);
+        const Vec3d from = vessel_->orbitOffset * (1.0 / std::max(radius, 1e-9)), to = Normalize(corridor);
         const double angle = std::acos(std::clamp(Dot(from, to), -1.0, 1.0));
         Vec3d axis = Cross(from, to);
         if (Length(axis) < 1e-9) axis = Cross(from, std::abs(from.y) < 0.9 ? Vec3d{0, 1, 0} : Vec3d{1, 0, 0});
         const double turn = angle < 0.002 ? angle : angle * (1.0 - keep);
         const Vec3d direction = Quatd::FromAxisAngle(Normalize(axis), turn).ToMatrix().TransformDirection(from);
         const double reach = target + (radius - target) * keep;
-        vessel_.orbitOffset = angle < 0.002 && std::abs(reach - target) < 0.01 ? corridor : direction * std::max(reach, std::min(radius, target));
+        vessel_->orbitOffset = angle < 0.002 && std::abs(reach - target) < 0.01 ? corridor : direction * std::max(reach, std::min(radius, target));
     }
-    if (Length(vessel_.orbitOffset - goal) > 0.01) return;
-    vessel_.orbitOffset = goal;
-    vessel_.dockPhase = DockPhase::Docked;
+    if (Length(vessel_->orbitOffset - goal) > 0.01) return;
+    vessel_->orbitOffset = goal;
+    vessel_->dockPhase = DockPhase::Docked;
     Say("Atracada en " + s->name + ".");
     saveWanted_ = true;
 }
@@ -1786,23 +1842,23 @@ void GameSession::StepDock(double realSeconds) {
 void GameSession::LimitNearStations(double realSeconds) {
     const ShipRules& r = rules_.ship;
     for (const Station& s : world_.stations.All()) {
-        if (s.site.system != vessel_.nearestSystem || !StationVisible(s)) continue;
+        if (s.site.system != vessel_->nearestSystem || !StationVisible(s)) continue;
         const Vec3d at = StationPosition(s);
-        const double distance = Length(at - vessel_.ship.position);
+        const double distance = Length(at - vessel_->ship.position);
         if (distance > rules_.world.stationNear) continue;
         const std::optional<TargetInfo> info = Resolve({Kind::Station, s.site.system, s.id});
         if (!info) continue;
-        const Vec3d matched = info->velocity - vessel_.frame.velocity;
-        Vec3d relative = vessel_.ship.velocity - matched;
+        const Vec3d matched = info->velocity - vessel_->frame.velocity;
+        Vec3d relative = vessel_->ship.velocity - matched;
         // En la zona de atraque, casi parada; mas lejos, acercarse va despacio y alejarse, menos.
-        const bool closing = Dot(relative, at - vessel_.ship.position) > 0.0;
+        const bool closing = Dot(relative, at - vessel_->ship.position) > 0.0;
         const bool zone = distance < r.dockZone;
         const double top = StationTop(distance, closing);
-        if (!vessel_.approach || distance < vessel_.approach->distance) vessel_.approach = ApproachInfo{s.name, distance, top, zone};
-        if (vessel_.ship.throttle == 0.0) relative = relative * std::exp(-realSeconds / rules_.ship.driftDamping);
+        if (!vessel_->approach || distance < vessel_->approach->distance) vessel_->approach = ApproachInfo{s.name, distance, top, zone};
+        if (vessel_->ship.throttle == 0.0) relative = relative * std::exp(-realSeconds / rules_.ship.driftDamping);
         const double speed = Length(relative);
-        vessel_.ship.velocity = matched + (speed > top ? relative * (top / speed) : relative);
-        vessel_.ship.warpSpeed = std::min(vessel_.ship.warpSpeed, top);
+        vessel_->ship.velocity = matched + (speed > top ? relative * (top / speed) : relative);
+        vessel_->ship.warpSpeed = std::min(vessel_->ship.warpSpeed, top);
     }
 }
 
@@ -1822,10 +1878,10 @@ int GameSession::StationFrame() const {
     int best = -1;
     double nearest = rules_.world.stationNear;
     for (const Station& s : world_.stations.All()) {
-        if (s.site.system != vessel_.nearestSystem || !StationVisible(s)) continue;
+        if (s.site.system != vessel_->nearestSystem || !StationVisible(s)) continue;
         // Una origami que aun se aparta de la nave no la lleva consigo: se iria con ella.
         if (s.kind == StationKind::Shipyard && ShipyardDeploy(s.deployAge).slide < 1.0) continue;
-        const double distance = Length(StationPosition(s) - vessel_.ship.position);
+        const double distance = Length(StationPosition(s) - vessel_->ship.position);
         if (distance < nearest) {
             nearest = distance;
             best = s.id;
@@ -1838,70 +1894,70 @@ int GameSession::StationFrame() const {
 
 bool GameSession::Disembark() {
     const Station* s = DockedStation();
-    if (!s || !Docked() || pilot_.onFoot) {
+    if (!s || !Docked() || pilot_->onFoot) {
         Say("Hay que estar atracada para bajar.");
         return false;
     }
     bubble_.deckKind = s->kind;
     bubble_.deck = MakeDeck(bubble_.deckKind);
-    pilot_.avatar = {};
-    pilot_.avatar.position = bubble_.deck.spawn;
-    pilot_.avatar.yaw = 1.5707963;  // de espaldas a la esclusa
+    pilot_->avatar = {};
+    pilot_->avatar.position = bubble_.deck.spawn;
+    pilot_->avatar.yaw = 1.5707963;  // de espaldas a la esclusa
     bubble_.crew = MakeCrew(bubble_.deck, body_, rules_.foot.crew, bubble_.fx);
-    pilot_.onFoot = true;
+    pilot_->onFoot = true;
     Say("A pie en " + s->name + ".");
     return true;
 }
 
 bool GameSession::CanBoard() const {
-    if (!pilot_.onFoot) return false;
-    Vec3d to = bubble_.deck.airlock - pilot_.avatar.position;
+    if (!pilot_->onFoot) return false;
+    Vec3d to = bubble_.deck.airlock - pilot_->avatar.position;
     to.y = 0.0;
     return Length(to) <= rules_.foot.boardRange;
 }
 
 bool GameSession::Board(bool anywhere) {
-    if (!pilot_.onFoot) return false;
+    if (!pilot_->onFoot) return false;
     if (!anywhere && !CanBoard()) {
         Say("La esclusa está lejos.");
         return false;
     }
-    pilot_.onFoot = false;
+    pilot_->onFoot = false;
     bubble_.crew.clear();
     Say("De vuelta a bordo.");
     return true;
 }
 
 void GameSession::StepFoot(const FootControls& c, double realSeconds) {
-    pilot_.avatar.yaw += c.yaw;
-    pilot_.avatar.pitch = std::clamp(pilot_.avatar.pitch + c.pitch, -1.45, 1.45);
+    pilot_->avatar.yaw += c.yaw;
+    pilot_->avatar.pitch = std::clamp(pilot_->avatar.pitch + c.pitch, -1.45, 1.45);
     if (realSeconds <= 0.0) return;
-    StepHumanoid(pilot_.avatar, c.move, bubble_.deck.area, body_, rules_.foot.gravity, realSeconds);
+    StepHumanoid(pilot_->avatar, c.move, bubble_.deck.area, body_, rules_.foot.gravity, realSeconds);
     for (Person& p : bubble_.crew) StepPerson(p, bubble_.deck, body_, rules_.foot.gravity, realSeconds, bubble_.fx);
 }
 
 bool GameSession::EnterOrbitHere() {
     const World& w = engine_.GetWorld();
-    if (vessel_.orbiting) return true;
-    if (vessel_.frame.body < 0 || vessel_.ship.warpSpeed > rules_.drive.impulseSpeed) {
+    if (vessel_->orbiting) return true;
+    if (vessel_->frame.body < 0 || vessel_->ship.warpSpeed > rules_.drive.impulseSpeed) {
         Say("Aquí no hay nada que orbitar.");
         return false;
     }
-    const Body& b = w.bodies[static_cast<std::size_t>(vessel_.frame.body)];
+    const Body& b = w.bodies[static_cast<std::size_t>(vessel_->frame.body)];
     TargetRef target;
     target.system = b.system;
     target.kind = b.isStar ? Kind::Star : Kind::Planet;
     target.index = b.isStar ? b.member : b.data;
     const std::optional<TargetInfo> info = Resolve(target);
     if (!info) return false;
-    const double radius = Length(vessel_.ship.position - info->position);
+    const double radius = Length(vessel_->ship.position - info->position);
     if (radius < b.radius * 1.05) {
         Say("Demasiado bajo para orbitar.");
         return false;
     }
     // Pasar a la velocidad circular cuesta energia.
-    const double circular = std::sqrt(vessel_.frame.mu / radius);
-    vessel_.ship.energy = std::max(vessel_.ship.energy - std::abs(circular - Length(vessel_.ship.velocity)) * 0.05, 0.0);
+    const double circular = std::sqrt(vessel_->frame.mu / radius);
+    vessel_->ship.energy = std::max(vessel_->ship.energy - std::abs(circular - Length(vessel_->ship.velocity)) * 0.05, 0.0);
     EnterOrbit(target, *info, radius);
     Say("Órbita estable alrededor de " + info->name + ".");
     return true;
@@ -1911,20 +1967,20 @@ bool GameSession::EnterOrbitHere() {
 // cruce. Devuelve lo que debe hacer el motor en este paso.
 DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
     DriveInput order;
-    const std::optional<TargetInfo> info = Resolve(*vessel_.autopilot);
+    const std::optional<TargetInfo> info = Resolve(*vessel_->autopilot);
     if (!info) {
         Say("Objetivo perdido.");
-        vessel_.autopilot.reset();
-        vessel_.routePhase = RoutePhase::None;
+        vessel_->autopilot.reset();
+        vessel_->routePhase = RoutePhase::None;
         return order;
     }
-    const Vec3d toTarget = info->position - vessel_.ship.position;
+    const Vec3d toTarget = info->position - vessel_->ship.position;
     const double distance = Length(toTarget);
     const double remaining = distance - info->arrival;
-    vessel_.routeDistance = remaining;
-    if (remaining <= std::max(vessel_.ship.speed * seconds * 1.5, 3.0)) {
-        const TargetRef arrived = *vessel_.autopilot;
-        if (arrived.kind == Kind::Station && vessel_.dockWanted == arrived.index) {
+    vessel_->routeDistance = remaining;
+    if (remaining <= std::max(vessel_->ship.speed * seconds * 1.5, 3.0)) {
+        const TargetRef arrived = *vessel_->autopilot;
+        if (arrived.kind == Kind::Station && vessel_->dockWanted == arrived.index) {
             BeginDock(arrived);
             return order;
         }
@@ -1934,13 +1990,13 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
     }
 
     Vec3d direction = toTarget * (1.0 / std::max(distance, 1e-6));
-    const Vec3d matched = info->velocity - vessel_.frame.velocity;  // viaja con el objetivo: asi lo alcanza
+    const Vec3d matched = info->velocity - vessel_->frame.velocity;  // viaja con el objetivo: asi lo alcanza
     Vec3d carried = matched;
     // La burbuja reacciona con retraso, y fuera pasa mas tiempo que a bordo. Con este margen frena
     // sin pasarse nunca: cada factor e de distancia lleva unos segundos, pero llega entera.
-    const double response = rules_.drive.warpBrake * 4.0 * vessel_.exteriorFactor;
+    const double response = rules_.drive.warpBrake * 4.0 * vessel_->exteriorFactor;
     double warpLimit = remaining / std::max(response, seconds * 1.5);
-    const double handling = 1.0 + rules_.ship.handlingBonus * vessel_.ship.handlingTier;
+    const double handling = 1.0 + rules_.ship.handlingBonus * vessel_->ship.handlingTier;
     const double accel = rules_.drive.impulseAccel * handling;
     double cruise = std::min(rules_.drive.impulseSpeed, std::sqrt(2.0 * accel * std::max(remaining, 0.0)) * 0.8);
 
@@ -1951,7 +2007,7 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
     for (const Body& b : w.bodies) {
         if (!Alive(b) || b.kind == PlanetClass::Belt || b.radius < 50.0) continue;
         const Vec3d center = w.scene.WorldPosition(b.node);
-        const Vec3d offset = vessel_.ship.position - center;
+        const Vec3d offset = vessel_->ship.position - center;
         const double safe = (b.isStar ? b.radius * rules_.ship.heatReach : b.radius * rules_.ship.clearance) + 100.0;
         open = std::min(open, Length(offset) - safe);  // cerca de una masa no se corre, aunque no estorbe
         if (Length(center - info->position) < 1.0) continue;
@@ -1965,11 +2021,11 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
     bool rounding = false;
     warpLimit = std::min(warpLimit, std::max(open, 0.0) / std::max(response, seconds * 1.5) + rules_.drive.impulseSpeed);
     if (obstacle) {
-        const Vec3d offset = vessel_.ship.position - w.scene.WorldPosition(obstacle->node);
+        const Vec3d offset = vessel_->ship.position - w.scene.WorldPosition(obstacle->node);
         const double height = Length(offset);
         const Vec3d normal = offset * (1.0 / std::max(height, 1e-6));
         Vec3d side = direction - normal * Dot(direction, normal);
-        if (Length(side) < 1e-3) side = Heading(vessel_.ship) - normal * Dot(Heading(vessel_.ship), normal);
+        if (Length(side) < 1e-3) side = Heading(vessel_->ship) - normal * Dot(Heading(vessel_->ship), normal);
         if (Length(side) < 1e-3) side = Cross(normal, std::abs(normal.y) < 0.9 ? Vec3d{0, 1, 0} : Vec3d{1, 0, 0});
         side = Normalize(side);
         if (height > shell) {
@@ -1980,38 +2036,38 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
         }
         // Tan despacio como haga falta para que el casco pueda trazar la curva.
         const double turn = rules_.ship.turnRate * handling;
-        const double curve = turn * shell / std::max(world_.timeScale * vessel_.exteriorFactor, 1.0);
+        const double curve = turn * shell / std::max(world_.timeScale * vessel_->exteriorFactor, 1.0);
         const double approach = std::max(height - shell, 0.0) / std::max(response, seconds * 1.5);
         warpLimit = std::min(warpLimit, approach + curve);
         cruise = std::min(cruise, approach + curve);
-        carried = WorldVelocity(*obstacle) - vessel_.frame.velocity;
+        carried = WorldVelocity(*obstacle) - vessel_->frame.velocity;
         rounding = height < shell * 3.0;
     }
-    AimAt(vessel_.ship, direction);
-    const bool aligned = AimError(vessel_.ship) <= kAlignedAngle * 3.0;
-    const double facing = std::max(Dot(Heading(vessel_.ship), direction), 0.0);  // ya avanza mientras gira
+    AimAt(vessel_->ship, direction);
+    const bool aligned = AimError(vessel_->ship) <= kAlignedAngle * 3.0;
+    const double facing = std::max(Dot(Heading(vessel_->ship), direction), 0.0);  // ya avanza mientras gira
 
     // Lejos, crucero. Entre estrellas, burbuja. Cerca, el motor normal.
     const bool bubble = remaining > kWarpRouteMin && !rounding;
     if (bubble) {
-        const DriveMode curve = HyperUnlocked(vessel_.ship, rules_.drive) ? DriveMode::Hyper : DriveMode::Warp;
+        const DriveMode curve = HyperUnlocked(vessel_->ship, rules_.drive) ? DriveMode::Hyper : DriveMode::Warp;
         const bool far = remaining > kCurveRouteMin;
-        const bool curving = far && CanCurve(vessel_.ship, curve, rules_.drive);
-        if (far && !curving && !vessel_.fuelWarned) {
-            vessel_.fuelWarned = true;
-            Say(HybridUnlocked(vessel_.ship) ?"Sin antimateria para la burbuja: la ruta sigue en crucero." : "Sin motor híbrido: la ruta sigue en crucero.");
+        const bool curving = far && CanCurve(vessel_->ship, curve, rules_.drive);
+        if (far && !curving && !vessel_->fuelWarned) {
+            vessel_->fuelWarned = true;
+            Say(HybridUnlocked(vessel_->ship) ?"Sin antimateria para la burbuja: la ruta sigue en crucero." : "Sin motor híbrido: la ruta sigue en crucero.");
         }
-        vessel_.ship.mode = curving ? curve : DriveMode::Cruise;
-        vessel_.ship.throttle = 1.0;
+        vessel_->ship.mode = curving ? curve : DriveMode::Cruise;
+        vessel_->ship.throttle = 1.0;
         // El crucero arranca al momento: hasta estar alineada, nada de correr hacia donde no toca.
         order.warpLimit = aligned ? std::max(warpLimit, 1.0) : 1.0;
-        wanted = carried + direction * (vessel_.ship.warpSpeed > rules_.drive.impulseSpeed ? 0.0 : cruise * facing);
-        vessel_.routePhase = !aligned ? RoutePhase::Aligning : vessel_.ship.warpSpeed > warpLimit * 1.02 ? RoutePhase::Braking : RoutePhase::Cruising;
+        wanted = carried + direction * (vessel_->ship.warpSpeed > rules_.drive.impulseSpeed ? 0.0 : cruise * facing);
+        vessel_->routePhase = !aligned ? RoutePhase::Aligning : vessel_->ship.warpSpeed > warpLimit * 1.02 ? RoutePhase::Braking : RoutePhase::Cruising;
     } else {
-        vessel_.ship.mode = DriveMode::Impulse;
-        vessel_.ship.throttle = 0.0;
+        vessel_->ship.mode = DriveMode::Impulse;
+        vessel_->ship.throttle = 0.0;
         wanted = carried + direction * (cruise * facing);
-        vessel_.routePhase = rounding ? RoutePhase::Rounding : !aligned ? RoutePhase::Aligning : RoutePhase::Braking;
+        vessel_->routePhase = rounding ? RoutePhase::Rounding : !aligned ? RoutePhase::Aligning : RoutePhase::Braking;
     }
     order.wanted = &wanted;
     return order;
@@ -2019,46 +2075,46 @@ DriveInput GameSession::FlyRoute(double seconds, Vec3d& wanted) {
 
 RouteReport GameSession::Route() const {
     RouteReport r;
-    if (!vessel_.autopilot) return r;
-    r.phase = vessel_.routePhase;
-    r.distance = vessel_.routeDistance;
-    if (const std::optional<TargetInfo> info = Resolve(*vessel_.autopilot)) r.target = info->name;
-    const double rate = vessel_.ship.speed * world_.timeScale * vessel_.exteriorFactor;
-    r.seconds = rate > 1.0 ? vessel_.routeDistance / rate : 0.0;
+    if (!vessel_->autopilot) return r;
+    r.phase = vessel_->routePhase;
+    r.distance = vessel_->routeDistance;
+    if (const std::optional<TargetInfo> info = Resolve(*vessel_->autopilot)) r.target = info->name;
+    const double rate = vessel_->ship.speed * world_.timeScale * vessel_->exteriorFactor;
+    r.seconds = rate > 1.0 ? vessel_->routeDistance / rate : 0.0;
     return r;
 }
 
 // La orbita que lleva ahora: la que seguiria si apagase todo.
 OrbitReport GameSession::OrbitNow() const {
     OrbitReport o;
-    if (vessel_.orbiting) {
-        const std::optional<TargetInfo> info = Resolve(*vessel_.orbiting);
+    if (vessel_->orbiting) {
+        const std::optional<TargetInfo> info = Resolve(*vessel_->orbiting);
         if (!info) return o;
-        const double height = Length(vessel_.orbitOffset) - info->radius;
+        const double height = Length(vessel_->orbitOffset) - info->radius;
         o.valid = true;
         o.locked = true;
         o.body = info->name;
         o.periapsis = o.apoapsis = height;
-        o.period = vessel_.orbitRate > 0.0 ? 2.0 * kPi / vessel_.orbitRate : 0.0;
+        o.period = vessel_->orbitRate > 0.0 ? 2.0 * kPi / vessel_->orbitRate : 0.0;
         return o;
     }
-    if (vessel_.frame.mu <= 0.0 || vessel_.ship.holding) return o;
-    const Vec3d r = vessel_.ship.position - vessel_.frame.position;
-    const double radius = Length(r), speed2 = Dot(vessel_.ship.velocity, vessel_.ship.velocity);
-    const double energy = speed2 * 0.5 - vessel_.frame.mu / radius;
-    const Vec3d h = Cross(r, vessel_.ship.velocity);
-    const double p = Dot(h, h) / vessel_.frame.mu;
+    if (vessel_->frame.mu <= 0.0 || vessel_->ship.holding) return o;
+    const Vec3d r = vessel_->ship.position - vessel_->frame.position;
+    const double radius = Length(r), speed2 = Dot(vessel_->ship.velocity, vessel_->ship.velocity);
+    const double energy = speed2 * 0.5 - vessel_->frame.mu / radius;
+    const Vec3d h = Cross(r, vessel_->ship.velocity);
+    const double p = Dot(h, h) / vessel_->frame.mu;
     o.valid = true;
     o.body = DominantName();
     if (energy >= 0.0) {
         o.escaping = true;
         return o;
     }
-    const double a = -vessel_.frame.mu / (2.0 * energy);
+    const double a = -vessel_->frame.mu / (2.0 * energy);
     const double e = std::sqrt(std::max(1.0 - p / a, 0.0));
-    o.periapsis = a * (1.0 - e) - vessel_.frame.radius;
-    o.apoapsis = a * (1.0 + e) - vessel_.frame.radius;
-    o.period = 2.0 * kPi * std::sqrt(a * a * a / vessel_.frame.mu);
+    o.periapsis = a * (1.0 - e) - vessel_->frame.radius;
+    o.apoapsis = a * (1.0 + e) - vessel_->frame.radius;
+    o.period = 2.0 * kPi * std::sqrt(a * a * a / vessel_->frame.mu);
     return o;
 }
 
@@ -2066,51 +2122,51 @@ OrbitReport GameSession::OrbitNow() const {
 void GameSession::UpdateFocus(double realSeconds) {
     const World& w = engine_.GetWorld();
     double wanted = 1.0;
-    if (pilot_.onFoot) {
+    if (pilot_->onFoot) {
         wanted = 1.0 / std::max(world_.timeScale, 1.0);  // una persona vive a tiempo real
-    } else if (vessel_.phase != GamePhase::Flying) {
+    } else if (vessel_->phase != GamePhase::Flying) {
         wanted = rules_.world.wreckTime;
     } else {
-        if (vessel_.warning && vessel_.warning->seconds < 8.0) wanted = rules_.world.dangerTime;
+        if (vessel_->warning && vessel_->warning->seconds < 8.0) wanted = rules_.world.dangerTime;
         if (Overheated()) wanted = rules_.world.dangerTime;  // da tiempo a salir de donde quema
         if (ModeInfo(world_.mode).hostilesAttack) {
-            const Vec3d sector = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_.nearestSystem)]);
+            const Vec3d sector = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(vessel_->nearestSystem)]);
             for (const Anomaly& a : world_.anomalies) {
-                if (a.system != vessel_.nearestSystem || a.stance != Stance::Hostile || a.hull <= 0.0) continue;
-                if (Length(sector + a.offset - vessel_.ship.position) < std::max(rules_.anomalies.hostileWeaponRange * 2.0, Scaled(rules_.combat, a.weapon, a.weaponTier).range * 1.3)) wanted = rules_.world.dangerTime;
+                if (a.system != vessel_->nearestSystem || a.stance != Stance::Hostile || a.hull <= 0.0) continue;
+                if (Length(sector + a.offset - vessel_->ship.position) < std::max(rules_.anomalies.hostileWeaponRange * 2.0, Scaled(rules_.combat, a.weapon, a.weaponTier).range * 1.3)) wanted = rules_.world.dangerTime;
             }
         }
         // Un proyectil en vuelo cerca de la nave tambien pide tiempo para reaccionar, sea quien sea el que dispara.
         for (const Projectile& p : bubble_.projectiles) {
-            if (!p.dead && Length(p.position - vessel_.ship.position) < rules_.combat.defenseRange * 4.0) wanted = rules_.world.dangerTime;
+            if (!p.dead && Length(p.position - vessel_->ship.position) < rules_.combat.defenseRange * 4.0) wanted = rules_.world.dangerTime;
         }
         // Junto a una estacion, mas despacio; pegada a ella, a tiempo real, para arrimarse a la escotilla.
         const double real = 1.0 / std::max(world_.timeScale, 1.0);
         for (const Station& s : world_.stations.All()) {
-            if (s.site.system != vessel_.nearestSystem || !StationVisible(s)) continue;
-            const double d = Length(StationPosition(s) - vessel_.ship.position), fine = rules_.ship.maneuverRange;
+            if (s.site.system != vessel_->nearestSystem || !StationVisible(s)) continue;
+            const double d = Length(StationPosition(s) - vessel_->ship.position), fine = rules_.ship.maneuverRange;
             if (d >= rules_.world.stationNear) continue;
             double near = rules_.world.stationTime;
-            if (d < fine && vessel_.dockPhase != DockPhase::Docked) near = real;  // atracada no hay que maniobrar
+            if (d < fine && vessel_->dockPhase != DockPhase::Docked) near = real;  // atracada no hay que maniobrar
             else if (d < fine * 10.0) near = real * std::pow(rules_.world.stationTime / real, std::log10(d / fine));
             wanted = std::min(wanted, std::max(near, real));
         }
     }
-    bubble_.timeFocus += (wanted - bubble_.timeFocus) * (1.0 - std::exp(-realSeconds / 0.35));
+    vessel_->timeFocus += (wanted - vessel_->timeFocus) * (1.0 - std::exp(-realSeconds / 0.35));
 }
 
 std::optional<CollisionWarning> GameSession::FindWarning() const {
-    if (vessel_.phase != GamePhase::Flying || vessel_.orbiting || vessel_.autopilot) return std::nullopt;  // la ruta ya se ocupa
+    if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || vessel_->autopilot) return std::nullopt;  // la ruta ya se ocupa
     const World& w = engine_.GetWorld();
-    const double rate = std::max(world_.timeScale * bubble_.timeFocus * vessel_.exteriorFactor, 1.0);
+    const double rate = std::max(world_.timeScale * bubble_.timeFocus * vessel_->exteriorFactor, 1.0);
     std::optional<CollisionWarning> out;
     double soonest = 30.0;  // segundos reales
-    const Vec3d velocity = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed;
+    const Vec3d velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed;
     for (const Body& b : w.bodies) {
         if (!Alive(b) || b.kind == PlanetClass::Belt) continue;
         const double limit = b.radius * (b.isStar ? rules_.ship.heatReach * 0.5 : 1.0);
-        const Vec3d offset = vessel_.ship.position - w.scene.WorldPosition(b.node);
-        const Vec3d relative = velocity + vessel_.frame.velocity - WorldVelocity(b);
+        const Vec3d offset = vessel_->ship.position - w.scene.WorldPosition(b.node);
+        const Vec3d relative = velocity + vessel_->frame.velocity - WorldVelocity(b);
         const double speed = Length(relative);
         if (speed < 0.05) continue;
         const Vec3d direction = relative * (1.0 / speed);
@@ -2129,26 +2185,26 @@ std::optional<CollisionWarning> GameSession::FindWarning() const {
 std::vector<Vec3d> GameSession::PredictedPath() const {
     std::vector<Vec3d> path;
     constexpr int kPoints = 96;
-    if (vessel_.orbiting) {
-        const std::optional<TargetInfo> info = Resolve(*vessel_.orbiting);
-        if (!info || vessel_.orbitRate <= 0.0) return path;
-        const Vec3d side = Cross(vessel_.orbitNormal, vessel_.orbitOffset);
+    if (vessel_->orbiting) {
+        const std::optional<TargetInfo> info = Resolve(*vessel_->orbiting);
+        if (!info || vessel_->orbitRate <= 0.0) return path;
+        const Vec3d side = Cross(vessel_->orbitNormal, vessel_->orbitOffset);
         // La nave esta aqui y la camara con ella: los puntos se aprietan junto a la nave.
         constexpr int kHalf = 180;
         for (int i = -kHalf; i <= kHalf; ++i) {
             const double t = static_cast<double>(i) / kHalf;
             const double a = kPi * t * t * t;
-            path.push_back(info->position + vessel_.orbitOffset * std::cos(a) + side * std::sin(a));
+            path.push_back(info->position + vessel_->orbitOffset * std::cos(a) + side * std::sin(a));
         }
         return path;
     }
-    if (vessel_.autopilot) {
-        const std::optional<TargetInfo> info = Resolve(*vessel_.autopilot);
+    if (vessel_->autopilot) {
+        const std::optional<TargetInfo> info = Resolve(*vessel_->autopilot);
         if (!info) return path;
-        path.push_back(vessel_.ship.position);
-        path.push_back(info->position + Normalize(vessel_.ship.position - info->position) * info->arrival);
+        path.push_back(vessel_->ship.position);
+        path.push_back(info->position + Normalize(vessel_->ship.position - info->position) * info->arrival);
         // La orbita de llegada.
-        const Vec3d in = Normalize(vessel_.ship.position - info->position);
+        const Vec3d in = Normalize(vessel_->ship.position - info->position);
         const Vec3d other = Normalize(Cross(in, std::abs(in.y) < 0.9 ? Vec3d{0, 1, 0} : Vec3d{1, 0, 0}));
         for (int i = 0; i <= kPoints; ++i) {
             const double a = 2.0 * kPi * i / kPoints;
@@ -2156,26 +2212,26 @@ std::vector<Vec3d> GameSession::PredictedPath() const {
         }
         return path;
     }
-    if (vessel_.ship.holding || vessel_.ship.speed < 0.5 || vessel_.ship.warpSpeed > rules_.drive.impulseSpeed) return path;
+    if (vessel_->ship.holding || vessel_->ship.speed < 0.5 || vessel_->ship.warpSpeed > rules_.drive.impulseSpeed) return path;
 
     // Inercia y gravedad, un buen trozo por delante.
-    Vec3d r = vessel_.ship.position - vessel_.frame.position, v = vessel_.ship.velocity;
+    Vec3d r = vessel_->ship.position - vessel_->frame.position, v = vessel_->ship.velocity;
     double period = 4.0 * 3600.0;
-    if (vessel_.frame.mu > 0.0) {
+    if (vessel_->frame.mu > 0.0) {
         const double radius = Length(r);
-        period = std::min(period * 6.0, 2.0 * kPi * std::sqrt(radius * radius * radius / vessel_.frame.mu));
+        period = std::min(period * 6.0, 2.0 * kPi * std::sqrt(radius * radius * radius / vessel_->frame.mu));
     }
     // El paso empieza en un par de km, porque la camara esta a un par de km, y crece con lo recorrido:
     // lejos, un tramo largo sigue pareciendo curvo. Salto de rana: la orbita se cierra sola.
     const auto pull = [&](const Vec3d& at) {
         const double d = Length(at);
-        return vessel_.frame.mu > 0.0 ? at * (-vessel_.frame.mu / (d * d * d)) : Vec3d{};
+        return vessel_->frame.mu > 0.0 ? at * (-vessel_->frame.mu / (d * d * d)) : Vec3d{};
     };
     double elapsed = 0;
     for (int i = 0; i < kPoints * 10 && elapsed < period; ++i) {
         const double radius = Length(r), speed = std::max(Length(v), 1e-3);
-        if (radius < vessel_.frame.radius) break;
-        path.push_back(vessel_.frame.position + r);
+        if (radius < vessel_->frame.radius) break;
+        path.push_back(vessel_->frame.position + r);
         const double dt = std::min(std::max(elapsed * 0.03, 2.0 / speed), std::min(radius * 0.02 / speed, period / 120.0));
         const Vec3d before = pull(r);
         r += v * dt + before * (0.5 * dt * dt);
@@ -2189,35 +2245,35 @@ std::vector<Vec3d> GameSession::PredictedPath() const {
 // apunta y con la gravedad de aqui. Junto a una estacion, en su marco y con sus topes.
 std::vector<Vec3d> GameSession::ManeuverPath(double realSeconds) const {
     std::vector<Vec3d> path;
-    if (vessel_.phase != GamePhase::Flying || vessel_.orbiting || pilot_.onFoot || realSeconds <= 0.0) return path;
+    if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || pilot_->onFoot || realSeconds <= 0.0) return path;
     constexpr int kSteps = 160;
     const double dt = realSeconds / kSteps;
     const double rate = world_.timeScale * bubble_.timeFocus;
-    ShipState s = vessel_.ship;
-    Vec3d origin = vessel_.frame.position, matched;
-    const int anchor = vessel_.autopilot ? -1 : StationFrame();
+    ShipState s = vessel_->ship;
+    Vec3d origin = vessel_->frame.position, matched;
+    const int anchor = vessel_->autopilot ? -1 : StationFrame();
     if (anchor >= 0) {
-        const std::optional<TargetInfo> info = Resolve({Kind::Station, vessel_.nearestSystem, anchor});
+        const std::optional<TargetInfo> info = Resolve({Kind::Station, vessel_->nearestSystem, anchor});
         origin = info->position;
-        matched = info->velocity - vessel_.frame.velocity;
+        matched = info->velocity - vessel_->frame.velocity;
     }
-    s.position = vessel_.ship.position - origin;
-    s.velocity = vessel_.ship.velocity - matched;
-    path.push_back(vessel_.ship.position);
+    s.position = vessel_->ship.position - origin;
+    s.velocity = vessel_->ship.velocity - matched;
+    path.push_back(vessel_->ship.position);
     for (int i = 0; i < kSteps; ++i) {
         StepHeading(s, rules_.ship, dt);
         DriveInput order;
         const double d = std::max(Length(s.position), 1.0);
-        if (anchor < 0 && vessel_.frame.mu > 0.0) order.gravity = s.position * (-vessel_.frame.mu / (d * d * d));
-        order.dragScale = anchor >= 0 || (vessel_.frame.body >= 0 && !engine_.GetWorld().bodies[static_cast<std::size_t>(vessel_.frame.body)].isStar) ? 0.0 : 1.0;
-        StepDrive(s, rules_, dt * rate, dt * rate * vessel_.exteriorFactor, dt, order);
+        if (anchor < 0 && vessel_->frame.mu > 0.0) order.gravity = s.position * (-vessel_->frame.mu / (d * d * d));
+        order.dragScale = anchor >= 0 || (vessel_->frame.body >= 0 && !engine_.GetWorld().bodies[static_cast<std::size_t>(vessel_->frame.body)].isStar) ? 0.0 : 1.0;
+        StepDrive(s, rules_, dt * rate, dt * rate * vessel_->exteriorFactor, dt, order);
         if (anchor >= 0) {
             const double distance = Length(s.position);
             const double top = StationTop(distance, Dot(s.velocity, s.position) < 0.0);
             if (s.throttle == 0.0) s.velocity = s.velocity * std::exp(-dt / rules_.ship.driftDamping);
             const double speed = Length(s.velocity);
             if (speed > top) s.velocity = s.velocity * (top / speed);
-        } else if (vessel_.frame.body >= 0 && Length(s.position) < vessel_.frame.radius) {
+        } else if (vessel_->frame.body >= 0 && Length(s.position) < vessel_->frame.radius) {
             break;
         }
         path.push_back(origin + s.position);
@@ -2226,41 +2282,41 @@ std::vector<Vec3d> GameSession::ManeuverPath(double realSeconds) const {
 }
 
 void GameSession::LoseShipTo(const std::string& reason) {
-    if (vessel_.phase != GamePhase::Flying) return;
-    vessel_.lossReason = reason;
-    vessel_.warning.reset();
+    if (vessel_->phase != GamePhase::Flying) return;
+    vessel_->lossReason = reason;
+    vessel_->warning.reset();
     LoseShip();
 }
 
 // Un cuerpo no se atraviesa. Por debajo de cierta velocidad, el golpe abolla el casco; por encima,
 // la nave se deshace. Lo que se lleva por dentro se pierde: nunca se impide alejarse.
 void GameSession::Impact(const std::string& name, const Vec3d& normal, const Vec3d& bodyVelocity, bool star) {
-    const Vec3d world = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed + vessel_.frame.velocity;
+    const Vec3d world = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity;
     const double closing = -Dot(world - bodyVelocity, normal);
     if (closing <= 0.0) return;
 
     const GameMode& mode = ModeInfo(world_.mode);
-    if (mode.damage > 0.0 && !vessel_.creative) {  // en creativo choca igual, pero sin dano
+    if (mode.damage > 0.0 && !vessel_->creative) {  // en creativo choca igual, pero sin dano
         if (star) return LoseShipTo("Nave vaporizada en " + name + ".");
         if (closing >= rules_.ship.shatterSpeed) return LoseShipTo("Nave pulverizada contra " + name + ".");
         const double share = closing / rules_.ship.shatterSpeed;
         const double taken = rules_.ship.hull * share * share * mode.damage;
-        vessel_.ship.hull = std::max(vessel_.ship.hull - taken, 0.0);
+        vessel_->ship.hull = std::max(vessel_->ship.hull - taken, 0.0);
         Say("Impacto contra " + name + ".");
         WoundHull(taken, normal * -1.0, true);  // el golpe llega por el lado que da al cuerpo
     }
     // Se queda en la superficie, con lo que no iba hacia dentro.
-    vessel_.ship.warpSpeed = 0.0;
-    vessel_.ship.warpCharge = 0.0;
-    const double left = -Dot(vessel_.ship.velocity + vessel_.frame.velocity - bodyVelocity, normal);
-    if (left > 0.0) vessel_.ship.velocity += normal * left;
+    vessel_->ship.warpSpeed = 0.0;
+    vessel_->ship.warpCharge = 0.0;
+    const double left = -Dot(vessel_->ship.velocity + vessel_->frame.velocity - bodyVelocity, normal);
+    if (left > 0.0) vessel_->ship.velocity += normal * left;
 }
 
 // from es donde estaba antes de este paso: a gran velocidad un paso puede saltarse un planeta
 // entero, asi que se comprueba todo el tramo recorrido y no solo el final.
 void GameSession::KeepOutOfBodies(const Vec3d& from) {
     const World& w = engine_.GetWorld();
-    const Vec3d travel = vessel_.ship.position - from;
+    const Vec3d travel = vessel_->ship.position - from;
     const double length = Length(travel);
     double first = 2.0;
     Vec3d hit, hitCenter;
@@ -2269,10 +2325,10 @@ void GameSession::KeepOutOfBodies(const Vec3d& from) {
         if (!Alive(b) || b.kind == PlanetClass::Belt) continue;
         const Vec3d center = w.scene.WorldPosition(b.node);
         const double limit = b.radius + kSoftTouch;
-        const Vec3d offset = vessel_.ship.position - center;
+        const Vec3d offset = vessel_->ship.position - center;
         const double distance = Length(offset);
         if (distance < limit && distance > 0.0) {
-            vessel_.ship.position = center + offset * (limit / distance);
+            vessel_->ship.position = center + offset * (limit / distance);
             Impact(b.name, offset * (1.0 / distance), WorldVelocity(b), b.isStar);
             continue;
         }
@@ -2290,7 +2346,7 @@ void GameSession::KeepOutOfBodies(const Vec3d& from) {
         }
     }
     if (struck) {
-        vessel_.ship.position = hit;
+        vessel_->ship.position = hit;
         Impact(struck->name, Normalize(hit - hitCenter), WorldVelocity(*struck), struck->isStar);
     }
 }
@@ -2299,26 +2355,32 @@ void GameSession::KeepOutOfBodies(const Vec3d& from) {
 // recorrido, como con los astros. Embestir una nave o un bastion le hace el mismo dano que recibe
 // el casco propio; atracando, la estacion deja pasar a la nave.
 void GameSession::KeepOutOfStructures(const Vec3d& from) {
-    const Vec3d travel = vessel_.ship.position - from;
+    const Vec3d travel = vessel_->ship.position - from;
     const double squared = std::max(Dot(travel, travel), 1e-12);
-    struct Solid { Vec3d center, velocity; double radius; std::string name; int anomaly; };
+    struct Solid { Vec3d center, velocity; double radius; std::string name; int anomaly; int vessel; };
     std::vector<Solid> solids;
     for (const Anomaly& a : world_.anomalies) {
-        if (a.system != vessel_.nearestSystem || (a.maxHull > 0.0 && a.hull <= 0.0)) continue;
-        solids.push_back({AnomalyPosition(a), a.velocity, a.radius, a.name, a.id});
+        if (a.system != vessel_->nearestSystem || (a.maxHull > 0.0 && a.hull <= 0.0)) continue;
+        solids.push_back({AnomalyPosition(a), a.velocity, a.radius, a.name, a.id, -1});
+    }
+    // Las demas naves de la flota tambien son solidas: chocar con una dana a las dos.
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        const Vessel& v = fleet_[i];
+        if (&v == vessel_ || v.phase != GamePhase::Flying) continue;
+        solids.push_back({v.ship.position, VelocityOf(v), rules_.ship.radius, "la nave " + std::to_string(v.id), -1, static_cast<int>(i)});
     }
     // Las estaciones propias son pequenas al lado de la nave (1,2 km): cuenta su eslora entera, de
     // proa a popa, y no una esfera que no dejaria arrimarse a la escotilla.
-    if (vessel_.dockPhase == DockPhase::None) {
-        const Vec3d heading = Heading(vessel_.ship);
+    if (vessel_->dockPhase == DockPhase::None) {
+        const Vec3d heading = Heading(vessel_->ship);
         const double half = rules_.ship.bow;
         for (const Station& s : world_.stations.All()) {
-            if (s.site.system != vessel_.nearestSystem || !StationVisible(s)) continue;
+            if (s.site.system != vessel_->nearestSystem || !StationVisible(s)) continue;
             const std::optional<TargetInfo> info = Resolve({Kind::Station, s.site.system, s.id});
             if (!info) continue;
             double limit = info->radius + rules_.ship.beam;
-            const double along = std::clamp(Dot(info->position - vessel_.ship.position, heading), -half, half);
-            Vec3d nearest = vessel_.ship.position + heading * along;
+            const double along = std::clamp(Dot(info->position - vessel_->ship.position, heading), -half, half);
+            Vec3d nearest = vessel_->ship.position + heading * along;
             Vec3d away = nearest - info->position;
             double gap = Length(away);
             if (s.kind == StationKind::Shipyard) {
@@ -2329,7 +2391,7 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
                 limit = kTube + rules_.ship.beam * 0.5;
                 gap = 1e300;
                 for (int k = 0; k <= 16; ++k) {
-                    const Vec3d p = vessel_.ship.position + heading * (half * (static_cast<double>(k) / 8.0 - 1.0));
+                    const Vec3d p = vessel_->ship.position + heading * (half * (static_cast<double>(k) / 8.0 - 1.0));
                     const Vec3d v = p - info->position;
                     const Vec3d radial = v - axis * Dot(v, axis);
                     const double r = Length(radial);
@@ -2343,13 +2405,13 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
                     }
                 }
             }
-            if (s.id == vessel_.undockGrace) {
-                if (gap > limit + 0.05) vessel_.undockGrace = -1;  // ya se ha apartado
+            if (s.id == vessel_->undockGrace) {
+                if (gap > limit + 0.05) vessel_->undockGrace = -1;  // ya se ha apartado
                 continue;
             }
             if (gap >= limit) continue;
             const Vec3d normal = gap > 1e-9 ? away * (1.0 / gap) : heading * -1.0;
-            vessel_.ship.position += normal * (limit - gap);
+            vessel_->ship.position += normal * (limit - gap);
             Impact(s.name, normal, info->velocity, false);
             return;
         }
@@ -2365,16 +2427,23 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
         const double inside = b * b - squared * c;
         const double t = c <= 0.0 ? 0.0 : std::clamp((-b - std::sqrt(std::max(inside, 0.0))) / squared, 0.0, 1.0);
         Vec3d away = from + travel * t - s.center;
-        if (Length(away) < 1e-9) away = Heading(vessel_.ship) * -1.0;
+        if (Length(away) < 1e-9) away = Heading(vessel_->ship) * -1.0;
         const Vec3d normal = Normalize(away);
-        vessel_.ship.position = s.center + normal * limit;
-        const Vec3d world = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed + vessel_.frame.velocity;
+        vessel_->ship.position = s.center + normal * limit;
+        const Vec3d world = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity;
         const double closing = -Dot(world - s.velocity, normal);
         if (s.anomaly >= 0 && closing > 0.0) {
             if (Anomaly* a = FindAnomaly(s.anomaly); a && a->maxHull > 0.0) {
                 const double share = closing / rules_.ship.shatterSpeed;
                 DamageAnomaly(*a, DamageType::Kinetic, rules_.ship.hull * share * share, 0);
             }
+        }
+        if (s.vessel >= 0 && closing > 0.0) {
+            // La otra recibe el mismo golpe, por el lado contrario.
+            const Vec3d mine = world;
+            const std::string name = "la nave " + std::to_string(vessel_->id);
+            const Using other(*this, s.vessel);
+            Impact(name, normal * -1.0, mine, false);
         }
         Impact(s.name, normal, s.velocity, false);
         world_.anomalies.erase(std::remove_if(world_.anomalies.begin(), world_.anomalies.end(), [](const Anomaly& a) { return a.maxHull > 0.0 && a.hull <= 0.0; }), world_.anomalies.end());
@@ -2385,14 +2454,14 @@ void GameSession::KeepOutOfStructures(const Vec3d& from) {
 // Las rocas sueltas del anillo (BeltField): las mismas que se dibujan, en orbitas circulares.
 void GameSession::CheckFieldRocks(const Vec3d& from) {
     const World& w = engine_.GetWorld();
-    const Vec3d travel = vessel_.ship.position - from;
+    const Vec3d travel = vessel_->ship.position - from;
     const double reach = Length(travel) + 40.0;
-    const bool plasma = vessel_.ship.defense.field == ShieldKind::Plasma && FieldActive();
+    const bool plasma = vessel_->ship.defense.field == ShieldKind::Plasma && FieldActive();
     std::vector<BeltFieldRock> rocks;
     for (const AsteroidBelt& belt : w.belts) {
         if (!belt.used || belt.parent == kNoNode || belt.mu <= 0.0 || belt.families.empty() || belt.families.front().fixed) continue;
         rocks.clear();
-        BeltField(belt, w.scene.World(belt.parent), w.scene.WorldPosition(belt.parent), vessel_.ship.position, reach, bubble_.simTime, BeltRockTier(belt), rocks);
+        BeltField(belt, w.scene.World(belt.parent), w.scene.WorldPosition(belt.parent), vessel_->ship.position, reach, bubble_.simTime, BeltRockTier(belt), rocks);
         const double squared = std::max(Dot(travel, travel), 1e-9);
         for (const BeltFieldRock& rock : rocks) {
             if (plasma && static_cast<double>(rock.radius) < rules_.defense.plasmaRock) continue;  // se vaporiza sin notarlo
@@ -2401,7 +2470,7 @@ void GameSession::CheckFieldRocks(const Vec3d& from) {
             const double limit = static_cast<double>(rock.radius) + kSoftTouch * 0.6;
             if (Dot(away, away) >= limit * limit) continue;
             const Vec3d normal = Length(away) > 1e-6 ? Normalize(away) : Normalize(from - rock.position);
-            vessel_.ship.position = rock.position + normal * limit;
+            vessel_->ship.position = rock.position + normal * limit;
             Impact("un asteroide", normal, rock.velocity, false);
             return;
         }
@@ -2410,36 +2479,36 @@ void GameSession::CheckFieldRocks(const Vec3d& from) {
 
 // Las rocas del cumulo en el que esta la nave. Se generan solo aqui, y salen de su semilla.
 void GameSession::CheckRocks(const Vec3d& from) {
-    if (vessel_.frame.belt < 0) return;
+    if (vessel_->frame.belt < 0) return;
     const World& w = engine_.GetWorld();
-    const AsteroidFamily& family = w.belts[static_cast<std::size_t>(vessel_.frame.belt)].families[static_cast<std::size_t>(vessel_.frame.family)];
+    const AsteroidFamily& family = w.belts[static_cast<std::size_t>(vessel_->frame.belt)].families[static_cast<std::size_t>(vessel_->frame.family)];
     if (bubble_.rocks.size() > 32 && bubble_.rocks.find(family.seed) == bubble_.rocks.end()) bubble_.rocks.clear();
     std::vector<AsteroidRock>& rocks = bubble_.rocks[family.seed];
     if (rocks.empty()) rocks = GenerateRocks(family);
     // Una mina ya ha despejado lo que tenia alrededor: ahi se maniobra sin rocas.
     for (const Station& s : world_.stations.All()) {
-        if (s.site.system != vessel_.nearestSystem || !StationVisible(s)) continue;
-        const Vec3d at = StationPosition(s) - vessel_.frame.position;
+        if (s.site.system != vessel_->nearestSystem || !StationVisible(s)) continue;
+        const Vec3d at = StationPosition(s) - vessel_->frame.position;
         if (Length(at) > static_cast<double>(family.radius) + kStationClearing) continue;
         for (std::size_t i = 0; i < rocks.size(); ++i)
             if (Length(Vec3d(rocks[i].offset) - at) < kStationClearing + static_cast<double>(rocks[i].radius)) engine_.GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
     }
     const auto dead = w.deadRocks.find(family.seed);
-    const Vec3d travel = vessel_.ship.position - from;
+    const Vec3d travel = vessel_->ship.position - from;
     const double squared = std::max(Dot(travel, travel), 1e-9);
     for (std::size_t i = 0; i < rocks.size(); ++i) {
         const AsteroidRock& rock = rocks[i];
         if (dead != w.deadRocks.end() && dead->second.count(static_cast<int>(i)) != 0) continue;
-        const Vec3d center = vessel_.frame.position + Vec3d(rock.offset);
+        const Vec3d center = vessel_->frame.position + Vec3d(rock.offset);
         const double along = std::clamp(Dot(center - from, travel) / squared, 0.0, 1.0);
         const Vec3d closest = from + travel * along;
         const double limit = static_cast<double>(rock.radius) + kSoftTouch * 0.6;
         const Vec3d away = closest - center;
         if (Dot(away, away) >= limit * limit) continue;
         // El plasma vaporiza las rocas pequenas al instante: la nave sigue sin notarlas.
-        if (static_cast<double>(rock.radius) < rules_.defense.plasmaRock && vessel_.ship.defense.field == ShieldKind::Plasma && FieldActive()) {
+        if (static_cast<double>(rock.radius) < rules_.defense.plasmaRock && vessel_->ship.defense.field == ShieldKind::Plasma && FieldActive()) {
             engine_.GetWorld().deadRocks[family.seed].insert(static_cast<int>(i));
-            DefenseState& d = vessel_.ship.defense;
+            DefenseState& d = vessel_->ship.defense;
             const std::size_t k = static_cast<std::size_t>(ShieldKind::Plasma);
             d.charge[k] = std::max(d.charge[k] - static_cast<double>(rock.radius) * 100.0, 0.0);
             d.heat = std::min(d.heat + static_cast<double>(rock.radius) * 10.0, rules_.thermal.maximum);
@@ -2447,8 +2516,8 @@ void GameSession::CheckRocks(const Vec3d& from) {
             continue;
         }
         const Vec3d normal = Length(away) > 1e-6 ? Normalize(away) : Normalize(from - center);
-        vessel_.ship.position = center + normal * limit;
-        Impact("un asteroide", normal, vessel_.frame.velocity, false);
+        vessel_->ship.position = center + normal * limit;
+        Impact("un asteroide", normal, vessel_->frame.velocity, false);
         return;
     }
 }
@@ -2456,18 +2525,30 @@ void GameSession::CheckRocks(const Vec3d& from) {
 void GameSession::UpdateAnomalies(double seconds) {
     const World& w = engine_.GetWorld();
     const GameMode& mode = ModeInfo(world_.mode);
-    const double close = Visibility() * 1.5;
-    // El plasma hace brillar la nave: los hostiles la ven desde mucho mas lejos.
-    const double sight = vessel_.ship.defense.field == ShieldKind::Plasma && FieldActive() ? rules_.defense.plasmaSight : 1.0;
     // La alerta baja con el tiempo; al acabar una rendicion, la flota vuelve reforzada.
     DecayAlertUntil(world_.species, bubble_.simTime, bubble_.simTime - seconds, rules_.alert);
     if (EndSurrender(world_.species, world_.anomalies, bubble_.simTime, rules_.alert)) Say("La flota alienígena vuelve al combate, un 50 % más fuerte.", Audience::Everyone);
     const bool surrender = Surrendered(world_.species, bubble_.simTime);
     for (Anomaly& a : world_.anomalies) {
         const Vec3d sector = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(a.system)]);
-        const Vec3d ship = vessel_.ship.position - sector;
-        const double distance = Length(ship - a.offset);
-        if (distance > rules_.anomalies.activeRange) continue;
+        // Cada anomalia atiende a la nave en vuelo que tiene mas cerca: a ella persigue, a ella dispara
+        // y a su tripulacion van los avisos.
+        int nearest = -1;
+        double distance = 1.0e300;
+        for (std::size_t i = 0; i < fleet_.size(); ++i) {
+            if (fleet_[i].phase != GamePhase::Flying) continue;
+            const double d = Length(fleet_[i].ship.position - sector - a.offset);
+            if (d < distance) {
+                distance = d;
+                nearest = static_cast<int>(i);
+            }
+        }
+        if (nearest < 0 || distance > rules_.anomalies.activeRange) continue;
+        const Using target(*this, nearest);
+        const Vec3d ship = vessel_->ship.position - sector;
+        const double close = Visibility() * 1.5;
+        // El plasma hace brillar la nave: los hostiles la ven desde mucho mas lejos.
+        const double sight = vessel_->ship.defense.field == ShieldKind::Plasma && FieldActive() ? rules_.defense.plasmaSight : 1.0;
         // El planeta coraza mide como Jupiter: lo que cuenta es la distancia a su superficie.
         const bool planet = IsArmorPlanet(a);
         const double gap = planet ? std::max(distance - a.radius, 0.0) : distance;
@@ -2511,18 +2592,96 @@ const Anomaly* GameSession::FindAnomaly(int id) const {
 
 // ---- Combate -------------------------------------------------------------------------------
 
-Vec3d GameSession::ShipVelocity() const {
-    if (vessel_.orbiting) {
-        if (const std::optional<TargetInfo> info = Resolve(*vessel_.orbiting)) return info->velocity + vessel_.ship.moveDirection * vessel_.ship.speed;
+Vec3d GameSession::ShipVelocity() const { return VelocityOf(*vessel_); }
+
+// La de cualquier nave de la flota. Si sigue a otra nave no se pregunta por ella: dos que se siguieran
+// la una a la otra no acabarian nunca.
+Vec3d GameSession::VelocityOf(const Vessel& v) const {
+    if (v.orbiting && v.orbiting->kind != Kind::Ship) {
+        if (const std::optional<TargetInfo> info = Resolve(*v.orbiting)) return info->velocity + v.ship.moveDirection * v.ship.speed;
     }
-    return vessel_.ship.velocity + vessel_.frame.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed;
+    return v.ship.velocity + v.frame.velocity + v.ship.warpHeading * v.ship.warpSpeed;
+}
+
+int GameSession::IndexOf(const Vessel& v) const {
+    for (std::size_t i = 0; i < fleet_.size(); ++i)
+        if (&fleet_[i] == &v) return static_cast<int>(i);
+    return 0;
+}
+
+int GameSession::IndexOfId(int id) const {
+    for (std::size_t i = 0; i < fleet_.size(); ++i)
+        if (fleet_[i].id == id) return static_cast<int>(i);
+    return -1;
+}
+
+bool GameSession::SetFocus(int index) {
+    if (index < 0 || index >= static_cast<int>(fleet_.size())) return false;
+    focus_ = index;
+    Use(index);
+    return true;
+}
+
+// Otra nave en la flota, a km de la del foco, a su costado y parada, con un jugador nuevo que sabe lo
+// mismo que el del foco. Devuelve su id.
+int GameSession::AddVessel(double km) {
+    const Vessel& origin = fleet_[static_cast<std::size_t>(focus_)];
+    const PlayerState& guide = crews_[static_cast<std::size_t>(focus_)];
+    const Vec3d side = origin.ship.orientation.ToMatrix().TransformDirection(Vec3d{1, 0, 0});
+    fleet_.emplace_back();
+    crews_.emplace_back();
+    Vessel& v = fleet_.back();
+    v.id = nextVessel_++;
+    v.ship = MakeShip(rules_);
+    v.ship.position = origin.ship.position + side * std::max(km, rules_.ship.radius * 4.0);
+    v.ship.orientation = v.ship.aim = origin.ship.orientation;
+    v.ship.moveDirection = v.ship.warpHeading = Heading(origin.ship);
+    v.nearestSystem = origin.nearestSystem;
+    v.timeFocus = origin.timeFocus;
+    PlayerState& p = crews_.back();
+    p.id = "local-" + std::to_string(v.id);
+    p.name = "Piloto " + std::to_string(v.id);
+    p.known = guide.known;
+    p.visited = guide.visited;
+    p.scanned = guide.scanned;
+    p.cursorUsed = p.analysisUsed = true;
+    // Fase 3a: mientras haya varias naves, ninguna sale de este sistema (ver LeashToFleet).
+    fleetSystem_ = origin.nearestSystem;
+    Use(focus_);  // emplace_back no mueve las demas, pero la nave en curso se vuelve a fijar por si acaso
+    return v.id;
+}
+
+// Limite provisional de la fase 3a: el motor solo carga un sistema, el de la nave del foco, asi que
+// con varias naves ninguna sale del sistema donde esta la flota. Se quita con las burbujas (fase 4).
+void GameSession::LeashToFleet() {
+    if (fleet_.size() < 2 || fleetSystem_ < 0) return;
+    const World& w = engine_.GetWorld();
+    const std::size_t s = static_cast<std::size_t>(fleetSystem_);
+    const Vec3d center = w.scene.WorldPosition(w.sectors[s]);
+    const double limit = w.extents[s] * 1.5;
+    const Vec3d out = vessel_->ship.position - center;
+    const double distance = Length(out);
+    if (distance <= limit) {
+        if (distance < limit * 0.95) vessel_->leashWarned = false;
+        return;
+    }
+    const Vec3d normal = out * (1.0 / distance);
+    vessel_->ship.position = center + normal * limit;
+    vessel_->ship.warpSpeed = 0.0;
+    vessel_->ship.warpCharge = 0.0;
+    vessel_->ship.throttle = 0.0;
+    const double leaving = Dot(vessel_->ship.velocity, normal);
+    if (leaving > 0.0) vessel_->ship.velocity += normal * -leaving;
+    if (vessel_->autopilot) CancelAutopilot();
+    if (!vessel_->leashWarned) Say("Con varias naves en la partida, ninguna puede salir todavía de este sistema.");
+    vessel_->leashWarned = true;
 }
 
 // Los astros del sistema que tiran de un proyectil. Los asteroides y cometas apenas atraen.
 std::vector<GravitySource> GameSession::GravitySources() const {
     std::vector<GravitySource> out;
     const World& w = engine_.GetWorld();
-    const SystemState& state = w.state[static_cast<std::size_t>(vessel_.nearestSystem)];
+    const SystemState& state = w.state[static_cast<std::size_t>(vessel_->nearestSystem)];
     if (!state.loaded) return out;
     std::vector<int> seen;
     const auto add = [&](int index) {
@@ -2541,7 +2700,7 @@ std::vector<GravitySource> GameSession::GravitySources() const {
 
 int GameSession::WeaponTier(WeaponKind kind) const {
     int tier = 1;
-    for (const WeaponMount& m : vessel_.ship.weapons)
+    for (const WeaponMount& m : vessel_->ship.weapons)
         if (m.kind == kind) tier = std::max(tier, m.tier);
     return tier;
 }
@@ -2550,7 +2709,7 @@ double GameSession::WeaponRange(WeaponKind kind) const { return Scaled(rules_.co
 
 double GameSession::WeaponCooldown(WeaponKind kind) const {
     double soonest = 1e300;
-    for (const WeaponMount& m : vessel_.ship.weapons)
+    for (const WeaponMount& m : vessel_->ship.weapons)
         if (m.kind == kind) soonest = std::min(soonest, m.cooldown);
     return soonest;
 }
@@ -2560,12 +2719,12 @@ void GameSession::TrackTarget(const TargetRef& target) {
         Say("Sin solución de tiro para alinear.");
         return;
     }
-    if (vessel_.autopilot) CancelAutopilot();
-    vessel_.tracking = target;
+    if (vessel_->autopilot) CancelAutopilot();
+    vessel_->tracking = target;
 }
 
 bool GameSession::WeaponReady(WeaponKind kind) const {
-    for (const WeaponMount& m : vessel_.ship.weapons)
+    for (const WeaponMount& m : vessel_->ship.weapons)
         if (m.kind == kind && m.cooldown <= 0.0) return true;
     return false;
 }
@@ -2575,7 +2734,7 @@ std::optional<FiringSolution> GameSession::Solution(const TargetRef& target, Wea
     const Anomaly* a = FindAnomaly(target.index);
     if (!a || a->maxHull <= 0.0 || a->hull <= 0.0) return std::nullopt;
     const WeaponRules spec = Scaled(rules_.combat, kind, WeaponTier(kind));
-    const FiringSolution s = Solve(vessel_.ship.position, ShipVelocity(), AnomalyPosition(*a), a->velocity, spec.speed, kind == WeaponKind::Spinal, GravitySources(), vessel_.ship.computerTier, rules_.combat);
+    const FiringSolution s = Solve(vessel_->ship.position, ShipVelocity(), AnomalyPosition(*a), a->velocity, spec.speed, kind == WeaponKind::Spinal, GravitySources(), vessel_->ship.computerTier, rules_.combat);
     if (!s.valid) return std::nullopt;
     return s;
 }
@@ -2583,20 +2742,20 @@ std::optional<FiringSolution> GameSession::Solution(const TargetRef& target, Wea
 bool GameSession::AimAtSolution(const TargetRef& target, WeaponKind kind) {
     const std::optional<FiringSolution> s = Solution(target, kind);
     if (!s) return false;
-    AimAt(vessel_.ship, s->direction);
-    LimitAim(vessel_.ship, rules_.ship.aimLead);
+    AimAt(vessel_->ship, s->direction);
+    LimitAim(vessel_->ship, rules_.ship.aimLead);
     return true;
 }
 
 bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
-    if (vessel_.phase != GamePhase::Flying || pilot_.onFoot) return false;
+    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
     const std::string name = Name(kind);
     const Anomaly* a = target.kind == Kind::Anomaly ? FindAnomaly(target.index) : nullptr;
     if (!a || a->maxHull <= 0.0 || a->hull <= 0.0) {
         Say("Sin blanco: fija una nave o un bastión.");
         return false;
     }
-    if (vessel_.ship.warpSpeed > rules_.drive.impulseSpeed) {
+    if (vessel_->ship.warpSpeed > rules_.drive.impulseSpeed) {
         Say("No se puede disparar con la burbuja formada.");
         return false;
     }
@@ -2606,7 +2765,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
     }
     WeaponMount* mount = nullptr;
     bool mounted = false;
-    for (WeaponMount& m : vessel_.ship.weapons) {
+    for (WeaponMount& m : vessel_->ship.weapons) {
         if (m.kind != kind) continue;
         mounted = true;
         if (m.cooldown <= 0.0) {
@@ -2623,12 +2782,12 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
         return false;
     }
     const WeaponRules spec = Scaled(rules_.combat, kind, mount->tier);
-    if (Length(AnomalyPosition(*a) - vessel_.ship.position) > spec.range) {
+    if (Length(AnomalyPosition(*a) - vessel_->ship.position) > spec.range) {
         Say(name + ": fuera de alcance (" + Fixed(spec.range / 1000.0, 0) + " mil km).");
         return false;
     }
-    if (vessel_.ship.energy < spec.energy || vessel_.ship.antimatter < spec.antimatter || vessel_.ship.cargo.Get(Resource::Metal) < spec.metal) {
-        Say(name + ": sin " + (vessel_.ship.energy < spec.energy ? "energía" : vessel_.ship.antimatter < spec.antimatter ? "antimateria" : "metal") + " para disparar.");
+    if (vessel_->ship.energy < spec.energy || vessel_->ship.antimatter < spec.antimatter || vessel_->ship.cargo.Get(Resource::Metal) < spec.metal) {
+        Say(name + ": sin " + (vessel_->ship.energy < spec.energy ? "energía" : vessel_->ship.antimatter < spec.antimatter ? "antimateria" : "metal") + " para disparar.");
         return false;
     }
     const std::optional<FiringSolution> s = Solution(target, kind);
@@ -2638,14 +2797,14 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
     }
 
     Vec3d direction = s->direction;
-    if (kind == WeaponKind::Spinal) direction = Heading(vessel_.ship);  // fijo al casco
-    else if (kind == WeaponKind::Turret) direction = Scatter(direction, AimError(rules_.combat, vessel_.ship.computerTier) * AimSpread(vessel_.ship.zones), bubble_.rng);  // el puente apunta
+    if (kind == WeaponKind::Spinal) direction = Heading(vessel_->ship);  // fijo al casco
+    else if (kind == WeaponKind::Turret) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * AimSpread(vessel_->ship.zones), bubble_.rng);  // el puente apunta
 
-    vessel_.ship.energy -= spec.energy;
-    vessel_.ship.antimatter -= spec.antimatter;
-    vessel_.ship.cargo.Add(Resource::Metal, -spec.metal);
+    vessel_->ship.energy -= spec.energy;
+    vessel_->ship.antimatter -= spec.antimatter;
+    vessel_->ship.cargo.Add(Resource::Metal, -spec.metal);
     mount->cooldown = spec.cooldown;
-    vessel_.ship.defense.heat = std::min(vessel_.ship.defense.heat + rules_.thermal.weaponHeat[static_cast<int>(kind)], rules_.thermal.maximum);
+    vessel_->ship.defense.heat = std::min(vessel_->ship.defense.heat + rules_.thermal.weaponHeat[static_cast<int>(kind)], rules_.thermal.maximum);
     const Vec3d shooter = ShipVelocity();
     for (int i = 0; i < spec.count; ++i) {
         Projectile p;
@@ -2653,6 +2812,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
         p.type = spec.type;
         p.team = 0;
         p.owner = 0;
+        p.ship = vessel_->id;
         p.target = a->id;
         p.damage = spec.damage;
         p.proximity = spec.proximity;
@@ -2665,8 +2825,8 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
         // Una torreta de modulo dispara desde su ranura; las de serie, desde el borde del casco.
         const ShipDesign& design = CurrentShipDesign();
         if (mount->slot >= 0 && mount->slot < static_cast<int>(design.slots.size()))
-            p.position = vessel_.ship.position + vessel_.ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(mount->slot)].position * 0.001) + dir * 0.03;
-        else p.position = vessel_.ship.position + dir * (rules_.ship.radius + 0.1);
+            p.position = vessel_->ship.position + vessel_->ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(mount->slot)].position * 0.001) + dir * 0.03;
+        else p.position = vessel_->ship.position + dir * (rules_.ship.radius + 0.1);
         p.origin = p.position;
         p.velocity = p.beam ? dir * spec.speed : shooter + dir * (p.guided ? spec.speed * 0.3 : spec.speed);
         bubble_.projectiles.push_back(p);
@@ -2682,19 +2842,19 @@ int GameSession::FireAll(const TargetRef& target) {
         const std::optional<FiringSolution> s = Solution(target, kind);
         if (!s || s->flightTime * Scaled(rules_.combat, kind, 1).speed > WeaponRange(kind) * 1.2) continue;
         const Anomaly* a = FindAnomaly(target.index);
-        if (!a || Length(AnomalyPosition(*a) - vessel_.ship.position) > WeaponRange(kind)) continue;
-        if (kind == WeaponKind::Spinal && std::acos(std::clamp(Dot(Heading(vessel_.ship), s->direction), -1.0, 1.0)) * Length(AnomalyPosition(*a) - vessel_.ship.position) > Scaled(rules_.combat, kind, 1).proximity) continue;
+        if (!a || Length(AnomalyPosition(*a) - vessel_->ship.position) > WeaponRange(kind)) continue;
+        if (kind == WeaponKind::Spinal && std::acos(std::clamp(Dot(Heading(vessel_->ship), s->direction), -1.0, 1.0)) * Length(AnomalyPosition(*a) - vessel_->ship.position) > Scaled(rules_.combat, kind, 1).proximity) continue;
         if (Fire(kind, target)) ++fired;
     }
     // Las armas humanas de los modulos: las que esten listas y tengan blanco a tiro.
-    for (std::size_t i = 0; i < vessel_.ship.loadout.modules.size(); ++i)
-        if (IsHumanWeapon(vessel_.ship.loadout.modules[i]) && FireModule(static_cast<int>(i), target, nullptr, true)) ++fired;
+    for (std::size_t i = 0; i < vessel_->ship.loadout.modules.size(); ++i)
+        if (IsHumanWeapon(vessel_->ship.loadout.modules[i]) && FireModule(static_cast<int>(i), target, nullptr, true)) ++fired;
     return fired;
 }
 
 void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
     const WeaponRules spec = Scaled(rules_.combat, a.weapon, a.weaponTier);
-    const FiringSolution s = Solve(position, a.velocity, vessel_.ship.position, ShipVelocity(), spec.speed, a.weapon == WeaponKind::Spinal, GravitySources(), a.computerTier, rules_.combat);
+    const FiringSolution s = Solve(position, a.velocity, vessel_->ship.position, ShipVelocity(), spec.speed, a.weapon == WeaponKind::Spinal, GravitySources(), a.computerTier, rules_.combat);
     a.cooldown = spec.cooldown * (1.0 + rules_.combat.jitter * Uniform(bubble_.rng, -1.0, 1.0));
     if (!s.valid) return;
     const bool guided = spec.turn > 0.0;
@@ -2703,7 +2863,8 @@ void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
     p.type = spec.type;
     p.team = TeamOf(a);
     p.owner = a.id;
-    p.target = 0;  // el jugador
+    p.target = 0;  // una nave de jugador
+    p.ship = vessel_->id;  // esta
     p.damage = spec.damage * a.boost;  // la revancha tras una rendicion
     p.proximity = spec.proximity;
     p.life = spec.life;
@@ -2712,7 +2873,7 @@ void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
     p.cruise = spec.speed;
     p.turn = spec.turn;
     // El escudo electromagnetico confunde sus sensores: fallan mas, incluso el haz.
-    const bool jammed = vessel_.ship.defense.field == ShieldKind::EM && FieldActive();
+    const bool jammed = vessel_->ship.defense.field == ShieldKind::EM && FieldActive();
     const double error = AimError(rules_.combat, a.computerTier) * (jammed ? rules_.defense.emJamming : 1.0);
     const Vec3d dir = guided || (p.beam && !jammed) ? s.direction : Scatter(s.direction, error, bubble_.rng);
     p.position = position + dir * (a.radius + 0.5);
@@ -2724,47 +2885,47 @@ void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
 // Todo dano de armas a la nave pasa por aqui: primero el campo, luego los conos y al final el casco.
 void GameSession::Hurt(DamageType type, double amount, const std::string& source, const Vec3d& toward, int attacker, const ZoneImpact* impact) {
     const GameMode& mode = ModeInfo(world_.mode);
-    if (mode.damage <= 0.0 || vessel_.phase != GamePhase::Flying) return;
-    DefenseState& d = vessel_.ship.defense;
-    const bool frontal = Dot(Heading(vessel_.ship), toward) > 0.0;
-    const HitResult hit = AbsorbHit(d, rules_.defense, type, amount, frontal, FieldActive(), vessel_.ship.cargo.Get(Resource::Silicate));
-    vessel_.ship.cargo.Add(Resource::Silicate, -hit.silicate);
+    if (mode.damage <= 0.0 || vessel_->phase != GamePhase::Flying) return;
+    DefenseState& d = vessel_->ship.defense;
+    const bool frontal = Dot(Heading(vessel_->ship), toward) > 0.0;
+    const HitResult hit = AbsorbHit(d, rules_.defense, type, amount, frontal, FieldActive(), vessel_->ship.cargo.Get(Resource::Silicate));
+    vessel_->ship.cargo.Add(Resource::Silicate, -hit.silicate);
     if (d.field != ShieldKind::Dust && d.field != ShieldKind::Love) d.heat = std::min(d.heat + hit.field * rules_.thermal.absorbHeat, rules_.thermal.maximum);  // la arena se traga ese calor
     if (d.field == ShieldKind::Love && hit.field > 0.0) {
-        vessel_.ship.hull = std::min(vessel_.ship.hull + hit.field * rules_.defense.loveHeal, rules_.ship.hull);
-        vessel_.ship.energy = std::min(vessel_.ship.energy + hit.field * (1.0 - rules_.defense.loveHeal), rules_.ship.energy);
+        vessel_->ship.hull = std::min(vessel_->ship.hull + hit.field * rules_.defense.loveHeal, rules_.ship.hull);
+        vessel_->ship.energy = std::min(vessel_->ship.energy + hit.field * (1.0 - rules_.defense.loveHeal), rules_.ship.energy);
         if (hit.reflected > 0.0) {
             if (Anomaly* a = FindAnomaly(attacker)) DamageAnomaly(*a, type, hit.reflected, 0);
         }
     }
     const double taken = hit.hull * mode.damage;
-    vessel_.ship.hull = std::max(vessel_.ship.hull - taken, 0.0);
+    vessel_->ship.hull = std::max(vessel_->ship.hull - taken, 0.0);
     if (impact) WoundAt(taken, *impact);
     else WoundHull(taken, toward);
     // Una rafaga ocupa una sola linea del registro.
     const std::string lead = std::string("Impactos de ") + source + ": ";
-    if (pilot_.log.empty() || pilot_.log.back().rfind(lead, 0) != 0) {
-        vessel_.hitStreak = 0;
-        vessel_.hitDamage = 0.0;
-        vessel_.hitShield = 0.0;
+    if (pilot_->log.empty() || pilot_->log.back().rfind(lead, 0) != 0) {
+        vessel_->hitStreak = 0;
+        vessel_->hitDamage = 0.0;
+        vessel_->hitShield = 0.0;
     } else {
-        pilot_.log.pop_back();
+        pilot_->log.pop_back();
     }
-    ++vessel_.hitStreak;
-    vessel_.hitDamage += taken;
-    vessel_.hitShield += hit.field + hit.plates;
-    std::string line = lead + std::to_string(vessel_.hitStreak) + " (" + Name(type) + "), -" + Fixed(vessel_.hitDamage, 0) + " de casco";
-    if (vessel_.hitShield >= 0.5) line += ", " + Fixed(vessel_.hitShield, 0) + " parados por los escudos";
+    ++vessel_->hitStreak;
+    vessel_->hitDamage += taken;
+    vessel_->hitShield += hit.field + hit.plates;
+    std::string line = lead + std::to_string(vessel_->hitStreak) + " (" + Name(type) + "), -" + Fixed(vessel_->hitDamage, 0) + " de casco";
+    if (vessel_->hitShield >= 0.5) line += ", " + Fixed(vessel_->hitShield, 0) + " parados por los escudos";
     Say(line + ".");
-    if (vessel_.ship.hull <= 0.0) vessel_.lossReason = "Nave destruida por " + source + ".";
+    if (vessel_->ship.hull <= 0.0) vessel_->lossReason = "Nave destruida por " + source + ".";
 }
 
 // El golpe cae en la zona de ese lado. No cambia el casco total: eso ya lo ha hecho quien llama.
 // Un golpe directo en una zona roja hace mas dano: es donde mas duele.
 void GameSession::WoundHull(double amount, const Vec3d& worldFrom, bool blunt) {
     if (amount <= 0.0 || rules_.ship.hull <= 0.0) return;
-    vessel_.directedLoss += amount;
-    const Vec3d local = Normalize(vessel_.ship.orientation.Conjugate().ToMatrix().TransformDirection(worldFrom) + Vec3d{0, 0, 1e-9});
+    vessel_->directedLoss += amount;
+    const Vec3d local = Normalize(vessel_->ship.orientation.Conjugate().ToMatrix().TransformDirection(worldFrom) + Vec3d{0, 0, 1e-9});
     const int zone = ZoneHitFrom(local, std::uniform_real_distribution<double>(0.0, 1.0)(bubble_.rng));
     RecordHit(zone, local, amount / rules_.ship.hull, blunt);
     const double critical = ZoneInfo(zone).red != RedZone::None ? kCriticalHit : 1.0;
@@ -2774,18 +2935,18 @@ void GameSession::WoundHull(double amount, const Vec3d& worldFrom, bool blunt) {
 // El golpe cae en la zona que encuentra su trayectoria, y su crater en ese punto.
 void GameSession::WoundAt(double amount, const ZoneImpact& impact) {
     if (amount <= 0.0 || rules_.ship.hull <= 0.0) return;
-    vessel_.directedLoss += amount;
+    vessel_->directedLoss += amount;
     RecordHit(impact.zone, impact.from, amount / rules_.ship.hull, false, &impact.point);
     const double critical = ZoneInfo(impact.zone).red != RedZone::None ? kCriticalHit : 1.0;
     const double fraction = amount * critical / (rules_.ship.hull * kZoneToughness);
-    WoundPiece(impact.zone, impact.point, fraction / ZoneHardness(vessel_.ship, impact.zone));
+    WoundPiece(impact.zone, impact.point, fraction / ZoneHardness(vessel_->ship, impact.zone));
     WoundZone(impact.zone, fraction);
 }
 
 int GameSession::ShootHull(const Vec3d& start, const Vec3d& end, double hullAmount) {
     const ZoneImpact impact = ProjectileImpact(start, end);
     if (hullAmount > 0.0) {
-        vessel_.ship.hull = std::max(vessel_.ship.hull - hullAmount, 0.0);
+        vessel_->ship.hull = std::max(vessel_->ship.hull - hullAmount, 0.0);
         WoundAt(hullAmount, impact);
     }
     return impact.zone;
@@ -2798,19 +2959,19 @@ void GameSession::RecordHit(int zone, const Vec3d& localFrom, double intensity, 
         h.located = true;
         h.point = *point;
     }
-    h.id = vessel_.nextHit++;
+    h.id = vessel_->nextHit++;
     h.zone = zone;
     h.from = localFrom;
     h.intensity = intensity;
     h.blunt = blunt;
     h.time = bubble_.simTime;
-    h.absolute = vessel_.ship.position + engine_.GetWorld().origin;
-    h.velocity = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed + vessel_.frame.velocity;
-    h.orientation = vessel_.ship.orientation;
-    vessel_.hullHits.push_back(h);
+    h.absolute = vessel_->ship.position + engine_.GetWorld().origin;
+    h.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity;
+    h.orientation = vessel_->ship.orientation;
+    vessel_->hullHits.push_back(h);
     // Se guardan los ultimos: un casco con mas agujeros que estos ya no se distingue.
     constexpr std::size_t kMaxHits = 48;
-    if (vessel_.hullHits.size() > kMaxHits) vessel_.hullHits.erase(vessel_.hullHits.begin());
+    if (vessel_->hullHits.size() > kMaxHits) vessel_->hullHits.erase(vessel_->hullHits.begin());
 }
 
 void GameSession::SpreadWound(double amount) {
@@ -2823,18 +2984,18 @@ void GameSession::SpreadWound(double amount) {
 // Una zona roja a 0 apaga la nave o la hace estallar.
 void GameSession::WoundZone(int zone, double fraction) {
     if (zone < 0 || zone >= kHullZoneCount || fraction <= 0.0) return;
-    fraction /= ZoneHardness(vessel_.ship, zone);  // placas y refuerzos montados en ella
+    fraction /= ZoneHardness(vessel_->ship, zone);  // placas y refuerzos montados en ella
     const HullZoneInfo& info = ZoneInfo(zone);
-    double& integrity = vessel_.ship.zones[static_cast<std::size_t>(zone)];
-    if (ZoneLost(vessel_.ship.zones, zone)) {
+    double& integrity = vessel_->ship.zones[static_cast<std::size_t>(zone)];
+    if (ZoneLost(vessel_->ship.zones, zone)) {
         WoundZone(info.inner, fraction * kInnerShare);
         return;
     }
     const double excess = fraction - integrity;
     const bool wasStanding = integrity > 0.0;
     integrity = std::max(integrity - fraction, 0.0);
-    vessel_.zoneHeat[static_cast<std::size_t>(zone)] = std::min(vessel_.zoneHeat[static_cast<std::size_t>(zone)] + 0.3 + fraction * 4.0, 1.0);
-    if (integrity > 0.0 || vessel_.ship.hull <= 0.0) return;
+    vessel_->zoneHeat[static_cast<std::size_t>(zone)] = std::min(vessel_->zoneHeat[static_cast<std::size_t>(zone)] + 0.3 + fraction * 4.0, 1.0);
+    if (integrity > 0.0 || vessel_->ship.hull <= 0.0) return;
 
     if (info.red != RedZone::None) {
         if (wasStanding) FailRedZone(zone);
@@ -2842,17 +3003,17 @@ void GameSession::WoundZone(int zone, double fraction) {
     }
     if (!info.losable || !wasStanding) return;
 
-    const auto toWorld = vessel_.ship.orientation.ToMatrix();
+    const auto toWorld = vessel_->ship.orientation.ToMatrix();
     const Vec3d out = Normalize(toWorld.TransformDirection(info.center + Vec3d{0, 0, 1e-3}));
     std::uniform_real_distribution<double> unit(-1.0, 1.0);
     const Vec3d pivot = CustomZoneLayout() ? CustomZoneLayout()->centers[static_cast<std::size_t>(zone)] : info.center;
     LostPiece piece;
     piece.zone = zone;
     piece.pivot = pivot;
-    piece.absolute = vessel_.ship.position + toWorld.TransformDirection(pivot * 0.001) + engine_.GetWorld().origin;
+    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(pivot * 0.001) + engine_.GetWorld().origin;
     // Se lleva la velocidad de la nave y un empujon de unas decenas de m/s hacia fuera.
-    piece.velocity = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed + vessel_.frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.3) * 0.03;
-    piece.orientation = vessel_.ship.orientation;
+    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.3) * 0.03;
+    piece.orientation = vessel_->ship.orientation;
     piece.spinAxis = Normalize(Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} + Vec3d{0, 0, 1e-3});
     piece.spin = 0.15 + 0.35 * std::fabs(unit(bubble_.fx));
     bubble_.lostPieces.push_back(piece);
@@ -2860,8 +3021,8 @@ void GameSession::WoundZone(int zone, double fraction) {
 
     // Con una bodega se va lo que llevaba: su parte de cada material.
     if (zone >= static_cast<int>(HullZone::Hold1) && zone <= static_cast<int>(HullZone::Hold6)) {
-        const double share = 1.0 / static_cast<double>(HoldsLeft(vessel_.ship.zones) + 1);
-        for (const Resource r : {Resource::Metal, Resource::Silicate, Resource::Ice, Resource::Gas, Resource::StellarMatter}) vessel_.ship.cargo.Add(r, -vessel_.ship.cargo.Get(r) * share);
+        const double share = 1.0 / static_cast<double>(HoldsLeft(vessel_->ship.zones) + 1);
+        for (const Resource r : {Resource::Metal, Resource::Silicate, Resource::Ice, Resource::Gas, Resource::StellarMatter}) vessel_->ship.cargo.Add(r, -vessel_->ship.cargo.Get(r) * share);
     }
     if (zone == static_cast<int>(HullZone::WarpRing)) Say("Sin anillo no hay curvatura: solo queda el impulso.");
     LoseModules(zone, -1);
@@ -2869,12 +3030,12 @@ void GameSession::WoundZone(int zone, double fraction) {
 }
 
 void GameSession::FailRedZone(int zone) {
-    if (vessel_.phase != GamePhase::Flying || vessel_.creative || ModeInfo(world_.mode).damage <= 0.0) return;
-    vessel_.failedZone = zone;
+    if (vessel_->phase != GamePhase::Flying || vessel_->creative || ModeInfo(world_.mode).damage <= 0.0) return;
+    vessel_->failedZone = zone;
     switch (static_cast<HullZone>(zone)) {
         case HullZone::Core:
-            vessel_.lossReason = "El núcleo perdió la contención: la nave estalló desde dentro.";
-            vessel_.warning.reset();
+            vessel_->lossReason = "El núcleo perdió la contención: la nave estalló desde dentro.";
+            vessel_->warning.reset();
             LoseShip();
             break;
         case HullZone::Bridge: ShutDownShip("Puente destruido: la nave se quedó sin mando y se apagó."); break;
@@ -2885,28 +3046,28 @@ void GameSession::FailRedZone(int zone) {
 // Se apaga: sin motores ni luces, a la deriva y girando despacio. La pantalla final llega tras la
 // cinematica (kShutdownSeconds).
 void GameSession::ShutDownShip(const std::string& reason) {
-    vessel_.lossReason = reason;
-    vessel_.warning.reset();
-    vessel_.phase = GamePhase::Adrift;
-    vessel_.wreckAge = 0;
-    vessel_.wreckPosition = vessel_.ship.position;
+    vessel_->lossReason = reason;
+    vessel_->warning.reset();
+    vessel_->phase = GamePhase::Adrift;
+    vessel_->wreckAge = 0;
+    vessel_->wreckPosition = vessel_->ship.position;
     std::uniform_real_distribution<double> unit(-1.0, 1.0);
-    vessel_.driftVelocity = Heading(vessel_.ship) * 0.04 + Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} * 0.01;
-    vessel_.ship.angularRate = Normalize(Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} + Vec3d{0, 1e-3, 0}) * 0.035;
-    vessel_.autopilot.reset();
-    vessel_.tracking.reset();
-    vessel_.orbiting.reset();
-    vessel_.dockPhase = DockPhase::None;
-    vessel_.dockWanted = -1;
-    pilot_.onFoot = false;
-    vessel_.exploring = -1;
+    vessel_->driftVelocity = Heading(vessel_->ship) * 0.04 + Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} * 0.01;
+    vessel_->ship.angularRate = Normalize(Vec3d{unit(bubble_.rng), unit(bubble_.rng), unit(bubble_.rng)} + Vec3d{0, 1e-3, 0}) * 0.035;
+    vessel_->autopilot.reset();
+    vessel_->tracking.reset();
+    vessel_->orbiting.reset();
+    vessel_->dockPhase = DockPhase::None;
+    vessel_->dockWanted = -1;
+    pilot_->onFoot = false;
+    vessel_->exploring = -1;
     CancelScan();
-    vessel_.ship.speed = 0;
-    vessel_.ship.velocity = {};
-    vessel_.ship.warpSpeed = 0;
-    vessel_.ship.warpCharge = 0;
-    vessel_.ship.throttle = 0;
-    vessel_.ship.energy = 0;
+    vessel_->ship.speed = 0;
+    vessel_->ship.velocity = {};
+    vessel_->ship.warpSpeed = 0;
+    vessel_->ship.warpCharge = 0;
+    vessel_->ship.throttle = 0;
+    vessel_->ship.energy = 0;
     Say(reason);
     if (ModeInfo(world_.mode).permadeath) saveLost_ = true;
 }
@@ -2915,12 +3076,12 @@ void GameSession::ShutDownShip(const std::string& reason) {
 // mastil) se rompe antes que la zona entera; a 0 se suelta sola.
 void GameSession::WoundPiece(int zone, const Vec3d& point, double fraction) {
     const ShipDesign& design = CurrentShipDesign();
-    if (design.pieces.empty() || vessel_.ship.pieces.size() != design.pieces.size() || fraction <= 0.0) return;
+    if (design.pieces.empty() || vessel_->ship.pieces.size() != design.pieces.size() || fraction <= 0.0) return;
     int best = -1;
     double nearest = 1e300;
     for (std::size_t i = 0; i < design.pieces.size(); ++i) {
         const DesignPiece& p = design.pieces[i];
-        if (p.zone != zone || PieceLost(vessel_.ship, static_cast<int>(i))) continue;
+        if (p.zone != zone || PieceLost(vessel_->ship, static_cast<int>(i))) continue;
         const double gap = PieceDistance(p, point);
         if (gap < nearest) {
             nearest = gap;
@@ -2933,26 +3094,26 @@ void GameSession::WoundPiece(int zone, const Vec3d& point, double fraction) {
     for (const DesignPiece& p : design.pieces)
         if (p.zone == zone) zoneSize = std::max(zoneSize, p.radius);
     const double share = std::clamp(design.pieces[static_cast<std::size_t>(best)].radius / zoneSize, 0.12, 1.0);
-    double& integrity = vessel_.ship.pieces[static_cast<std::size_t>(best)];
+    double& integrity = vessel_->ship.pieces[static_cast<std::size_t>(best)];
     integrity = std::max(integrity - fraction * 0.6 / share, 0.0);
-    if (integrity <= 0.0 && !ZoneLost(vessel_.ship.zones, zone) && vessel_.ship.hull > 0.0) DetachPiece(best);
+    if (integrity <= 0.0 && !ZoneLost(vessel_->ship.zones, zone) && vessel_->ship.hull > 0.0) DetachPiece(best);
 }
 
 void GameSession::DetachPiece(int index) {
     const ShipDesign& design = CurrentShipDesign();
     if (index < 0 || index >= static_cast<int>(design.pieces.size())) return;
     const DesignPiece& p = design.pieces[static_cast<std::size_t>(index)];
-    if (index < static_cast<int>(vessel_.ship.pieces.size())) vessel_.ship.pieces[static_cast<std::size_t>(index)] = 0.0;
-    const auto toWorld = vessel_.ship.orientation.ToMatrix();
+    if (index < static_cast<int>(vessel_->ship.pieces.size())) vessel_->ship.pieces[static_cast<std::size_t>(index)] = 0.0;
+    const auto toWorld = vessel_->ship.orientation.ToMatrix();
     std::uniform_real_distribution<double> unit(-1.0, 1.0);
     LostPiece piece;
     piece.zone = p.zone;
     piece.piece = index;
     piece.pivot = p.center;
-    piece.absolute = vessel_.ship.position + toWorld.TransformDirection(p.center * 0.001) + engine_.GetWorld().origin;
+    piece.absolute = vessel_->ship.position + toWorld.TransformDirection(p.center * 0.001) + engine_.GetWorld().origin;
     const Vec3d out = Normalize(toWorld.TransformDirection(p.center) + Vec3d{0, 0, 1e-6});
-    piece.velocity = vessel_.ship.velocity + vessel_.ship.warpHeading * vessel_.ship.warpSpeed + vessel_.frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.4) * 0.025;
-    piece.orientation = vessel_.ship.orientation;
+    piece.velocity = vessel_->ship.velocity + vessel_->ship.warpHeading * vessel_->ship.warpSpeed + vessel_->frame.velocity + (out + Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} * 0.4) * 0.025;
+    piece.orientation = vessel_->ship.orientation;
     piece.spinAxis = Normalize(Vec3d{unit(bubble_.fx), unit(bubble_.fx), unit(bubble_.fx)} + Vec3d{0, 0, 1e-3});
     piece.spin = 0.2 + 0.6 * std::fabs(unit(bubble_.fx));
     bubble_.lostPieces.push_back(piece);
@@ -2964,15 +3125,15 @@ void GameSession::DetachPiece(int index) {
 void GameSession::LoseModules(int zone, int piece) {
     const ShipDesign& design = CurrentShipDesign();
     bool changed = false;
-    vessel_.ship.loadout.starter = false;  // lo perdido no vuelve solo
-    for (std::size_t i = 0; i < vessel_.ship.loadout.modules.size() && i < design.slots.size(); ++i) {
-        ShipModuleKind& m = vessel_.ship.loadout.modules[i];
+    vessel_->ship.loadout.starter = false;  // lo perdido no vuelve solo
+    for (std::size_t i = 0; i < vessel_->ship.loadout.modules.size() && i < design.slots.size(); ++i) {
+        ShipModuleKind& m = vessel_->ship.loadout.modules[i];
         if (m == ShipModuleKind::None) continue;
         const ModuleSlot& s = design.slots[i];
         if ((zone >= 0 && s.zone == zone) || (piece >= 0 && s.piece == piece)) {
             Say(std::string("Perdido: ") + ModuleSpec(m).name + " (" + PrettyName(s.name) + ").");
             m = ShipModuleKind::None;
-            if (i < vessel_.ship.loadout.ammo.size()) vessel_.ship.loadout.ammo[i] = 0;  // los misiles se van con la bahia
+            if (i < vessel_->ship.loadout.ammo.size()) vessel_->ship.loadout.ammo[i] = 0;  // los misiles se van con la bahia
             changed = true;
         }
     }
@@ -2982,23 +3143,23 @@ void GameSession::LoseModules(int zone, int piece) {
 // Cada torreta montada como modulo es un arma mas, con su recarga, al nivel de la torreta de serie.
 void GameSession::SyncModuleWeapons() {
     int tier = rules_.ship.weaponTier;
-    for (const WeaponMount& m : vessel_.ship.weapons)
+    for (const WeaponMount& m : vessel_->ship.weapons)
         if (m.slot < 0 && m.kind == WeaponKind::Turret) tier = m.tier;
     std::vector<WeaponMount> kept;
-    for (const WeaponMount& m : vessel_.ship.weapons)
+    for (const WeaponMount& m : vessel_->ship.weapons)
         if (m.slot < 0) kept.push_back(m);
-    for (std::size_t i = 0; i < vessel_.ship.loadout.modules.size(); ++i) {
-        if (vessel_.ship.loadout.modules[i] != ShipModuleKind::Turret || !SlotWorking(vessel_.ship, static_cast<int>(i))) continue;
+    for (std::size_t i = 0; i < vessel_->ship.loadout.modules.size(); ++i) {
+        if (vessel_->ship.loadout.modules[i] != ShipModuleKind::Turret || !SlotWorking(vessel_->ship, static_cast<int>(i))) continue;
         double cooldown = 0.0;
-        for (const WeaponMount& m : vessel_.ship.weapons)
+        for (const WeaponMount& m : vessel_->ship.weapons)
             if (m.slot == static_cast<int>(i)) cooldown = m.cooldown;
         kept.push_back({WeaponKind::Turret, tier, cooldown, static_cast<int>(i)});
     }
-    vessel_.ship.weapons = std::move(kept);
+    vessel_->ship.weapons = std::move(kept);
 }
 
 void GameSession::RefitToDesign() {
-    FitToDesign(vessel_.ship);
+    FitToDesign(vessel_->ship);
     SyncModuleWeapons();
 }
 
@@ -3008,62 +3169,62 @@ bool GameSession::InstallModule(int slot, ShipModuleKind kind, std::string* why)
         return false;
     };
     if (!CanRefit()) return fail("Los módulos se cambian atracado en una estación propia.");
-    vessel_.ship.loadout.starter = false;  // desde aqui manda el jugador
-    FitToDesign(vessel_.ship);
+    vessel_->ship.loadout.starter = false;  // desde aqui manda el jugador
+    FitToDesign(vessel_->ship);
     const ShipDesign& design = CurrentShipDesign();
     if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return fail("Esa ranura no existe.");
     const ModuleSlot& s = design.slots[static_cast<std::size_t>(slot)];
     if (kind != ShipModuleKind::None && ModuleSpec(kind).slot != s.kind) return fail(std::string(ModuleSpec(kind).name) + (s.kind == SlotKind::External ? " va por dentro, no en una ranura exterior." : " va por fuera, no en una bahía interior."));
-    if (ZoneLost(vessel_.ship.zones, s.zone) || PieceLost(vessel_.ship, s.piece)) return fail("Esa parte del casco no está: hay que repararla antes.");
-    ShipModuleKind& current = vessel_.ship.loadout.modules[static_cast<std::size_t>(slot)];
+    if (ZoneLost(vessel_->ship.zones, s.zone) || PieceLost(vessel_->ship, s.piece)) return fail("Esa parte del casco no está: hay que repararla antes.");
+    ShipModuleKind& current = vessel_->ship.loadout.modules[static_cast<std::size_t>(slot)];
     if (current == kind) return fail("Ya está montado.");
     const ArmamentRules& arm = rules_.armament;
     const ShipModuleSpec& spec = ModuleSpec(kind);
-    const bool free = vessel_.creative;  // en creativo no cuesta nada
+    const bool free = vessel_->creative;  // en creativo no cuesta nada
 
     // Las bahias de drones de serie se cambian de hueco (MoveModule) pero no se sacan de la nave; si se ha
     // perdido alguna, volver a montarla es gratis hasta tener las de serie.
     int bays = 0;
-    for (const ShipModuleKind m : vessel_.ship.loadout.modules) bays += m == ShipModuleKind::DroneBay ? 1 : 0;
-    if (current == ShipModuleKind::DroneBay && kind != ShipModuleKind::DroneBay && bays <= vessel_.ship.loadout.starterBays)
+    for (const ShipModuleKind m : vessel_->ship.loadout.modules) bays += m == ShipModuleKind::DroneBay ? 1 : 0;
+    if (current == ShipModuleKind::DroneBay && kind != ShipModuleKind::DroneBay && bays <= vessel_->ship.loadout.starterBays)
         return fail("Las bahías de drones de serie no se sacan de la nave: cámbialas de hueco con «mover».");
-    const bool starterBay = kind == ShipModuleKind::DroneBay && bays < vessel_.ship.loadout.starterBays;
+    const bool starterBay = kind == ShipModuleKind::DroneBay && bays < vessel_->ship.loadout.starterBays;
 
     // Armas humanas: la clase de la nave las admite, el plano esta fabricado y hay elementos.
     const HumanWeaponSpec* weapon = HumanWeaponOf(arm, kind);
     if (weapon) {
         int spinal = 0;
-        for (std::size_t j = 0; j < vessel_.ship.loadout.modules.size(); ++j) {
-            const HumanWeaponSpec* other = j == static_cast<std::size_t>(slot) ? nullptr : HumanWeaponOf(arm, vessel_.ship.loadout.modules[j]);
+        for (std::size_t j = 0; j < vessel_->ship.loadout.modules.size(); ++j) {
+            const HumanWeaponSpec* other = j == static_cast<std::size_t>(slot) ? nullptr : HumanWeaponOf(arm, vessel_->ship.loadout.modules[j]);
             spinal += other && other->type == ArmType::RailSpinal ? 1 : 0;
         }
         std::string reason;
         if (!MountAllowed(arm, *weapon, rules_.ship.classId, rules_.ship.variant, spinal, &reason)) return fail(reason);
-        if (!free && !HasBlueprint(vessel_.ship.loadout, BlueprintId(*weapon))) return fail(BlueprintName(BlueprintId(*weapon)) + ": se fabrica en la estación origami.");
+        if (!free && !HasBlueprint(vessel_->ship.loadout, BlueprintId(*weapon))) return fail(BlueprintName(BlueprintId(*weapon)) + ": se fabrica en la estación origami.");
         if (!free) {
-            const std::string missing = MissingElements(vessel_.ship.elements, weapon->elements, 4);
+            const std::string missing = MissingElements(vessel_->ship.elements, weapon->elements, 4);
             if (!missing.empty()) return fail("Faltan elementos: " + missing + ".");
         }
     }
 
     const double needMetal = starterBay ? 0.0 : spec.metal, needSilicate = starterBay ? 0.0 : spec.silicate;
-    if (!free && kind != ShipModuleKind::None && (vessel_.ship.cargo.Get(Resource::Metal) < needMetal || vessel_.ship.cargo.Get(Resource::Silicate) < needSilicate))
+    if (!free && kind != ShipModuleKind::None && (vessel_->ship.cargo.Get(Resource::Metal) < needMetal || vessel_->ship.cargo.Get(Resource::Silicate) < needSilicate))
         return fail(std::string("Faltan materiales: ") + spec.name + " pide " + MassText(needMetal) + " de metal y " + MassText(needSilicate) + " de silicato.");
     // Lo que se quita devuelve la mitad (tambien los elementos de un arma).
     if (!free && current != ShipModuleKind::None) {
         const ShipModuleSpec& old = ModuleSpec(current);
-        vessel_.ship.cargo.Add(Resource::Metal, old.metal * arm.refund);
-        vessel_.ship.cargo.Add(Resource::Silicate, old.silicate * arm.refund);
-        if (const HumanWeaponSpec* oldWeapon = HumanWeaponOf(arm, current)) RefundElements(vessel_.ship.elements, oldWeapon->elements, 4, arm.refund);
+        vessel_->ship.cargo.Add(Resource::Metal, old.metal * arm.refund);
+        vessel_->ship.cargo.Add(Resource::Silicate, old.silicate * arm.refund);
+        if (const HumanWeaponSpec* oldWeapon = HumanWeaponOf(arm, current)) RefundElements(vessel_->ship.elements, oldWeapon->elements, 4, arm.refund);
     }
     if (!free) {
-        vessel_.ship.cargo.Add(Resource::Metal, -needMetal);
-        vessel_.ship.cargo.Add(Resource::Silicate, -needSilicate);
-        if (weapon) PayElements(vessel_.ship.elements, weapon->elements, 4);
+        vessel_->ship.cargo.Add(Resource::Metal, -needMetal);
+        vessel_->ship.cargo.Add(Resource::Silicate, -needSilicate);
+        if (weapon) PayElements(vessel_->ship.elements, weapon->elements, 4);
     }
     current = kind;
-    vessel_.ship.loadout.ammo[static_cast<std::size_t>(slot)] = 0;  // los misiles de lo que estaba no pasan a lo nuevo
-    vessel_.ship.loadout.cooldown[static_cast<std::size_t>(slot)] = 0.0;
+    vessel_->ship.loadout.ammo[static_cast<std::size_t>(slot)] = 0;  // los misiles de lo que estaba no pasan a lo nuevo
+    vessel_->ship.loadout.cooldown[static_cast<std::size_t>(slot)] = 0.0;
     SyncModuleWeapons();
     Say(kind == ShipModuleKind::None ? "Desmontado: " + PrettyName(s.name) + "." : std::string("Montado: ") + spec.name + " en " + PrettyName(s.name) + ".");
     return true;
@@ -3075,19 +3236,19 @@ bool GameSession::MoveModule(int from, int to, std::string* why) {
         return false;
     };
     if (!CanRefit()) return fail("Los módulos se cambian atracado en una estación propia.");
-    FitToDesign(vessel_.ship);
+    FitToDesign(vessel_->ship);
     const ShipDesign& design = CurrentShipDesign();
     const int count = static_cast<int>(design.slots.size());
     if (from < 0 || from >= count || to < 0 || to >= count) return fail("Esa ranura no existe.");
     if (from == to) return fail("Ya está ahí.");
-    ShipModuleKind& source = vessel_.ship.loadout.modules[static_cast<std::size_t>(from)];
-    ShipModuleKind& target = vessel_.ship.loadout.modules[static_cast<std::size_t>(to)];
+    ShipModuleKind& source = vessel_->ship.loadout.modules[static_cast<std::size_t>(from)];
+    ShipModuleKind& target = vessel_->ship.loadout.modules[static_cast<std::size_t>(to)];
     if (source != ShipModuleKind::DroneBay) return fail("Solo se mueven gratis las bahías de drones de serie; lo demás se desmonta y se vuelve a montar.");
     if (design.slots[static_cast<std::size_t>(to)].kind != SlotKind::External) return fail("Una bahía de drones va por fuera.");
     if (target != ShipModuleKind::None) return fail("Ese hueco está ocupado.");
-    if (ZoneLost(vessel_.ship.zones, design.slots[static_cast<std::size_t>(to)].zone) || PieceLost(vessel_.ship, design.slots[static_cast<std::size_t>(to)].piece)) return fail("Esa parte del casco no está: hay que repararla antes.");
+    if (ZoneLost(vessel_->ship.zones, design.slots[static_cast<std::size_t>(to)].zone) || PieceLost(vessel_->ship, design.slots[static_cast<std::size_t>(to)].piece)) return fail("Esa parte del casco no está: hay que repararla antes.");
     if (DronesOut() > 0) return fail("Hay drones fuera: espera a que vuelvan.");
-    vessel_.ship.loadout.starter = false;
+    vessel_->ship.loadout.starter = false;
     source = ShipModuleKind::None;
     target = ShipModuleKind::DroneBay;
     SyncDrones();  // los drones atracados pasan a la bahia nueva
@@ -3101,17 +3262,17 @@ bool GameSession::FabricateBlueprint(int id, std::string* why) {
         return false;
     };
     if (id < 0 || id >= kBlueprintCount) return fail("Ese plano no existe.");
-    if (HasBlueprint(vessel_.ship.loadout, id)) return fail("Ya está fabricado.");
+    if (HasBlueprint(vessel_->ship.loadout, id)) return fail("Ya está fabricado.");
     const Station* yard = DockedStation();
-    if (!vessel_.creative && !(yard && yard->kind == StationKind::Shipyard)) return fail("Los planos se fabrican atracada en la estación origami.");
+    if (!vessel_->creative && !(yard && yard->kind == StationKind::Shipyard)) return fail("Los planos se fabrican atracada en la estación origami.");
     const double energy = BlueprintEnergy(rules_.armament, id), metal = BlueprintMetal(rules_.armament, id);
-    if (!vessel_.creative && (vessel_.ship.energy < energy || vessel_.ship.cargo.Get(Resource::Metal) < metal))
+    if (!vessel_->creative && (vessel_->ship.energy < energy || vessel_->ship.cargo.Get(Resource::Metal) < metal))
         return fail(BlueprintName(id) + " pide " + Fixed(energy, 0) + " EJ y " + MassText(metal) + " de metal.");
-    if (!vessel_.creative) {
-        vessel_.ship.energy -= energy;
-        vessel_.ship.cargo.Add(Resource::Metal, -metal);
+    if (!vessel_->creative) {
+        vessel_->ship.energy -= energy;
+        vessel_->ship.cargo.Add(Resource::Metal, -metal);
     }
-    GrantBlueprint(vessel_.ship.loadout, id);
+    GrantBlueprint(vessel_->ship.loadout, id);
     Say(BlueprintName(id) + " fabricado.");
     return true;
 }
@@ -3122,32 +3283,32 @@ int GameSession::ManufactureMissiles(int slot, int count, std::string* why) {
         return 0;
     };
     if (!CanRefit()) return fail("Los misiles se fabrican atracada en una estación propia.");
-    FitToDesign(vessel_.ship);
-    if (slot < 0 || slot >= static_cast<int>(vessel_.ship.loadout.modules.size())) return fail("Esa ranura no existe.");
-    const HumanWeaponSpec* w = HumanWeaponOf(rules_.armament, vessel_.ship.loadout.modules[static_cast<std::size_t>(slot)]);
+    FitToDesign(vessel_->ship);
+    if (slot < 0 || slot >= static_cast<int>(vessel_->ship.loadout.modules.size())) return fail("Esa ranura no existe.");
+    const HumanWeaponSpec* w = HumanWeaponOf(rules_.armament, vessel_->ship.loadout.modules[static_cast<std::size_t>(slot)]);
     if (!w || w->capacity <= 0) return fail("Esa ranura no lleva una bahía de misiles.");
-    if (!SlotWorking(vessel_.ship, slot)) return fail("Esa bahía está dañada.");
-    int& ammo = vessel_.ship.loadout.ammo[static_cast<std::size_t>(slot)];
+    if (!SlotWorking(vessel_->ship, slot)) return fail("Esa bahía está dañada.");
+    int& ammo = vessel_->ship.loadout.ammo[static_cast<std::size_t>(slot)];
     const int room = MissileRoom(*w, ammo);
     if (room <= 0) return fail("La bahía ya está llena.");
     int n = count <= 0 ? room : std::min(count, room);
     // Se fabrican los que alcancen: el limite es lo que haya de energia, de metal o del elemento mas escaso.
-    if (!vessel_.creative) {
+    if (!vessel_->creative) {
         const MissileCost one = MissileBatch(*w, 1);
         while (n > 0) {
             const MissileCost c = MissileBatch(*w, n);
-            if (vessel_.ship.energy >= c.energy && vessel_.ship.cargo.Get(Resource::Metal) >= c.metal && MissingElements(vessel_.ship.elements, w->missile, 3, n).empty()) break;
+            if (vessel_->ship.energy >= c.energy && vessel_->ship.cargo.Get(Resource::Metal) >= c.metal && MissingElements(vessel_->ship.elements, w->missile, 3, n).empty()) break;
             --n;
         }
         if (n <= 0) {
-            const std::string missing = MissingElements(vessel_.ship.elements, w->missile, 3, 1);
+            const std::string missing = MissingElements(vessel_->ship.elements, w->missile, 3, 1);
             if (!missing.empty()) return fail("Faltan elementos para un misil: " + missing + ".");
             return fail(std::string("Un misil pide ") + Fixed(one.energy, 1) + " EJ y " + MassText(one.metal) + " de metal.");
         }
         const MissileCost c = MissileBatch(*w, n);
-        vessel_.ship.energy -= c.energy;
-        vessel_.ship.cargo.Add(Resource::Metal, -c.metal);
-        PayElements(vessel_.ship.elements, w->missile, 3, n);
+        vessel_->ship.energy -= c.energy;
+        vessel_->ship.cargo.Add(Resource::Metal, -c.metal);
+        PayElements(vessel_->ship.elements, w->missile, 3, n);
     }
     ammo += n;
     Say(std::to_string(n) + (n == 1 ? " misil fabricado" : " misiles fabricados") + " para " + PrettyName(CurrentShipDesign().slots[static_cast<std::size_t>(slot)].name) + ".");
@@ -3162,12 +3323,12 @@ bool GameSession::SetPointDefense(int points, std::string* why) {
     if (!CanRefit()) return fail("La defensa puntual se monta atracada en una estación propia.");
     const int capacity = PointDefenseCapacity();
     if (points < 0 || points > capacity) return fail("Esta nave tiene " + std::to_string(capacity) + " puntos de defensa.");
-    const int delta = points - vessel_.ship.loadout.pointDefense;
+    const int delta = points - vessel_->ship.loadout.pointDefense;
     if (delta == 0) return fail("Ya están montados.");
     const double metal = delta * rules_.armament.pointMass;
-    if (!vessel_.creative && delta > 0 && vessel_.ship.cargo.Get(Resource::Metal) < metal) return fail("Faltan materiales: " + MassText(metal) + " de metal.");
-    if (!vessel_.creative) vessel_.ship.cargo.Add(Resource::Metal, delta > 0 ? -metal : -metal * rules_.armament.refund);  // quitar devuelve la mitad
-    vessel_.ship.loadout.pointDefense = points;
+    if (!vessel_->creative && delta > 0 && vessel_->ship.cargo.Get(Resource::Metal) < metal) return fail("Faltan materiales: " + MassText(metal) + " de metal.");
+    if (!vessel_->creative) vessel_->ship.cargo.Add(Resource::Metal, delta > 0 ? -metal : -metal * rules_.armament.refund);  // quitar devuelve la mitad
+    vessel_->ship.loadout.pointDefense = points;
     Say("Defensa puntual: " + std::to_string(points) + " de " + std::to_string(capacity) + " puntos.");
     return true;
 }
@@ -3176,9 +3337,9 @@ int GameSession::PointDefenseCapacity() const { return DefensePoints(rules_.arma
 
 double GameSession::PointDefenseRate() const {
     int platforms = 0;
-    for (std::size_t i = 0; i < vessel_.ship.loadout.modules.size(); ++i)
-        platforms += vessel_.ship.loadout.modules[i] == ShipModuleKind::PointDefensePlatform && SlotWorking(vessel_.ship, static_cast<int>(i)) ? 1 : 0;
-    return game::PointDefenseRate(rules_.armament, vessel_.ship.loadout.pointDefense, platforms);
+    for (std::size_t i = 0; i < vessel_->ship.loadout.modules.size(); ++i)
+        platforms += vessel_->ship.loadout.modules[i] == ShipModuleKind::PointDefensePlatform && SlotWorking(vessel_->ship, static_cast<int>(i)) ? 1 : 0;
+    return game::PointDefenseRate(rules_.armament, vessel_->ship.loadout.pointDefense, platforms);
 }
 
 bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why, bool quiet) {
@@ -3187,43 +3348,44 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
         if (!quiet) Say(reason);
         return false;
     };
-    if (vessel_.phase != GamePhase::Flying || pilot_.onFoot) return false;
-    if (slot < 0 || slot >= static_cast<int>(vessel_.ship.loadout.modules.size())) return fail("Esa ranura no existe.");
-    const HumanWeaponSpec* w = HumanWeaponOf(rules_.armament, vessel_.ship.loadout.modules[static_cast<std::size_t>(slot)]);
+    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
+    if (slot < 0 || slot >= static_cast<int>(vessel_->ship.loadout.modules.size())) return fail("Esa ranura no existe.");
+    const HumanWeaponSpec* w = HumanWeaponOf(rules_.armament, vessel_->ship.loadout.modules[static_cast<std::size_t>(slot)]);
     if (!w) return fail("Esa ranura no lleva un arma humana.");
     const std::string name = w->name;
-    if (!SlotWorking(vessel_.ship, slot)) return fail(name + ": dañada.");
+    if (!SlotWorking(vessel_->ship, slot)) return fail(name + ": dañada.");
     const Anomaly* a = target.kind == Kind::Anomaly ? FindAnomaly(target.index) : nullptr;
     if (!a || a->maxHull <= 0.0 || a->hull <= 0.0) return fail("Sin blanco: fija una nave o un bastión.");
-    if (vessel_.ship.warpSpeed > rules_.drive.impulseSpeed) return fail("No se puede disparar con la burbuja formada.");
+    if (vessel_->ship.warpSpeed > rules_.drive.impulseSpeed) return fail("No se puede disparar con la burbuja formada.");
     if (Overheated()) return fail(name + ": sobrecalentada, espera a que baje el calor.");
-    double& cooldown = vessel_.ship.loadout.cooldown[static_cast<std::size_t>(slot)];
-    int& ammo = vessel_.ship.loadout.ammo[static_cast<std::size_t>(slot)];
+    double& cooldown = vessel_->ship.loadout.cooldown[static_cast<std::size_t>(slot)];
+    int& ammo = vessel_->ship.loadout.ammo[static_cast<std::size_t>(slot)];
     if (cooldown > 0.0) return fail(name + ": recargando.");
     if (w->capacity > 0 && ammo <= 0) return fail(name + ": sin misiles; se fabrican atracada.");
-    if (Length(AnomalyPosition(*a) - vessel_.ship.position) > w->range) return fail(name + ": fuera de alcance (" + Fixed(w->range / 1000.0, 0) + " mil km).");
-    if (vessel_.ship.energy < w->energy) return fail(name + ": sin energía para disparar.");
-    const FiringSolution s = Solve(vessel_.ship.position, ShipVelocity(), AnomalyPosition(*a), a->velocity, w->speed, false, GravitySources(), vessel_.ship.computerTier, rules_.combat);
+    if (Length(AnomalyPosition(*a) - vessel_->ship.position) > w->range) return fail(name + ": fuera de alcance (" + Fixed(w->range / 1000.0, 0) + " mil km).");
+    if (vessel_->ship.energy < w->energy) return fail(name + ": sin energía para disparar.");
+    const FiringSolution s = Solve(vessel_->ship.position, ShipVelocity(), AnomalyPosition(*a), a->velocity, w->speed, false, GravitySources(), vessel_->ship.computerTier, rules_.combat);
     if (!s.valid) return fail(name + ": sin solución de tiro.");
 
     Vec3d direction = s.direction;
     if (w->type == ArmType::RailSpinal) {
         // Fija al eje: dispara por donde mira el casco, y solo si el blanco esta en la mira.
-        const double miss = std::acos(std::clamp(Dot(Heading(vessel_.ship), s.direction), -1.0, 1.0)) * Length(AnomalyPosition(*a) - vessel_.ship.position);
+        const double miss = std::acos(std::clamp(Dot(Heading(vessel_->ship), s.direction), -1.0, 1.0)) * Length(AnomalyPosition(*a) - vessel_->ship.position);
         if (miss > w->proximity) return fail(name + ": el blanco no está en el eje; gira la nave.");
-        direction = Heading(vessel_.ship);
+        direction = Heading(vessel_->ship);
     }
-    if (w->turn <= 0.0) direction = Scatter(direction, AimError(rules_.combat, vessel_.ship.computerTier) * w->aimError * (w->type == ArmType::RailSpinal ? 1.0 : AimSpread(vessel_.ship.zones)), bubble_.rng);
+    if (w->turn <= 0.0) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * w->aimError * (w->type == ArmType::RailSpinal ? 1.0 : AimSpread(vessel_->ship.zones)), bubble_.rng);
 
-    vessel_.ship.energy -= w->energy;
+    vessel_->ship.energy -= w->energy;
     cooldown = w->cooldown;
     if (w->capacity > 0) --ammo;
-    vessel_.ship.defense.heat = std::min(vessel_.ship.defense.heat + w->heat, rules_.thermal.maximum);
+    vessel_->ship.defense.heat = std::min(vessel_->ship.defense.heat + w->heat, rules_.thermal.maximum);
     Projectile p;
     p.kind = w->turn > 0.0 ? WeaponKind::Missile : WeaponKind::Turret;
     p.type = w->damageType;
     p.team = 0;
     p.owner = 0;
+    p.ship = vessel_->id;
     p.target = a->id;
     p.damage = w->damage;
     p.proximity = w->proximity;
@@ -3232,7 +3394,7 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
     p.cruise = w->speed;
     p.turn = w->turn;
     const ShipDesign& design = CurrentShipDesign();
-    p.position = vessel_.ship.position + vessel_.ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(slot)].position * 0.001) + direction * 0.03;
+    p.position = vessel_->ship.position + vessel_->ship.orientation.ToMatrix().TransformDirection(design.slots[static_cast<std::size_t>(slot)].position * 0.001) + direction * 0.03;
     p.origin = p.position;
     p.velocity = ShipVelocity() + direction * (p.guided ? w->speed * 0.3 : w->speed);
     bubble_.projectiles.push_back(p);
@@ -3246,29 +3408,32 @@ bool GameSession::SetImpulseEngine(int tier, std::string* why) {
     };
     if (!CanRefit()) return fail("El motor se cambia atracado en una estación propia.");
     if (tier < 1 || tier > kImpulseEngineCount) return fail("Ese motor no existe.");
-    if (tier == vessel_.ship.loadout.engine) return fail("Ya lleva ese motor.");
+    if (tier == vessel_->ship.loadout.engine) return fail("Ya lleva ese motor.");
     const ImpulseEngineSpec& next = ImpulseEngine(tier);
-    const ImpulseEngineSpec& old = ImpulseEngine(vessel_.ship.loadout.engine);
-    const double metal = vessel_.creative ? 0.0 : next.metal - old.metal * 0.5, silicate = vessel_.creative ? 0.0 : next.silicate - old.silicate * 0.5;
-    if (vessel_.ship.cargo.Get(Resource::Metal) < metal || vessel_.ship.cargo.Get(Resource::Silicate) < silicate)
+    const ImpulseEngineSpec& old = ImpulseEngine(vessel_->ship.loadout.engine);
+    const double metal = vessel_->creative ? 0.0 : next.metal - old.metal * 0.5, silicate = vessel_->creative ? 0.0 : next.silicate - old.silicate * 0.5;
+    if (vessel_->ship.cargo.Get(Resource::Metal) < metal || vessel_->ship.cargo.Get(Resource::Silicate) < silicate)
         return fail(std::string("Faltan materiales: ") + next.name + " pide " + Fixed(std::max(metal, 0.0), 0) + " kt de metal y " + Fixed(std::max(silicate, 0.0), 0) + " de silicato.");
-    vessel_.ship.cargo.Add(Resource::Metal, -metal);
-    vessel_.ship.cargo.Add(Resource::Silicate, -silicate);
-    vessel_.ship.loadout.engine = tier;
+    vessel_->ship.cargo.Add(Resource::Metal, -metal);
+    vessel_->ship.cargo.Add(Resource::Silicate, -silicate);
+    vessel_->ship.loadout.engine = tier;
     Say(std::string("Motor de impulso: ") + next.name + ".");
     return true;
 }
 
 void GameSession::DamageZone(int zone, double hullAmount, const Vec3d* from) {
     if (zone < 0 || zone >= kHullZoneCount || hullAmount <= 0.0) return;
-    vessel_.ship.hull = std::max(vessel_.ship.hull - hullAmount, 0.0);
-    vessel_.directedLoss += hullAmount;
+    vessel_->ship.hull = std::max(vessel_->ship.hull - hullAmount, 0.0);
+    vessel_->directedLoss += hullAmount;
     if (from) RecordHit(zone, Normalize(*from + Vec3d{0, 0, 1e-9}), hullAmount / rules_.ship.hull, false);
     WoundZone(zone, hullAmount / (rules_.ship.hull * kZoneToughness));
 }
 
 void GameSession::UpdateLostPieces(double seconds, double realSeconds) {
-    for (int z = 0; z < kHullZoneCount; ++z) vessel_.zoneHeat[static_cast<std::size_t>(z)] *= std::exp(-realSeconds / 6.0);
+    for (Vessel& v : fleet_) {
+        for (int z = 0; z < kHullZoneCount; ++z) v.zoneHeat[static_cast<std::size_t>(z)] *= std::exp(-realSeconds / 6.0);
+        for (HullHit& h : v.hullHits) h.age += realSeconds;
+    }
     for (Anomaly& a : world_.anomalies)
         for (double& h : a.zoneHeat) h *= std::exp(-realSeconds / 6.0);
     for (LostPiece& p : bubble_.lostPieces) {
@@ -3276,9 +3441,8 @@ void GameSession::UpdateLostPieces(double seconds, double realSeconds) {
         p.orientation = Quatd::FromAxisAngle(p.spinAxis, p.spin * seconds) * p.orientation;
         p.age += realSeconds;
     }
-    for (HullHit& h : vessel_.hullHits) h.age += realSeconds;
-    // Pasado un rato, o lejos, ya no se ve: se olvida.
-    const Vec3d ship = vessel_.ship.position + engine_.GetWorld().origin;
+    // Pasado un rato, o lejos de la nave que se mira, ya no se ve: se olvida.
+    const Vec3d ship = fleet_[static_cast<std::size_t>(focus_)].ship.position + engine_.GetWorld().origin;
     bubble_.lostPieces.erase(std::remove_if(bubble_.lostPieces.begin(), bubble_.lostPieces.end(), [&](const LostPiece& p) { return p.age > 120.0 || Length(p.absolute - ship) > 2.0e4; }), bubble_.lostPieces.end());
 }
 
@@ -3299,11 +3463,11 @@ void GameSession::DamageAnomaly(Anomaly& a, DamageType type, double amount, int 
     const ZoneLayout* layout = ZonesOf(a);
     if (impact && layout && taken > 0.0 && a.maxHull > 0.0) {
         if (team == 0) {
-            ++pilot_.lastStrike.serial;
-            pilot_.lastStrike.anomaly = a.id;
-            pilot_.lastStrike.zone = impact->zone;
-            pilot_.lastStrike.point = impact->point;
-            pilot_.strikeAge = 0.0;
+            ++pilot_->lastStrike.serial;
+            pilot_->lastStrike.anomaly = a.id;
+            pilot_->lastStrike.zone = impact->zone;
+            pilot_->lastStrike.point = impact->point;
+            pilot_->strikeAge = 0.0;
             TrackStrike();
         }
         if (a.hull > 0.0) {
@@ -3315,9 +3479,9 @@ void GameSession::DamageAnomaly(Anomaly& a, DamageType type, double amount, int 
     if (a.hull > 0.0) return;
     a.hull = 0.0;
     if (team != 0) return;
-    ++pilot_.kills;
+    ++pilot_->kills;
     const double loot = a.kind == AnomalyKind::AlienStation ? rules_.anomalies.stationLoot : rules_.anomalies.shipLoot;
-    vessel_.ship.cargo.Add(Resource::Metal, loot);
+    vessel_->ship.cargo.Add(Resource::Metal, loot);
     Say(a.name + " destruida. Restos: +" + MassText(loot) + " de metal.");
     OnAlienDestroyed(a);
 }
@@ -3450,21 +3614,21 @@ void GameSession::HitAnomalyUnshielded(Anomaly& a, const ZoneImpact& impact, dou
 }
 
 void GameSession::SetCinematic(bool on) {
-    if (on == pilot_.cinematic) return;
-    pilot_.cinematic = on;
+    if (on == pilot_->cinematic) return;
+    pilot_->cinematic = on;
     Say(on ? "Modo cinemática: la cámara seguirá cada impacto en el blanco." : "Modo cinemática desactivado.");
 }
 
 bool GameSession::CinematicView() const {
-    return pilot_.cinematic && pilot_.lastStrike.serial > 0 && pilot_.strikeAge < rules_.cinematic.seconds && vessel_.phase == GamePhase::Flying && !pilot_.onFoot;
+    return pilot_->cinematic && pilot_->lastStrike.serial > 0 && pilot_->strikeAge < rules_.cinematic.seconds && vessel_->phase == GamePhase::Flying && !pilot_->onFoot;
 }
 
 void GameSession::TrackStrike() {
-    const Anomaly* a = pilot_.lastStrike.anomaly >= 0 ? FindAnomaly(pilot_.lastStrike.anomaly) : nullptr;
+    const Anomaly* a = pilot_->lastStrike.anomaly >= 0 ? FindAnomaly(pilot_->lastStrike.anomaly) : nullptr;
     if (!a) return;
-    pilot_.lastStrike.target = AnomalyPosition(*a) + engine_.GetWorld().origin;
-    pilot_.lastStrike.yaw = static_cast<double>(a->yaw);
-    if (const ZoneLayout* layout = ZonesOf(*a)) pilot_.lastStrike.size = Length(layout->extent) * 0.001;
+    pilot_->lastStrike.target = AnomalyPosition(*a) + engine_.GetWorld().origin;
+    pilot_->lastStrike.yaw = static_cast<double>(a->yaw);
+    if (const ZoneLayout* layout = ZonesOf(*a)) pilot_->lastStrike.size = Length(layout->extent) * 0.001;
 }
 
 // Gira sobre Y (rumbo) y luego sobre X (cabeceo): +Z acaba en forward y no hay alabeo.
@@ -3480,43 +3644,49 @@ Quatd CameraLooking(const Vec3d& forward) {
 bool GameSession::CinematicShot(Vec3d& eye, Quatd& look) const {
     if (!CinematicView()) return false;
     const CinematicRules& r = rules_.cinematic;
-    const Vec3d target = pilot_.lastStrike.target - engine_.GetWorld().origin;
-    const Quatd turn = Quatd::FromAxisAngle({0, 1, 0}, pilot_.lastStrike.yaw);
-    const Vec3d hit = target + turn.ToMatrix().TransformDirection(pilot_.lastStrike.point * 0.001);
+    const Vec3d target = pilot_->lastStrike.target - engine_.GetWorld().origin;
+    const Quatd turn = Quatd::FromAxisAngle({0, 1, 0}, pilot_->lastStrike.yaw);
+    const Vec3d hit = target + turn.ToMatrix().TransformDirection(pilot_->lastStrike.point * 0.001);
     // Empieza del lado del golpe; si dio en el centro, del lado de la nave.
     Vec3d side = hit - target;
     side.y = 0.0;
     if (Length(side) < 1e-6) {
-        side = vessel_.ship.position - target;
+        side = vessel_->ship.position - target;
         side.y = 0.0;
     }
     if (Length(side) < 1e-9) side = Vec3d{1, 0, 0};
-    const Vec3d around = Quatd::FromAxisAngle({0, 1, 0}, pilot_.strikeAge * r.orbitRate).ToMatrix().TransformDirection(Normalize(side));
-    const double distance = std::max(pilot_.lastStrike.size * r.distance, r.minimum);
+    const Vec3d around = Quatd::FromAxisAngle({0, 1, 0}, pilot_->strikeAge * r.orbitRate).ToMatrix().TransformDirection(Normalize(side));
+    const double distance = std::max(pilot_->lastStrike.size * r.distance, r.minimum);
     eye = hit + around * distance + Vec3d{0, -distance * 0.35, 0};  // arriba es -Y
     look = CameraLooking(hit - eye);
     return true;
 }
 
 void GameSession::UpdateCombat(double seconds) {
-    for (WeaponMount& m : vessel_.ship.weapons) m.cooldown = std::max(m.cooldown - seconds, 0.0);
-    for (double& c : vessel_.ship.loadout.cooldown) c = std::max(c - seconds, 0.0);
+    for (Vessel& v : fleet_) {
+        if (v.phase != GamePhase::Flying) continue;
+        for (WeaponMount& m : v.ship.weapons) m.cooldown = std::max(m.cooldown - seconds, 0.0);
+        for (double& c : v.ship.loadout.cooldown) c = std::max(c - seconds, 0.0);
+    }
     if (bubble_.projectiles.empty()) return;
     const GameMode& mode = ModeInfo(world_.mode);
-    const World& w = engine_.GetWorld();
 
-    // Las torretas derriban misiles y drones que se acerquen: las del jugador y las de los hostiles.
-    // Y la defensa puntual del jugador (puntos y plataformas, Armament.h), que se suma a sus torretas.
-    struct Defender { Vec3d position; int team; double rate; };  // rate: probabilidad por segundo
+    // Las torretas derriban misiles y drones que se acerquen: las de los jugadores y las de los hostiles.
+    // Y la defensa puntual de cada nave (puntos y plataformas, Armament.h), que se suma a sus torretas.
+    struct Defender { Vec3d position; int team; double rate; int vessel; };  // rate: probabilidad por segundo
     std::vector<Defender> defenders;
-    int playerTier = 0;
-    for (const WeaponMount& m : vessel_.ship.weapons)
-        if (m.kind == WeaponKind::Turret) playerTier = std::max(playerTier, m.tier);
-    const double playerRate = rules_.combat.defenseRate * playerTier + PointDefenseRate();
-    if (playerRate > 0.0 && vessel_.phase == GamePhase::Flying) defenders.push_back({vessel_.ship.position, 0, playerRate});
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        if (fleet_[i].phase != GamePhase::Flying) continue;
+        const Using mine(*this, static_cast<int>(i));
+        int tier = 0;
+        for (const WeaponMount& m : vessel_->ship.weapons)
+            if (m.kind == WeaponKind::Turret) tier = std::max(tier, m.tier);
+        const double rate = rules_.combat.defenseRate * tier + PointDefenseRate();
+        if (rate > 0.0) defenders.push_back({vessel_->ship.position, 0, rate, static_cast<int>(i)});
+    }
     for (const Anomaly& a : world_.anomalies) {
         if (!mode.hostilesAttack || !a.armed || a.disabled || a.hull <= 0.0 || a.weapon != WeaponKind::Turret || a.stance != Stance::Hostile) continue;
-        defenders.push_back({AnomalyPosition(a), TeamOf(a), rules_.combat.defenseRate * a.weaponTier});
+        defenders.push_back({AnomalyPosition(a), TeamOf(a), rules_.combat.defenseRate * a.weaponTier, -1});
     }
     for (Projectile& p : bubble_.projectiles) {
         if (!p.guided || p.dead) continue;
@@ -3524,12 +3694,14 @@ void GameSession::UpdateCombat(double seconds) {
             if (d.team == p.team || Length(p.position - d.position) > rules_.combat.defenseRange) continue;
             if (Uniform(bubble_.rng, 0.0, 1.0) < 1.0 - std::exp(-d.rate * seconds)) {
                 p.dead = true;
-                if (d.team == 0) Say(std::string(Name(p.kind)) + " enemigo derribado.");
+                if (d.vessel >= 0) {
+                    const Using mine(*this, d.vessel);
+                    Say(std::string(Name(p.kind)) + " enemigo derribado.");
+                }
                 break;
             }
         }
     }
-    (void)w;
     StepProjectiles(seconds);
 }
 
@@ -3539,10 +3711,13 @@ void GameSession::StepProjectiles(double seconds) {
     const std::vector<GravitySource> sources = GravitySources();
     const int parts = std::clamp(static_cast<int>(std::ceil(seconds / 0.25)), 1, 120);
     const double dt = seconds / parts;
-    const Vec3d shipVelocity = ShipVelocity();
-    const bool flying = vessel_.phase == GamePhase::Flying;
+    // Las naves en vuelo: pueden recibir un proyectil enemigo. Entre naves de jugadores no hay fuego.
+    struct Hull { int index; int id; Vec3d velocity; };
+    std::vector<Hull> hulls;
+    for (std::size_t i = 0; i < fleet_.size(); ++i)
+        if (fleet_[i].phase == GamePhase::Flying) hulls.push_back({static_cast<int>(i), fleet_[i].id, VelocityOf(fleet_[i])});
 
-    // La nave y las anomalias ya se movieron este paso: aqui se retrocede hasta el principio de el.
+    // Las naves y las anomalias ya se movieron este paso: aqui se retrocede hasta el principio de el.
     std::vector<Anomaly*> targets;
     std::vector<Vec3d> ends;
     for (Anomaly& a : world_.anomalies) {
@@ -3556,10 +3731,14 @@ void GameSession::StepProjectiles(double seconds) {
             if (p.dead) continue;
             Vec3d tp, tv;
             bool have = false;
-            if (p.guided && p.target == 0 && flying) {
-                tp = vessel_.ship.position - shipVelocity * back;
-                tv = shipVelocity;
-                have = true;
+            if (p.guided && p.target == 0) {
+                for (const Hull& h : hulls) {
+                    if (h.id != p.ship) continue;
+                    tp = fleet_[static_cast<std::size_t>(h.index)].ship.position - h.velocity * back;
+                    tv = h.velocity;
+                    have = true;
+                    break;
+                }
             } else if (p.guided && p.target > 0) {
                 for (std::size_t i = 0; i < targets.size(); ++i) {
                     if (targets[i]->id != p.target || targets[i]->hull <= 0.0) continue;
@@ -3585,25 +3764,34 @@ void GameSession::StepProjectiles(double seconds) {
                 if (!p.dead && SegmentNear(from, p.position, s.position, s.radius)) finish(true);  // se estrella
             }
             if (p.dead) continue;
-            if (p.team != 0 && flying && SegmentNear(from, p.position, vessel_.ship.position - shipVelocity * back, rules_.ship.radius + p.proximity)) {
-                const Anomaly* owner = FindAnomaly(p.owner);
-                const Vec3d relative = p.velocity - shipVelocity;
-                const Vec3d toward = Length(relative) > 1e-9 ? relative * (-1.0 / Length(relative)) : Normalize(p.origin - vessel_.ship.position);
-                // Donde da de verdad: el tramo recorrido en este paso, visto desde la nave (que tambien
-                // se ha movido), en metros del modelo. La trayectoria decide la zona, no el atacante.
-                const Vec3d center = vessel_.ship.position - shipVelocity * back;
-                const auto toModel = vessel_.ship.orientation.Conjugate().ToMatrix();
-                const Vec3d start = toModel.TransformDirection(from - (center - shipVelocity * dt)) * 1000.0;
-                const Vec3d end = toModel.TransformDirection(p.position - center) * 1000.0;
-                const ZoneImpact impact = ProjectileImpact(start, end);
-                Hurt(p.type, p.damage, owner ? owner->name : std::string("fuego enemigo"), toward, p.owner, &impact);
-                finish(true);
-                continue;
+            if (p.team != 0) {
+                for (const Hull& h : hulls) {
+                    const Vessel& v = fleet_[static_cast<std::size_t>(h.index)];
+                    if (v.phase != GamePhase::Flying || !SegmentNear(from, p.position, v.ship.position - h.velocity * back, rules_.ship.radius + p.proximity)) continue;
+                    const Using struck(*this, h.index);
+                    const Anomaly* owner = FindAnomaly(p.owner);
+                    const Vec3d relative = p.velocity - h.velocity;
+                    const Vec3d toward = Length(relative) > 1e-9 ? relative * (-1.0 / Length(relative)) : Normalize(p.origin - vessel_->ship.position);
+                    // Donde da de verdad: el tramo recorrido en este paso, visto desde la nave (que tambien
+                    // se ha movido), en metros del modelo. La trayectoria decide la zona, no el atacante.
+                    const Vec3d center = vessel_->ship.position - h.velocity * back;
+                    const auto toModel = vessel_->ship.orientation.Conjugate().ToMatrix();
+                    const Vec3d start = toModel.TransformDirection(from - (center - h.velocity * dt)) * 1000.0;
+                    const Vec3d end = toModel.TransformDirection(p.position - center) * 1000.0;
+                    const ZoneImpact impact = ProjectileImpact(start, end);
+                    Hurt(p.type, p.damage, owner ? owner->name : std::string("fuego enemigo"), toward, p.owner, &impact);
+                    finish(true);
+                    break;
+                }
+                if (p.dead) continue;
             }
             for (std::size_t i = 0; i < targets.size(); ++i) {
                 Anomaly& a = *targets[i];
                 if (a.hull <= 0.0 || TeamOf(a) == p.team || a.id == p.owner) continue;
                 if (SegmentNear(from, p.position, ends[i] - a.velocity * back, a.radius + p.proximity)) {
+                    // El golpe es de la nave que disparo: suyas son la baja, el botin y los avisos.
+                    const int shooter = p.team == 0 ? IndexOfId(p.ship) : -1;
+                    const Using mine(*this, shooter >= 0 ? shooter : IndexOf(*vessel_));
                     // Donde da de verdad, como en la nave: el tramo de este paso visto desde la anomalia,
                     // en metros de su modelo.
                     if (const ZoneLayout* layout = ZonesOf(a)) {
@@ -3629,28 +3817,28 @@ void GameSession::StepProjectiles(double seconds) {
 // Entrar en la orbita de una estrella demasiado caliente para el blindaje quema el casco.
 void GameSession::UpdateHeat(double seconds) {
     const World& w = engine_.GetWorld();
-    vessel_.inHeatZone = false;
-    const std::size_t s = static_cast<std::size_t>(vessel_.nearestSystem);
+    vessel_->inHeatZone = false;
+    const std::size_t s = static_cast<std::size_t>(vessel_->nearestSystem);
     const SystemState& state = w.state[s];
     const StarSystemData& system = *w.systems[s];
     const double damage = ModeInfo(world_.mode).damage;
     for (std::size_t m = 0; m < state.starNodes.size(); ++m) {
         const StarData& star = system.StarAt(static_cast<int>(m));
         const StarYield yield = YieldOf(star);
-        const double distance = Length(w.scene.WorldPosition(state.starNodes[m]) - vessel_.ship.position);
-        if (vessel_.ship.heatShieldTier < yield.requiredTier && distance < yield.orbitRadius * 1.5) {
-            vessel_.inHeatZone = true;
-            vessel_.ship.hull = std::max(vessel_.ship.hull - damage * 300.0 * (yield.requiredTier - vessel_.ship.heatShieldTier) * seconds / 3600.0, 0.0);
+        const double distance = Length(w.scene.WorldPosition(state.starNodes[m]) - vessel_->ship.position);
+        if (vessel_->ship.heatShieldTier < yield.requiredTier && distance < yield.orbitRadius * 1.5) {
+            vessel_->inHeatZone = true;
+            vessel_->ship.hull = std::max(vessel_->ship.hull - damage * 300.0 * (yield.requiredTier - vessel_->ship.heatShieldTier) * seconds / 3600.0, 0.0);
         }
         if (star.kind == StarClass::BlackHole) continue;
 
         // El calor sube con la cuarta potencia al acercarse: lejos no se nota y cerca evapora.
-        const double reach = star.radius * std::max(rules_.ship.heatReach - 0.5 * (vessel_.ship.heatShieldTier - yield.requiredTier), 1.4);
+        const double reach = star.radius * std::max(rules_.ship.heatReach - 0.5 * (vessel_->ship.heatShieldTier - yield.requiredTier), 1.4);
         if (distance < reach) {
-            vessel_.inHeatZone = true;
+            vessel_->inHeatZone = true;
             const double ratio = reach / std::max(distance, 1.0);
-            vessel_.ship.hull = std::max(vessel_.ship.hull - damage * rules_.ship.heatBurn * (ratio * ratio * ratio * ratio - 1.0) * seconds, 0.0);
-            if (vessel_.ship.hull <= 0.0) vessel_.lossReason = "Nave evaporada por el calor de " + w.bodies[static_cast<std::size_t>(state.starBodies[std::min(m, state.starBodies.size() - 1)])].name + ".";
+            vessel_->ship.hull = std::max(vessel_->ship.hull - damage * rules_.ship.heatBurn * (ratio * ratio * ratio * ratio - 1.0) * seconds, 0.0);
+            if (vessel_->ship.hull <= 0.0) vessel_->lossReason = "Nave evaporada por el calor de " + w.bodies[static_cast<std::size_t>(state.starBodies[std::min(m, state.starBodies.size() - 1)])].name + ".";
         }
     }
 }
@@ -3658,7 +3846,7 @@ void GameSession::UpdateHeat(double seconds) {
 // ---- Escudos y calor ---------------------------------------------------------------------
 
 bool GameSession::SetShield(ShieldKind kind) {
-    DefenseState& d = vessel_.ship.defense;
+    DefenseState& d = vessel_->ship.defense;
     if (!IsField(kind) || d.shieldTier[static_cast<std::size_t>(kind)] <= 0) {
         Say(std::string("Escudo ") + Name(kind) + ": no lo tienes.");
         return false;
@@ -3671,13 +3859,13 @@ bool GameSession::SetShield(ShieldKind kind) {
 }
 
 void GameSession::SetShieldOn(bool on) {
-    if (vessel_.ship.defense.fieldOn == on) return;
-    vessel_.ship.defense.fieldOn = on;
-    Say(on ? std::string("Escudo: ") + Name(vessel_.ship.defense.field) + "." : std::string("Escudos apagados."));
+    if (vessel_->ship.defense.fieldOn == on) return;
+    vessel_->ship.defense.fieldOn = on;
+    Say(on ? std::string("Escudo: ") + Name(vessel_->ship.defense.field) + "." : std::string("Escudos apagados."));
 }
 
 ShieldKind GameSession::CycleShield() {
-    DefenseState& d = vessel_.ship.defense;
+    DefenseState& d = vessel_->ship.defense;
     const int count = static_cast<int>(ShieldKind::Count);
     if (!d.fieldOn) {
         for (int k = 0; k < count; ++k)
@@ -3697,27 +3885,27 @@ ShieldKind GameSession::CycleShield() {
 }
 
 bool GameSession::FieldActive() const {
-    const DefenseState& d = vessel_.ship.defense;
+    const DefenseState& d = vessel_->ship.defense;
     const std::size_t f = static_cast<std::size_t>(d.field);
     if (!d.fieldOn || !IsField(d.field) || d.shieldTier[f] <= 0) return false;
     if (d.field == ShieldKind::Love) return true;  // ni calor ni energia: es otra fisica
     if (Overheated()) return false;
-    if (d.field == ShieldKind::Dust && vessel_.ship.cargo.Get(Resource::Silicate) <= 0.0) return false;
-    return rules_.defense.shields[f].energy <= 0.0 || vessel_.ship.energy > 0.0;
+    if (d.field == ShieldKind::Dust && vessel_->ship.cargo.Get(Resource::Silicate) <= 0.0) return false;
+    return rules_.defense.shields[f].energy <= 0.0 || vessel_->ship.energy > 0.0;
 }
 
-bool GameSession::Overheated() const { return game::Overheated(vessel_.ship.defense, rules_.thermal); }
+bool GameSession::Overheated() const { return game::Overheated(vessel_->ship.defense, rules_.thermal); }
 
-void GameSession::SetCoolant(CoolantKind kind, bool on) { vessel_.ship.defense.coolantOn[static_cast<std::size_t>(kind)] = on; }
+void GameSession::SetCoolant(CoolantKind kind, bool on) { vessel_->ship.defense.coolantOn[static_cast<std::size_t>(kind)] = on; }
 
 // proper son segundos a bordo: los sistemas de la nave van con su reloj, no con el de fuera.
 void GameSession::UpdateThermal(double proper, double realSeconds) {
-    DefenseState& d = vessel_.ship.defense;
+    DefenseState& d = vessel_->ship.defense;
     const ThermalRules& t = rules_.thermal;
     const DefenseRules& r = rules_.defense;
     const GameMode& mode = ModeInfo(world_.mode);
     const World& w = engine_.GetWorld();
-    const double density = NebulaDensity(vessel_.ship.position + w.origin);
+    const double density = NebulaDensity(vessel_->ship.position + w.origin);
     const double hours = proper / 3600.0;
     double heatIn = 0.0;
 
@@ -3725,118 +3913,118 @@ void GameSession::UpdateThermal(double proper, double realSeconds) {
     const std::size_t f = static_cast<std::size_t>(d.field);
     if (FieldActive() && d.field != ShieldKind::Love) {
         const ShieldRules& s = r.shields[f];
-        vessel_.ship.energy = std::max(vessel_.ship.energy - s.energy * hours, 0.0);
-        if (d.field == ShieldKind::Dust) vessel_.ship.cargo.Add(Resource::Silicate, -std::min(r.dustUpkeep * hours, vessel_.ship.cargo.Get(Resource::Silicate)));
+        vessel_->ship.energy = std::max(vessel_->ship.energy - s.energy * hours, 0.0);
+        if (d.field == ShieldKind::Dust) vessel_->ship.cargo.Add(Resource::Silicate, -std::min(r.dustUpkeep * hours, vessel_->ship.cargo.Get(Resource::Silicate)));
         heatIn += s.heat * proper;
         d.charge[f] = std::min(d.charge[f] + ShieldRegen(r, d.field, d.shieldTier[f]) * proper, ShieldCapacity(r, d.field, d.shieldTier[f]));
     }
 
     // Curvatura: calienta al formarse la burbuja y, mientras dura, segun la velocidad.
-    const bool curving = Curves(vessel_.ship.mode);
-    if (curving) heatIn += t.formHeat * std::max(vessel_.ship.warpCharge - vessel_.lastWarpCharge, 0.0);
-    vessel_.lastWarpCharge = curving ? vessel_.ship.warpCharge : 0.0;
-    const bool stable = curving && vessel_.ship.warpCharge >= 1.0 && vessel_.ship.warpSpeed > 0.0;
-    const double tens = vessel_.ship.warpSpeed / (10.0 * kLightSpeed);
+    const bool curving = Curves(vessel_->ship.mode);
+    if (curving) heatIn += t.formHeat * std::max(vessel_->ship.warpCharge - vessel_->lastWarpCharge, 0.0);
+    vessel_->lastWarpCharge = curving ? vessel_->ship.warpCharge : 0.0;
+    const bool stable = curving && vessel_->ship.warpCharge >= 1.0 && vessel_->ship.warpSpeed > 0.0;
+    const double tens = vessel_->ship.warpSpeed / (10.0 * kLightSpeed);
     if (stable) heatIn += t.warpHeat * std::sqrt(tens) * proper;
 
     // Presion de ariete: por encima de c, el gas golpea la proa. Los conos la aguantan; sin ellos, el casco.
     const std::size_t a = static_cast<std::size_t>(ShieldKind::Ablative);
-    vessel_.ramming = stable && vessel_.ship.warpSpeed > kLightSpeed;
-    if (vessel_.ramming) {
+    vessel_->ramming = stable && vessel_->ship.warpSpeed > kLightSpeed;
+    if (vessel_->ramming) {
         double ram = r.ramPressure * density * std::sqrt(tens) * realSeconds;
         const double plates = std::min(ram, d.charge[a]);
         d.charge[a] -= plates;
         ram -= plates;
         if (ram > 0.0 && mode.damage > 0.0) {
-            vessel_.ship.hull = std::max(vessel_.ship.hull - ram * mode.damage, 0.0);
-            if (!vessel_.ramWarned) Say("Presión de ariete: sin conos ablativos, la curvatura castiga el casco.");
-            vessel_.ramWarned = true;
-            if (vessel_.ship.hull <= 0.0) vessel_.lossReason = "Nave aplastada por la presión de ariete.";
+            vessel_->ship.hull = std::max(vessel_->ship.hull - ram * mode.damage, 0.0);
+            if (!vessel_->ramWarned) Say("Presión de ariete: sin conos ablativos, la curvatura castiga el casco.");
+            vessel_->ramWarned = true;
+            if (vessel_->ship.hull <= 0.0) vessel_->lossReason = "Nave aplastada por la presión de ariete.";
         }
     } else {
-        vessel_.ramWarned = false;
+        vessel_->ramWarned = false;
         // El gas de la nebulosa lija las placas, tanto mas cuanto mas rapido.
-        if (!vessel_.orbiting) d.charge[a] = std::max(d.charge[a] - r.ablativeWear * density * std::min(vessel_.ship.speed / kLightSpeed, 1.0) * proper, 0.0);
+        if (!vessel_->orbiting) d.charge[a] = std::max(d.charge[a] - r.ablativeWear * density * std::min(vessel_->ship.speed / kLightSpeed, 1.0) * proper, 0.0);
     }
     // Las placas de los conos van montadas en la proa: con ella danada caben menos, y sin ella ninguna.
-    const double plateCap = ShieldCapacity(r, ShieldKind::Ablative, d.shieldTier[a]) * std::max(Zone(vessel_.ship.zones, HullZone::Bow), 0.0);
+    const double plateCap = ShieldCapacity(r, ShieldKind::Ablative, d.shieldTier[a]) * std::max(Zone(vessel_->ship.zones, HullZone::Bow), 0.0);
     d.charge[a] = std::min(d.charge[a], plateCap);
-    vessel_.ship.massFactor = 1.0 + (plateCap > 0.0 ? r.ablativeMass * d.charge[a] / plateCap : 0.0);
+    vessel_->ship.massFactor = 1.0 + (plateCap > 0.0 ? r.ablativeMass * d.charge[a] / plateCap : 0.0);
 
     // Junto a una estrella los radiadores apenas sueltan calor, y en su zona de calor entra mas.
-    vessel_.radiators = 1.0;
-    const SystemState& state = w.state[static_cast<std::size_t>(vessel_.nearestSystem)];
-    const StarSystemData& system = *w.systems[static_cast<std::size_t>(vessel_.nearestSystem)];
+    vessel_->radiators = 1.0;
+    const SystemState& state = w.state[static_cast<std::size_t>(vessel_->nearestSystem)];
+    const StarSystemData& system = *w.systems[static_cast<std::size_t>(vessel_->nearestSystem)];
     for (std::size_t m = 0; m < state.starNodes.size(); ++m) {
         const StarData& star = system.StarAt(static_cast<int>(m));
         if (star.kind == StarClass::BlackHole) continue;
         const double reach = star.radius * t.starReach;
-        const double distance = Length(w.scene.WorldPosition(state.starNodes[m]) - vessel_.ship.position);
-        if (distance < reach) vessel_.radiators = std::min(vessel_.radiators, (distance / reach) * (distance / reach));
+        const double distance = Length(w.scene.WorldPosition(state.starNodes[m]) - vessel_->ship.position);
+        if (distance < reach) vessel_->radiators = std::min(vessel_->radiators, (distance / reach) * (distance / reach));
     }
-    vessel_.radiators *= RadiatorOutput(vessel_.ship.zones) * (1.0 + kRadiatorBoost * WorkingModules(vessel_.ship, ShipModuleKind::Radiator));  // rotos sueltan menos; las aletas, mas
-    if (vessel_.inHeatZone) heatIn += t.starHeat * proper;
+    vessel_->radiators *= RadiatorOutput(vessel_->ship.zones) * (1.0 + kRadiatorBoost * WorkingModules(vessel_->ship, ShipModuleKind::Radiator));  // rotos sueltan menos; las aletas, mas
+    if (vessel_->inHeatZone) heatIn += t.starHeat * proper;
 
     // En una estacion propia: agua del hielo de la bodega y placas nuevas con metal.
-    const bool atStation = vessel_.orbiting && vessel_.orbiting->kind == Kind::Station && world_.stations.Find(vessel_.orbiting->index) != nullptr;
+    const bool atStation = vessel_->orbiting && vessel_->orbiting->kind == Kind::Station && world_.stations.Find(vessel_->orbiting->index) != nullptr;
     if (atStation) {
-        const double water = std::min({t.stationRefill * hours, t.waterTank - d.water, vessel_.ship.cargo.Get(Resource::Ice)});
+        const double water = std::min({t.stationRefill * hours, t.waterTank - d.water, vessel_->ship.cargo.Get(Resource::Ice)});
         d.water += water;
-        vessel_.ship.cargo.Add(Resource::Ice, -water);
-        const double plates = std::min({r.plateRepair * hours, plateCap - d.charge[a], vessel_.ship.cargo.Get(Resource::Metal) / r.plateMetal});
+        vessel_->ship.cargo.Add(Resource::Ice, -water);
+        const double plates = std::min({r.plateRepair * hours, plateCap - d.charge[a], vessel_->ship.cargo.Get(Resource::Metal) / r.plateMetal});
         if (plates > 0.0) {
             d.charge[a] += plates;
-            vessel_.ship.cargo.Add(Resource::Metal, -plates * r.plateMetal);
+            vessel_->ship.cargo.Add(Resource::Metal, -plates * r.plateMetal);
         }
     }
 
     // Con la nave fria y energia de sobra, se licua nitrogeno del gas de la bodega.
-    if (d.coolantTier[2] > 0 && d.nitrogen < t.nitrogenTank && d.heat < t.limit * t.coolStart && vessel_.ship.energy > rules_.ship.energy * 0.3) {
-        const double make = std::min({t.nitrogenMake * hours, t.nitrogenTank - d.nitrogen, vessel_.ship.cargo.Get(Resource::Gas), vessel_.ship.energy / t.nitrogenEnergy});
+    if (d.coolantTier[2] > 0 && d.nitrogen < t.nitrogenTank && d.heat < t.limit * t.coolStart && vessel_->ship.energy > rules_.ship.energy * 0.3) {
+        const double make = std::min({t.nitrogenMake * hours, t.nitrogenTank - d.nitrogen, vessel_->ship.cargo.Get(Resource::Gas), vessel_->ship.energy / t.nitrogenEnergy});
         if (make > 0.0) {
             d.nitrogen += make;
-            vessel_.ship.cargo.Add(Resource::Gas, -make);
-            vessel_.ship.energy -= make * t.nitrogenEnergy;
+            vessel_->ship.cargo.Add(Resource::Gas, -make);
+            vessel_->ship.energy -= make * t.nitrogenEnergy;
         }
     }
 
-    const CoolingResult cool = StepCooling(d, t, proper, heatIn, vessel_.radiators, vessel_.ship.cargo.Get(Resource::Ice));
-    vessel_.ship.cargo.Add(Resource::Ice, -cool.iceUsed);
+    const CoolingResult cool = StepCooling(d, t, proper, heatIn, vessel_->radiators, vessel_->ship.cargo.Get(Resource::Ice));
+    vessel_->ship.cargo.Add(Resource::Ice, -cool.iceUsed);
 
     if (Overheated()) {
         if (mode.damage > 0.0) {
-            vessel_.ship.hull = std::max(vessel_.ship.hull - t.overheatBurn * (d.heat - t.limit) * proper * mode.damage, 0.0);
-            if (vessel_.ship.hull <= 0.0) vessel_.lossReason = "Nave fundida por su propio calor.";
+            vessel_->ship.hull = std::max(vessel_->ship.hull - t.overheatBurn * (d.heat - t.limit) * proper * mode.damage, 0.0);
+            if (vessel_->ship.hull <= 0.0) vessel_->lossReason = "Nave fundida por su propio calor.";
         }
-        if (!vessel_.overheatWarned) Say("Sobrecalentamiento: escudos y armas fuera de servicio.");
-        vessel_.overheatWarned = true;
-    } else if (vessel_.overheatWarned && d.heat < t.limit * 0.9) {
-        vessel_.overheatWarned = false;
+        if (!vessel_->overheatWarned) Say("Sobrecalentamiento: escudos y armas fuera de servicio.");
+        vessel_->overheatWarned = true;
+    } else if (vessel_->overheatWarned && d.heat < t.limit * 0.9) {
+        vessel_->overheatWarned = false;
         Say("El calor baja del límite: escudos y armas de vuelta.");
     }
 }
 
 void GameSession::UpdateRepair(double seconds) {
-    if (!vessel_.orbiting || vessel_.orbiting->kind != Kind::Station) return;
-    const Station* s = world_.stations.Find(vessel_.orbiting->index);
+    if (!vessel_->orbiting || vessel_->orbiting->kind != Kind::Station) return;
+    const Station* s = world_.stations.Find(vessel_->orbiting->index);
     // Atracada, se repara en cualquier estacion propia.
     if (!s || (s->kind != StationKind::Power && !Docked())) return;
-    vessel_.ship.hull = std::min(vessel_.ship.hull + rules_.ship.repairPerHour * seconds / 3600.0, rules_.ship.hull);
+    vessel_->ship.hull = std::min(vessel_->ship.hull + rules_.ship.repairPerHour * seconds / 3600.0, rules_.ship.hull);
     // Las zonas se reparan al mismo ritmo. Una pieza perdida solo se rehace atracada: hace falta el muelle.
     const double rate = rules_.ship.repairPerHour * seconds / 3600.0 / (rules_.ship.hull * kZoneToughness);
     for (int z = 0; z < kHullZoneCount; ++z) {
-        double& integrity = vessel_.ship.zones[static_cast<std::size_t>(z)];
-        if (integrity >= 1.0 || (ZoneLost(vessel_.ship.zones, z) && !Docked())) continue;
-        const bool rebuilt = ZoneLost(vessel_.ship.zones, z);
+        double& integrity = vessel_->ship.zones[static_cast<std::size_t>(z)];
+        if (integrity >= 1.0 || (ZoneLost(vessel_->ship.zones, z) && !Docked())) continue;
+        const bool rebuilt = ZoneLost(vessel_->ship.zones, z);
         integrity = std::min(integrity + rate, 1.0);
         if (rebuilt) Say(std::string("Reconstruida en el muelle: ") + ZoneInfo(z).name + ".");
         // Una zona como nueva ya no tiene crateres.
-        if (integrity >= 1.0) vessel_.hullHits.erase(std::remove_if(vessel_.hullHits.begin(), vessel_.hullHits.end(), [z](const HullHit& h) { return h.zone == z; }), vessel_.hullHits.end());
+        if (integrity >= 1.0) vessel_->hullHits.erase(std::remove_if(vessel_->hullHits.begin(), vessel_->hullHits.end(), [z](const HullHit& h) { return h.zone == z; }), vessel_->hullHits.end());
     }
     // Las piezas igual: una arrancada solo se rehace en el muelle.
     bool rebuilt = false;
-    for (std::size_t i = 0; i < vessel_.ship.pieces.size(); ++i) {
-        double& integrity = vessel_.ship.pieces[i];
+    for (std::size_t i = 0; i < vessel_->ship.pieces.size(); ++i) {
+        double& integrity = vessel_->ship.pieces[i];
         if (integrity >= 1.0 || (integrity <= 0.0 && !Docked())) continue;
         rebuilt = rebuilt || integrity <= 0.0;
         integrity = std::min(integrity + rate * 2.0, 1.0);
@@ -3848,18 +4036,18 @@ void GameSession::UpdateRepair(double seconds) {
 }
 
 void GameSession::UpdateExploration(double hours) {
-    if (vessel_.exploring < 0) return;
+    if (vessel_->exploring < 0) return;
     for (Anomaly& a : world_.anomalies) {
-        if (a.id != vessel_.exploring) continue;
+        if (a.id != vessel_->exploring) continue;
         if (!Explore(a, rules_.anomalies, hours)) {
-            if (!a.emitter) vessel_.exploring = -1;
+            if (!a.emitter) vessel_->exploring = -1;
             continue;
         }
-        ++vessel_.ship.emitters;
-        if (vessel_.ship.emitters == 1) Say("Emisor de energía negativa recuperado: curvatura Híbrida disponible.");
-        else if (vessel_.ship.emitters == rules_.drive.hyperEmitters) Say("Segundo emisor de energía negativa: motor Hiper disponible.");
-        else Say("Otro emisor de energía negativa: el hiper llega ahora a " + Fixed(HyperFactor(vessel_.ship, rules_.drive), 0) + " c.");
-        vessel_.exploring = -1;
+        ++vessel_->ship.emitters;
+        if (vessel_->ship.emitters == 1) Say("Emisor de energía negativa recuperado: curvatura Híbrida disponible.");
+        else if (vessel_->ship.emitters == rules_.drive.hyperEmitters) Say("Segundo emisor de energía negativa: motor Hiper disponible.");
+        else Say("Otro emisor de energía negativa: el hiper llega ahora a " + Fixed(HyperFactor(vessel_->ship, rules_.drive), 0) + " c.");
+        vessel_->exploring = -1;
         SaveCheckpoint("Partida guardada");
     }
 }
@@ -3867,31 +4055,31 @@ void GameSession::UpdateExploration(double hours) {
 // La lista se rehace de vez en cuando, pero lo que se pinta debe estar donde esta ahora: un
 // cumulo de asteroides recorre cientos de km entre dos lecturas, y el origen del mundo se mueve.
 void GameSession::RefreshContacts() {
-    for (Contact& c : vessel_.contacts) {
+    for (Contact& c : vessel_->contacts) {
         if (const std::optional<TargetInfo> info = Resolve(c.target)) {
             c.position = info->position;
-            c.distance = Length(info->position - vessel_.ship.position);
+            c.distance = Length(info->position - vessel_->ship.position);
         }
     }
 }
 
 void GameSession::UpdateContacts() {
     World& w = engine_.GetWorld();
-    vessel_.contacts.clear();
+    vessel_->contacts.clear();
     // La pista sobra en cuanto se revela lo que señalaba o se sale de su sistema.
-    if (vessel_.echo.active) {
-        bool stale = vessel_.echo.system != vessel_.nearestSystem;
-        for (const Anomaly& a : world_.anomalies) stale = stale || (a.id == vessel_.echoTarget && a.revealed);
+    if (vessel_->echo.active) {
+        bool stale = vessel_->echo.system != vessel_->nearestSystem;
+        for (const Anomaly& a : world_.anomalies) stale = stale || (a.id == vessel_->echoTarget && a.revealed);
         if (stale) {
-            vessel_.echo.active = false;
-            vessel_.echoTarget = -1;
+            vessel_->echo.active = false;
+            vessel_->echoTarget = -1;
         }
     }
     // Lo que se visita ya se conoce, aunque nadie lo haya barrido.
-    for (std::size_t s = 0; s < pilot_.known.size(); ++s) {
-        if (Length(w.scene.WorldPosition(w.sectors[s]) - vessel_.ship.position) >= w.extents[s] * 1.5) continue;
-        pilot_.known[s] = 1;
-        pilot_.visited[s] = 1;
+    for (std::size_t s = 0; s < pilot_->known.size(); ++s) {
+        if (Length(w.scene.WorldPosition(w.sectors[s]) - vessel_->ship.position) >= w.extents[s] * 1.5) continue;
+        pilot_->known[s] = 1;
+        pilot_->visited[s] = 1;
     }
     const double sensors = rules_.ship.sensorRange * (Visibility() / rules_.world.fogDistance);
     const double identify = rules_.ship.identifyRange * (Visibility() / rules_.world.fogDistance);
@@ -3899,23 +4087,23 @@ void GameSession::UpdateContacts() {
     const auto add = [&](const TargetRef& target, Stance stance, double range) {
         const std::optional<TargetInfo> info = Resolve(target);
         if (!info) return;
-        const double distance = Length(info->position - vessel_.ship.position);
+        const double distance = Length(info->position - vessel_->ship.position);
         if (distance > range) return;
         Contact c;
         c.target = target;
         c.position = info->position;
         c.distance = distance;
         const bool astro = target.kind == Kind::Planet || target.kind == Kind::Belt;
-        c.identified = astro ? Scanned(target) : distance < identify || target.kind == Kind::Station || target.kind == Kind::Star;
+        c.identified = astro ? Scanned(target) : distance < identify || target.kind == Kind::Station || target.kind == Kind::Star || target.kind == Kind::Ship;
         c.stance = c.identified ? stance : Stance::None;
         c.name = c.identified ? info->name : "Señal sin identificar";
         c.detail = c.identified ? info->detail : "";
-        vessel_.contacts.push_back(std::move(c));
+        vessel_->contacts.push_back(std::move(c));
     };
 
     // Una estrella se nota mucho antes que lo demas, tanto mas cuanto mas brilla.
     for (std::size_t s = 0; s < w.state.size(); ++s) {
-        if (!pilot_.known[s]) continue;  // otro sistema no aparece hasta que un barrido lo localiza
+        if (!pilot_->known[s]) continue;  // otro sistema no aparece hasta que un barrido lo localiza
         for (int m = 0; m < static_cast<int>(w.state[s].starNodes.size()); ++m) {
             add({Kind::Star, static_cast<int>(s), m}, Stance::None, 1.0e300);
         }
@@ -3933,14 +4121,16 @@ void GameSession::UpdateContacts() {
         }
     }
     for (const Station& s : world_.stations.All()) add({Kind::Station, s.site.system, s.id}, Stance::None, 1.0e300);
+    for (const Vessel& v : fleet_)
+        if (&v != vessel_) add({Kind::Ship, v.nearestSystem, v.id}, Stance::None, 1.0e300);  // las naves de la flota se saben siempre
     for (const Anomaly& a : world_.anomalies) {
         // Lo frio solo existe para los sensores despues de un barrido.
         if (a.cold && !a.revealed) continue;
         add({Kind::Anomaly, a.system, a.id}, a.stance, a.revealed ? 1.0e300 : sensors);
     }
 
-    std::sort(vessel_.contacts.begin(), vessel_.contacts.end(), [](const Contact& a, const Contact& b) { return a.distance < b.distance; });
-    if (vessel_.contacts.size() > kMaxContacts) vessel_.contacts.resize(kMaxContacts);
+    std::sort(vessel_->contacts.begin(), vessel_->contacts.end(), [](const Contact& a, const Contact& b) { return a.distance < b.distance; });
+    if (vessel_->contacts.size() > kMaxContacts) vessel_->contacts.resize(kMaxContacts);
 }
 
 // ---- El paso ----
@@ -3953,220 +4143,291 @@ void GameSession::UpdateContacts() {
 //   (el trabajo de la nave y lo que se mueve en la burbuja: drones, barrido, anomalias, combate)
 //   FinishVessel   calor, reparacion, sensores y, si no queda casco, la perdida
 void GameSession::Step(double realSeconds, const ShipControls& controls, float focalPixels) {
-    if (vessel_.respawnPending) FinishRespawn();
-    VesselStep t;
-    const StepClock k = BeginBubble(realSeconds, t);
-    StepVessel(controls, k, t);
-    AdvanceBubble(k, t, focalPixels);
-    if (!SettleVessel(k, t)) return;  // perdida o recien perdida: nada mas se mueve
-    UpdateExploration(k.hours);
-    UpdateDrones(k.seconds, k.hours);
-    UpdateScan(k.real);  // el barrido dura segundos reales: no se acelera con el tiempo del juego
-    UpdateAnomalies(k.seconds);
-    UpdateCombat(k.seconds);
-    TrackStrike();
-    FinishVessel(k, t);
+    // El mando es el de la nave del foco; las demas siguen con lo que tengan ordenado.
+    std::vector<ShipControls> all(fleet_.size());
+    all[static_cast<std::size_t>(focus_)] = controls;
+    StepAll(realSeconds, all, focalPixels);
 }
 
-GameSession::StepClock GameSession::BeginBubble(double realSeconds, VesselStep& t) {
-    // Modo cinematica: durante la toma de un impacto todo va mas despacio. La toma dura en tiempo real.
-    pilot_.strikeAge += realSeconds;
-    if (CinematicView()) realSeconds *= rules_.cinematic.timeFactor;
+void GameSession::StepAll(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels) {
+    const std::size_t count = fleet_.size();
+    // Pase lo que pase, al salir la nave en curso vuelve a ser la del foco.
+    struct Back {
+        GameSession& s;
+        ~Back() { s.Use(s.focus_); }
+    } back{*this};
+    std::vector<VesselStep> t(count);
+    std::vector<StepClock> k(count);
+    const auto use = [&](std::size_t i) { Use(static_cast<int>(i)); };
+
+    // Modo cinematica: durante la toma de un impacto todo va mas despacio, pero solo si la estan
+    // viendo todos los que comparten la burbuja. La toma dura en tiempo real.
+    bool everyoneWatching = true;
+    for (std::size_t i = 0; i < count; ++i) {
+        use(i);
+        pilot_->strikeAge += realSeconds;
+        everyoneWatching = everyoneWatching && CinematicView();
+    }
+    if (everyoneWatching) realSeconds *= rules_.cinematic.timeFactor;
+
+    // El reloj de la burbuja (docs/multijugador.md, 2.3): manda la nave que mas despacio quiere ir, en
+    // el foco y en la dilatacion. Con una sola nave es el reloj de siempre.
+    double focus = 1.0e300, exterior = 1.0e300;
+    for (std::size_t i = 0; i < count; ++i) {
+        use(i);
+        if (vessel_->respawnPending) FinishRespawn();
+        PrepareVessel(realSeconds, t[i]);
+        focus = std::min(focus, vessel_->timeFocus);
+        exterior = std::min(exterior, vessel_->exteriorFactor);
+    }
+    bubble_.timeFocus = focus;
+    const double base = realSeconds * world_.timeScale * focus;
+    const double seconds = base * exterior;
+    bubble_.simTime += seconds;
+    ++bubble_.steps;
+    for (std::size_t i = 0; i < count; ++i) {
+        k[i].real = realSeconds;
+        // A bordo de la que dilata mas que la burbuja pasa menos tiempo: no acelera el mundo de las demas.
+        k[i].proper = fleet_[i].exteriorFactor == exterior ? base : seconds / fleet_[i].exteriorFactor;
+        k[i].seconds = seconds;
+        k[i].hours = seconds / 3600.0;
+    }
+    UpdateLostPieces(seconds, realSeconds);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        use(i);
+        pilot_->dialogue.Update(*this, realSeconds);
+        vessel_->approach.reset();
+        // El casco que se pierda en este paso sin pasar por WoundHull se reparte al final entre todas las zonas.
+        t[i].hullStart = vessel_->ship.hull;
+        vessel_->directedLoss = 0.0;
+        StepVessel(i < controls.size() ? controls[i] : ShipControls{}, k[i], t[i]);
+    }
+
+    AdvanceBubble(realSeconds, seconds, t, focalPixels);
+
+    std::vector<char> alive(count, 0);
+    bool anyone = false;
+    for (std::size_t i = 0; i < count; ++i) {
+        use(i);
+        alive[i] = SettleVessel(k[i], t[i]) ? 1 : 0;  // perdida o recien perdida: para ella nada mas se mueve
+        anyone = anyone || alive[i];
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!alive[i]) continue;
+        use(i);
+        UpdateExploration(k[i].hours);
+        UpdateDrones(k[i].seconds, k[i].hours);
+        UpdateScan(k[i].real);  // el barrido dura segundos reales: no se acelera con el tiempo del juego
+    }
+    // Lo que se mueve en la burbuja. Sin ninguna nave en vuelo, se queda quieto, como siempre.
+    if (anyone) {
+        Use(focus_);
+        UpdateAnomalies(seconds);
+        UpdateCombat(seconds);
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!alive[i]) continue;
+        use(i);
+        TrackStrike();
+        FinishVessel(k[i], t[i]);
+    }
+}
+
+// Lo que una nave pide al reloj antes de que avance: cuanto dilata, cuanto quiere frenar el tiempo, y
+// donde esta la estacion junto a la que vuela.
+void GameSession::PrepareVessel(double realSeconds, VesselStep& t) {
     // A bordo pasa el tiempo del jugador; fuera, mas deprisa cuanto mas rapido va y mas hondo esta
     // en un pozo gravitatorio.
-    vessel_.exteriorFactor = ExteriorRate(vessel_.orbiting ? 0.0 : vessel_.ship.speed, GravityWell(), rules_.world.maxTimeFactor);
+    vessel_->exteriorFactor = ExteriorRate(vessel_->orbiting ? 0.0 : vessel_->ship.speed, GravityWell(), rules_.world.maxTimeFactor);
     UpdateFocus(realSeconds);
     // La estacion junto a la que vuela, donde estaba antes de que avance el reloj: una mina de un
     // cinturon se mueve con bubble_.simTime, y medirla despues dejaria a la nave atras en cada paso.
-    t.anchorCandidate = vessel_.phase == GamePhase::Flying ? StationFrame() : -1;
+    t.anchorCandidate = vessel_->phase == GamePhase::Flying ? StationFrame() : -1;
     t.anchorStart = t.anchorCandidate >= 0 ? StationPosition(*world_.stations.Find(t.anchorCandidate)) : Vec3d{};
-    StepClock k;
-    k.real = realSeconds;
-    k.proper = realSeconds * world_.timeScale * bubble_.timeFocus;
-    k.seconds = k.proper * vessel_.exteriorFactor;
-    k.hours = k.seconds / 3600.0;
-    bubble_.simTime += k.seconds;
-    ++bubble_.steps;
-    pilot_.dialogue.Update(*this, realSeconds);
-    vessel_.approach.reset();
-    // El casco que se pierda en este paso sin pasar por WoundHull se reparte al final entre todas las zonas.
-    t.hullStart = vessel_.ship.hull;
-    vessel_.directedLoss = 0.0;
-    UpdateLostPieces(k.seconds, realSeconds);
-    return k;
 }
 
 void GameSession::StepVessel(const ShipControls& controls, const StepClock& k, VesselStep& t) {
     const World& w = engine_.GetWorld();
-    if (vessel_.phase == GamePhase::Exploding) {
-        vessel_.wreckAge += k.real;
-        if (vessel_.wreckAge >= kWreckSeconds) vessel_.phase = GamePhase::GameOver;
+    if (vessel_->phase == GamePhase::Exploding) {
+        vessel_->wreckAge += k.real;
+        if (vessel_->wreckAge >= kWreckSeconds) vessel_->phase = GamePhase::GameOver;
     }
     // Apagada, va a la deriva y gira despacio, tambien detras de la pantalla final.
-    if (vessel_.phase == GamePhase::Adrift || (vessel_.phase == GamePhase::GameOver && ShutDown())) {
-        vessel_.wreckAge += k.real;
-        vessel_.wreckPosition += vessel_.driftVelocity * k.real;
-        vessel_.ship.position = vessel_.wreckPosition;
-        const double spin = Length(vessel_.ship.angularRate);
-        if (spin > 0.0) vessel_.ship.orientation = (Quatd::FromAxisAngle(vessel_.ship.angularRate, spin * k.real) * vessel_.ship.orientation).Normalized();
-        vessel_.ship.aim = vessel_.ship.orientation;
-        if (vessel_.phase == GamePhase::Adrift && vessel_.wreckAge >= kShutdownSeconds) vessel_.phase = GamePhase::GameOver;
+    if (vessel_->phase == GamePhase::Adrift || (vessel_->phase == GamePhase::GameOver && ShutDown())) {
+        vessel_->wreckAge += k.real;
+        vessel_->wreckPosition += vessel_->driftVelocity * k.real;
+        vessel_->ship.position = vessel_->wreckPosition;
+        const double spin = Length(vessel_->ship.angularRate);
+        if (spin > 0.0) vessel_->ship.orientation = (Quatd::FromAxisAngle(vessel_->ship.angularRate, spin * k.real) * vessel_->ship.orientation).Normalized();
+        vessel_->ship.aim = vessel_->ship.orientation;
+        if (vessel_->phase == GamePhase::Adrift && vessel_->wreckAge >= kShutdownSeconds) vessel_->phase = GamePhase::GameOver;
     }
-    t.flying = vessel_.phase == GamePhase::Flying;
-    t.before = vessel_.ship.position;
-    t.frameBefore = vessel_.frame.position;
-    t.hadFrame = vessel_.frame.body >= 0 || vessel_.frame.belt >= 0;
+    t.flying = vessel_->phase == GamePhase::Flying;
+    t.before = vessel_->ship.position;
+    t.frameBefore = vessel_->frame.position;
+    t.hadFrame = vessel_->frame.body >= 0 || vessel_->frame.belt >= 0;
     // Junto a una estacion propia la nave vuela en el marco de la estacion (ver StationFrame).
 
     if (t.flying) {
         const bool steering = controls.turnYaw != 0.0f || controls.turnPitch != 0.0f || controls.turnRoll != 0.0f || controls.throttleChange != 0.0;
-        if (vessel_.autopilot && steering) CancelAutopilot();
-        if (pilot_.onFoot) StepFoot(controls.foot, k.real);
-        else if (vessel_.orbiting && (vessel_.ship.throttle != 0.0 || controls.throttleChange != 0.0)) LeaveOrbit();
+        if (vessel_->autopilot && steering) CancelAutopilot();
+        if (pilot_->onFoot) StepFoot(controls.foot, k.real);
+        else if (vessel_->orbiting && (vessel_->ship.throttle != 0.0 || controls.throttleChange != 0.0)) LeaveOrbit();
 
         Steer(controls, k.real);
         // Sin gas, los propulsores de maniobra callan y solo gira el giroscopio.
-        const bool noGas = vessel_.ship.cargo.Get(Resource::Gas) <= 0.0;
-        if (noGas && !vessel_.gasWarned) Say("Sin gas para los propulsores de maniobra: solo gira el giroscopio, mucho más despacio.");
-        vessel_.gasWarned = noGas;
+        const bool noGas = vessel_->ship.cargo.Get(Resource::Gas) <= 0.0;
+        if (noGas && !vessel_->gasWarned) Say("Sin gas para los propulsores de maniobra: solo gira el giroscopio, mucho más despacio.");
+        vessel_->gasWarned = noGas;
         StepDock(k.real);
-        if (vessel_.tracking && (controls.turnYaw != 0.0f || controls.turnPitch != 0.0f || controls.turnRoll != 0.0f || vessel_.autopilot || !AimAtSolution(*vessel_.tracking, WeaponKind::Spinal))) vessel_.tracking.reset();
-        StepHeading(vessel_.ship, rules_.ship, k.real);
-        if (vessel_.orbiting) {
-            if (!Resolve(*vessel_.orbiting)) {
-                vessel_.orbiting.reset();
-                vessel_.dockPhase = DockPhase::None;
-                if (pilot_.onFoot) Board(true);
+        if (vessel_->tracking && (controls.turnYaw != 0.0f || controls.turnPitch != 0.0f || controls.turnRoll != 0.0f || vessel_->autopilot || !AimAtSolution(*vessel_->tracking, WeaponKind::Spinal))) vessel_->tracking.reset();
+        StepHeading(vessel_->ship, rules_.ship, k.real);
+        if (vessel_->orbiting) {
+            if (!Resolve(*vessel_->orbiting)) {
+                vessel_->orbiting.reset();
+                vessel_->dockPhase = DockPhase::None;
+                if (pilot_->onFoot) Board(true);
             } else {
                 // Una orbita asistida es una circunferencia exacta: no decae ni gasta.
-                const double angle = vessel_.orbitRate * k.seconds;
-                const Vec3d side = Cross(vessel_.orbitNormal, vessel_.orbitOffset);
-                vessel_.orbitOffset = vessel_.orbitOffset * std::cos(angle) + side * std::sin(angle);
-                vessel_.ship.speed = vessel_.orbitRate * Length(vessel_.orbitOffset);
-                vessel_.ship.moveDirection = Length(side) > 0.0 ? Normalize(side) : Heading(vessel_.ship);
-                vessel_.ship.shipHours += k.proper / 3600.0;
-                StepReactor(vessel_.ship, rules_, k.proper);
+                const double angle = vessel_->orbitRate * k.seconds;
+                const Vec3d side = Cross(vessel_->orbitNormal, vessel_->orbitOffset);
+                vessel_->orbitOffset = vessel_->orbitOffset * std::cos(angle) + side * std::sin(angle);
+                vessel_->ship.speed = vessel_->orbitRate * Length(vessel_->orbitOffset);
+                vessel_->ship.moveDirection = Length(side) > 0.0 ? Normalize(side) : Heading(vessel_->ship);
+                vessel_->ship.shipHours += k.proper / 3600.0;
+                StepReactor(vessel_->ship, rules_, k.proper);
             }
         } else {
             Vec3d wanted;
             DriveInput order;
-            if (vessel_.autopilot) order = FlyRoute(k.seconds, wanted);
-            if (!vessel_.orbiting) {
-                if (vessel_.exploring >= 0 && vessel_.ship.speed > 1.0) vessel_.exploring = -1;
+            if (vessel_->autopilot) order = FlyRoute(k.seconds, wanted);
+            if (!vessel_->orbiting) {
+                if (vessel_->exploring >= 0 && vessel_->ship.speed > 1.0) vessel_->exploring = -1;
 
                 // Un paso largo cerca de un cuerpo se saldria de la orbita: se divide.
                 int parts = 1;
-                const double radius = std::max(Length(vessel_.ship.position - vessel_.frame.position), 1.0);
-                if (vessel_.frame.mu > 0.0 && vessel_.ship.warpSpeed <= rules_.drive.impulseSpeed) {
-                    const double period = 2.0 * kPi * std::sqrt(radius * radius * radius / vessel_.frame.mu);
+                const double radius = std::max(Length(vessel_->ship.position - vessel_->frame.position), 1.0);
+                if (vessel_->frame.mu > 0.0 && vessel_->ship.warpSpeed <= rules_.drive.impulseSpeed) {
+                    const double period = 2.0 * kPi * std::sqrt(radius * radius * radius / vessel_->frame.mu);
                     parts = std::clamp(static_cast<int>(std::ceil(k.seconds / (period * 0.01))), 1, 64);
                 }
                 // Cerca de un planeta, la niebla no debe sacarla de orbita.
-                order.dragScale = vessel_.frame.body >= 0 && !w.bodies[static_cast<std::size_t>(vessel_.frame.body)].isStar ? 0.0 : 1.0;
-                const bool stable = Curves(vessel_.ship.mode) && vessel_.ship.warpCharge >= 1.0;
+                order.dragScale = vessel_->frame.body >= 0 && !w.bodies[static_cast<std::size_t>(vessel_->frame.body)].isStar ? 0.0 : 1.0;
+                const bool stable = Curves(vessel_->ship.mode) && vessel_->ship.warpCharge >= 1.0;
                 // En el marco de una estacion la nave se mueve respecto a ella y sin la gravedad del
                 // astro, que la estacion compensa: al soltarse no se queda atras ni cae.
                 Vec3d matched;
-                if (!vessel_.autopilot) t.anchor = t.anchorCandidate;
+                if (!vessel_->autopilot) t.anchor = t.anchorCandidate;
                 if (t.anchor >= 0) {
-                    const std::optional<TargetInfo> info = Resolve({Kind::Station, vessel_.nearestSystem, t.anchor});
+                    const std::optional<TargetInfo> info = Resolve({Kind::Station, vessel_->nearestSystem, t.anchor});
                     t.anchorBefore = t.anchorStart;
-                    matched = info->velocity - vessel_.frame.velocity;
-                    vessel_.ship.velocity = vessel_.ship.velocity - matched;
+                    matched = info->velocity - vessel_->frame.velocity;
+                    vessel_->ship.velocity = vessel_->ship.velocity - matched;
                     order.dragScale = 0.0;
                     parts = 1;
                 }
                 for (int i = 0; i < parts; ++i) {
-                    const Vec3d at = vessel_.ship.position - vessel_.frame.position;
+                    const Vec3d at = vessel_->ship.position - vessel_->frame.position;
                     const double d = std::max(Length(at), 1.0);
-                    order.gravity = vessel_.frame.mu > 0.0 && t.anchor < 0 ? at * (-vessel_.frame.mu / (d * d * d)) : Vec3d{};
-                    StepDrive(vessel_.ship, rules_, k.proper / parts, k.seconds / parts, k.real / parts, order);
+                    order.gravity = vessel_->frame.mu > 0.0 && t.anchor < 0 ? at * (-vessel_->frame.mu / (d * d * d)) : Vec3d{};
+                    StepDrive(vessel_->ship, rules_, k.proper / parts, k.seconds / parts, k.real / parts, order);
                 }
-                vessel_.ship.velocity += matched;
-                if (t.anchor >= 0) t.anchorOffset = vessel_.ship.position - t.anchorBefore;
-                if (stable && vessel_.ship.antimatter <= 0.0) Say("Sin antimateria: la burbuja se colapsa.");
+                vessel_->ship.velocity += matched;
+                if (t.anchor >= 0) t.anchorOffset = vessel_->ship.position - t.anchorBefore;
+                if (stable && vessel_->ship.antimatter <= 0.0) Say("Sin antimateria: la burbuja se colapsa.");
             }
         }
     }
 }
 
-void GameSession::AdvanceBubble(const StepClock& k, VesselStep& t, float focalPixels) {
+void GameSession::AdvanceBubble(double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels) {
     World& w = engine_.GetWorld();
+    // Los planetas que alguna nave orbita no se descargan.
     bubble_.pins.clear();
-    if (vessel_.orbiting && vessel_.orbiting->kind == Kind::Planet) {
-        if (const Body* body = FindPlanet(w, vessel_.orbiting->system, vessel_.orbiting->index)) bubble_.pins.push_back(static_cast<int>(body - w.bodies.data()));
+    for (const Vessel& v : fleet_) {
+        if (!v.orbiting || v.orbiting->kind != Kind::Planet) continue;
+        if (const Body* body = FindPlanet(w, v.orbiting->system, v.orbiting->index)) bubble_.pins.push_back(static_cast<int>(body - w.bodies.data()));
     }
-    Vec3d position = vessel_.ship.position;
+    // El origen del mundo y lo que el motor carga siguen a la nave del foco.
+    Vessel& eye = fleet_[static_cast<std::size_t>(focus_)];
+    Vec3d position = eye.ship.position;
     engine_.Recenter(position);
-    t.shift = position - vessel_.ship.position;
-    vessel_.wreckPosition += t.shift;
-    for (Projectile& p : bubble_.projectiles) {
-        p.position += t.shift;
-        p.origin += t.shift;
+    const Vec3d shift = position - eye.ship.position;
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        Vessel& v = fleet_[i];
+        t[i].shift = shift;
+        v.ship.position += shift;
+        v.wreckPosition += shift;
+        for (MiningDrone& d : v.drones) d.position += shift;
     }
-    for (MiningDrone& d : vessel_.drones) d.position += t.shift;
+    eye.ship.position = position;  // exacta: es la que el motor ha dejado junto al origen
+    for (Projectile& p : bubble_.projectiles) {
+        p.position += shift;
+        p.origin += shift;
+    }
     for (ImpactFlash& f : bubble_.impacts) {
-        f.position += t.shift;
-        f.origin += t.shift;
-        f.age += k.real;
+        f.position += shift;
+        f.origin += shift;
+        f.age += realSeconds;
     }
     bubble_.impacts.erase(std::remove_if(bubble_.impacts.begin(), bubble_.impacts.end(), [](const ImpactFlash& f) { return f.age > 0.6; }), bubble_.impacts.end());
-    vessel_.ship.position = position;
 
-    engine_.Advance(vessel_.ship.position, focalPixels, bubble_.simTime, bubble_.pins, k.real);
+    engine_.Advance(eye.ship.position, focalPixels, bubble_.simTime, bubble_.pins, realSeconds);
 
-    vessel_.nearestSystem = eps::NearestSystem(w, vessel_.ship.position);
+    for (Vessel& v : fleet_) v.nearestSystem = eps::NearestSystem(w, v.ship.position);
     // Por sello de tiempo: cada estacion produce hasta el reloj de esta burbuja.
-    world_.stations.ProduceUntil(bubble_.simTime, bubble_.simTime - k.seconds);
-    world_.stations.Age(k.real);
+    world_.stations.ProduceUntil(bubble_.simTime, bubble_.simTime - seconds);
+    world_.stations.Age(realSeconds);
 }
 
 bool GameSession::SettleVessel(const StepClock& k, VesselStep& t) {
     // La nave viaja con el cuerpo que domina aqui: en su marco, este no se mueve.
-    RefreshFrame(vessel_.frame);
-    Vec3d carried = t.hadFrame && (vessel_.frame.body >= 0 || vessel_.frame.belt >= 0) ? vessel_.frame.position - (t.frameBefore + t.shift) : Vec3d{};
+    RefreshFrame(vessel_->frame);
+    Vec3d carried = t.hadFrame && (vessel_->frame.body >= 0 || vessel_->frame.belt >= 0) ? vessel_->frame.position - (t.frameBefore + t.shift) : Vec3d{};
     if (t.anchor >= 0) {
         const Station* s = world_.stations.Find(t.anchor);
         if (s && StationVisible(*s)) {
             // La estacion lleva a la nave consigo, se mueva como se mueva.
             const Vec3d now = StationPosition(*s);
             carried = now - (t.anchorBefore + t.shift);
-            vessel_.ship.position = now + t.anchorOffset - carried;  // se suma abajo
+            vessel_->ship.position = now + t.anchorOffset - carried;  // se suma abajo
         }
     }
     // Los drones fuera vuelan en el mismo marco que la nave: van con el planeta o el cumulo.
-    for (MiningDrone& d : vessel_.drones)
+    for (MiningDrone& d : vessel_->drones)
         if (d.state != DroneState::Docked) d.position += carried;
     if (!t.flying) {
-        vessel_.wreckPosition += carried;  // los restos siguen al planeta, no se quedan atras
+        vessel_->wreckPosition += carried;  // los restos siguen al planeta, no se quedan atras
         if (bubble_.steps % kContactEvery == 1) UpdateContacts();
         else RefreshContacts();
         return false;
     }
-    if (!vessel_.orbiting) vessel_.ship.position += carried;
+    if (!vessel_->orbiting) vessel_->ship.position += carried;
     UpdateFrame();
     // Con la nave ya llevada por la estacion: antes, la distancia saldria contra donde va a estar.
-    if (!vessel_.orbiting && !vessel_.autopilot) LimitNearStations(k.real);
+    if (!vessel_->orbiting && !vessel_->autopilot) LimitNearStations(k.real);
 
-    if (!vessel_.orbiting) {
+    if (!vessel_->orbiting) {
         KeepOutOfBodies(t.before + t.shift + carried);
         CheckRocks(t.before + t.shift + carried);
-        if (vessel_.phase == GamePhase::Flying && vessel_.frame.belt < 0 && vessel_.ship.warpSpeed <= rules_.drive.impulseSpeed) CheckFieldRocks(t.before + t.shift + carried);
-        if (vessel_.phase == GamePhase::Flying) KeepOutOfStructures(t.before + t.shift + carried);
+        if (vessel_->phase == GamePhase::Flying && vessel_->frame.belt < 0 && vessel_->ship.warpSpeed <= rules_.drive.impulseSpeed) CheckFieldRocks(t.before + t.shift + carried);
+        if (vessel_->phase == GamePhase::Flying) KeepOutOfStructures(t.before + t.shift + carried);
     }
-    if (vessel_.phase != GamePhase::Flying) return false;
-    vessel_.warning = FindWarning();
+    if (vessel_->phase != GamePhase::Flying) return false;
+    LeashToFleet();
+    vessel_->warning = FindWarning();
 
-    vessel_.ship.energy = std::min(vessel_.ship.energy, rules_.ship.energy);
+    vessel_->ship.energy = std::min(vessel_->ship.energy, rules_.ship.energy);
     return true;
 }
 
 void GameSession::FinishVessel(const StepClock& k, VesselStep& t) {
     // Donde ha atracado es donde reaparecera si pierde la nave.
-    if (vessel_.dockPhase == DockPhase::Docked && vessel_.orbiting) vessel_.homeStation = vessel_.orbiting->index;
+    if (vessel_->dockPhase == DockPhase::Docked && vessel_->orbiting) vessel_->homeStation = vessel_->orbiting->index;
     // Orbitas y anomalias acaban de moverse: la nave va con su objetivo en este mismo paso.
-    if (vessel_.orbiting) {
-        if (const std::optional<TargetInfo> info = Resolve(*vessel_.orbiting)) vessel_.ship.position = info->position + vessel_.orbitOffset;
+    if (vessel_->orbiting) {
+        if (const std::optional<TargetInfo> info = Resolve(*vessel_->orbiting)) vessel_->ship.position = info->position + vessel_->orbitOffset;
     }
 
     UpdateHeat(k.proper);
@@ -4174,24 +4435,24 @@ void GameSession::FinishVessel(const StepClock& k, VesselStep& t) {
     UpdateRepair(k.seconds);
     if (bubble_.steps % kContactEvery == 1) UpdateContacts();
     else RefreshContacts();
-    SpreadWound(t.hullStart - vessel_.ship.hull - vessel_.directedLoss);  // calor, presion de ariete: sin direccion
+    SpreadWound(t.hullStart - vessel_->ship.hull - vessel_->directedLoss);  // calor, presion de ariete: sin direccion
 
-    if (vessel_.creative) {
-        vessel_.ship.zones = IntactHull();
-        vessel_.hullHits.clear();
-        vessel_.ship.hull = rules_.ship.hull;
-        vessel_.ship.energy = rules_.ship.energy;
-        vessel_.ship.antimatter = AntimatterCapacity(vessel_.ship, rules_.ship);
+    if (vessel_->creative) {
+        vessel_->ship.zones = IntactHull();
+        vessel_->hullHits.clear();
+        vessel_->ship.hull = rules_.ship.hull;
+        vessel_->ship.energy = rules_.ship.energy;
+        vessel_->ship.antimatter = AntimatterCapacity(vessel_->ship, rules_.ship);
         for (const Resource r : {Resource::Metal, Resource::Silicate, Resource::Ice, Resource::Gas, Resource::StellarMatter})
-            if (vessel_.ship.cargo.Get(r) < 2000.0) vessel_.ship.cargo.Add(r, 2000.0 - vessel_.ship.cargo.Get(r));
+            if (vessel_->ship.cargo.Get(r) < 2000.0) vessel_->ship.cargo.Add(r, 2000.0 - vessel_->ship.cargo.Get(r));
         // Depositos y placas llenos. El calor sigue contando, para poder probarlo.
-        DefenseState& d = vessel_.ship.defense;
+        DefenseState& d = vessel_->ship.defense;
         d.water = rules_.thermal.waterTank;
         d.nitrogen = rules_.thermal.nitrogenTank;
         const std::size_t a = static_cast<std::size_t>(ShieldKind::Ablative);
         d.charge[a] = ShieldCapacity(rules_.defense, ShieldKind::Ablative, d.shieldTier[a]);
     }
-    if (vessel_.ship.hull <= 0.0) LoseShip();
+    if (vessel_->ship.hull <= 0.0) LoseShip();
 }
 
 int GameSession::StepFixed(double realSeconds, const ShipControls& c, float focalPixels) {
@@ -4219,6 +4480,13 @@ int GameSession::StepFixed(double realSeconds, const ShipControls& c, float foca
         k.manualBrake = false;
     }
     return steps;
+}
+
+CommandResult GameSession::ApplyTo(int vesselId, const ShipCommand& command) {
+    const int index = IndexOfId(vesselId);
+    if (index < 0) return {};
+    const Using other(*this, index);
+    return Apply(command);
 }
 
 CommandResult GameSession::Apply(const ShipCommand& c) {
@@ -4253,7 +4521,7 @@ CommandResult GameSession::Apply(const ShipCommand& c) {
             break;
         case T::ExtractElement:
             SetExtractElement(c.value);
-            r.count = vessel_.extractZ;
+            r.count = vessel_->extractZ;
             r.ok = true;
             break;
         case T::StartScan: r.ok = StartScan(); break;
@@ -4270,7 +4538,7 @@ CommandResult GameSession::Apply(const ShipCommand& c) {
         case T::Aim: r.ok = within(static_cast<int>(WeaponKind::Count)) && AimAtSolution(c.target, static_cast<WeaponKind>(c.value)); break;
         case T::Track:
             TrackTarget(c.target);
-            r.ok = vessel_.tracking.has_value();
+            r.ok = vessel_->tracking.has_value();
             break;
         case T::StopTracking:
             StopTracking();
@@ -4310,15 +4578,15 @@ CommandResult GameSession::Apply(const ShipCommand& c) {
             break;
         case T::PointDefense: r.ok = SetPointDefense(c.value, &r.why); break;
         case T::Continue:
-            r.ok = vessel_.phase == GamePhase::GameOver;
+            r.ok = vessel_->phase == GamePhase::GameOver;
             ContinueAfterDefeat();
             break;
         case T::NextDialogue:
-            pilot_.dialogue.Next();
+            pilot_->dialogue.Next();
             r.ok = true;
             break;
         case T::ReplayTip:
-            pilot_.dialogue.Replay();
+            pilot_->dialogue.Replay();
             r.ok = true;
             break;
         case T::AnalysisUsed:

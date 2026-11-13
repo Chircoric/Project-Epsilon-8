@@ -229,7 +229,25 @@ Cómo quedó:
 
 Formato del §5, versión 13, todavía con una nave y un jugador. Prueba de ida y vuelta: guardar, cargar y guardar da el mismo texto.
 
-### Fase 3a — Dos naves locales, una entrada por nave
+### Fase 3a — Dos naves locales, una entrada por nave — **hecha el 13-11-2026, salvo el paso 3a.6**
+
+Cómo quedó:
+
+- **Flota en la sesión.** `GameSession` guarda `fleet_` (naves) y `crews_` (un jugador por nave, en el mismo orden). No se pasó la nave como parámetro a cada método: hay una **nave en curso** (`vessel_`, `pilot_`), sobre la que trabaja todo el código, y `Use()`/`Using` la cambian. Fuera de `Step` la nave en curso es siempre la del **foco** (`SetFocus`), que es de la que hablan `Ship()`, `Apply()`, `Contacts()` y lo demás. Es menos explícito que un parámetro, pero dejó intactas las firmas de más de cien métodos y la partida dorada pasó sin regenerar. `ApplyTo(id, orden)` manda una orden a una nave concreta.
+- **Paso.** `StepAll(real, mandos)` lleva un mando por nave; `Step` le da el suyo a la del foco. El reloj sigue la regla 2 del §2.3: `Vessel::timeFocus` y `exteriorFactor` por nave, y la burbuja usa el mínimo de cada uno. La nave que dilata más recibe menos tiempo propio. La cámara lenta de la cinemática solo se aplica si todos la están viendo.
+- **El mundo las ve a todas.** Cada anomalía atiende a la nave en vuelo más cercana. Los proyectiles llevan `Projectile::ship` (quién disparó, o a quién apuntan): un proyectil enemigo puede dar a cualquier nave, y la baja, el botín y los avisos son de quien disparó. Sin fuego amigo. Dos naves chocan y se dañan las dos. `TargetRef::Kind::Ship` deja apuntar, seguir e ir con el piloto a otra nave, que sale siempre en los sensores.
+- **Límite provisional (3a.7).** Con más de una nave, ninguna sale del sistema donde está la flota (a 1,5 veces su radio se la frena y se avisa). También la del foco, no solo la segunda: el motor carga un único sistema.
+- **Guardado.** `mundo.sav` lleva todas las naves; `Snapshot()` da el jugador del foco y `SnapshotPlayer(i)` el de otra nave. Al cargar, el foco va a la nave del jugador que carga.
+- **Juego.** Consola: `nave`, `nave nueva [km]`, `nave ver <id>`, `nave <id> <orden...>`. F2 pasa a llevar la siguiente nave. Las demás naves se dibujan.
+
+Lo que falta o es provisional:
+
+- **3a.6, clase y diseño por nave, no está hecho.** `CurrentShipDesign()` y `rules_.ship` siguen siendo globales: todas las naves son de la misma clase.
+- Las otras naves se dibujan solo con el casco, y con las zonas dañadas de la nave del foco: sin sus módulos, estelas ni cráteres.
+- El origen del mundo y lo que carga el motor siguen a la nave del foco.
+- Con todas las naves perdidas, anomalías y combate se detienen, como antes con una.
+- El modo realista con varias naves no está pensado: al perder la suya, la del foco reinicia la campaña entera.
+- Los jugadores de las naves que no son del foco no se guardan solos: `main.cpp` solo escribe el del foco.
 
 Una sola burbuja; reloj según la regla 2 del §2.3.
 

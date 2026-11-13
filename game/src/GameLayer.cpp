@@ -1576,6 +1576,15 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
     }
     DrawLostPieces(c, out);
 
+    // Las demas naves de la flota, mientras vuelen. De momento solo el casco, y con las zonas de la
+    // nave del foco: modulos, estelas y danos propios de cada una llegaran con el cliente de red.
+    for (int i = 0; i < session_.VesselCount(); ++i) {
+        if (i == session_.Focus()) continue;
+        const Vessel& other = session_.VesselAt(i);
+        if (other.phase != GamePhase::Flying) continue;
+        DrawModel(c, out, *assets_.ship, other.ship.position, other.ship.orientation, -1, 0x4000u + static_cast<std::uint32_t>(i));
+    }
+
     for (const Station& s : session_.Stations().All()) {
         if (!session_.StationVisible(s)) continue;
         if (s.kind == StationKind::Shipyard) {
