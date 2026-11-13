@@ -13,6 +13,14 @@ namespace {
 
 constexpr float kMetre = 0.001f;
 constexpr double kModelRange = 3.0e4;  // km: mas lejos, un modelo ni llega a un pixel
+// Ids de dibujo de lo que va con la nave (la origami plegada, su andamio, las bahias y los drones
+// posados): van dentro de la burbuja, como el casco. Los drones en vuelo, de kFlyingDrone en adelante.
+constexpr std::uint32_t kCarriedIds = 0x10000u, kCarriedOrigami = kCarriedIds, kScaffoldId = kCarriedIds + 1u, kBayIds = kCarriedIds + 16u;
+constexpr std::uint32_t kFlyingDrone = 0x8000u;
+// La origami en la nave: girada -90 grados sobre X (su eje, el de la nave) y 135,5 m a popa del
+// centro, entre las bodegas (como en Session.cpp y construir_estacion.py).
+const Quatd kOrigamiMount = Quatd::FromAxisAngle({1, 0, 0}, -1.5707963267948966);
+constexpr double kOrigamiAft = 0.1355;  // km
 constexpr int kDustMotes = 260;
 constexpr double kDustBox = 60.0;      // km: el polvo solo existe alrededor de la nave
 constexpr int kCloudCells = 3;
@@ -60,7 +68,7 @@ SceneLight GameLayer::LightAt(const FrameContext& c, const Vec3d& position) cons
     const std::size_t system = static_cast<std::size_t>(session_.NearestSystem());
     const astro::StarSystemData& data = *w.systems[system];
     const SystemState& state = w.state[system];
-    const double reach = session_.Visibility() * 250.0;  // lo que deja pasar la niebla
+    const double reach = session_.Visibility() * 5000.0;  // lo que deja pasar la niebla (unas 12 UA)
 
     struct Source {
         Vec3d to{0, 0, 1};
@@ -74,7 +82,10 @@ SceneLight GameLayer::LightAt(const FrameContext& c, const Vec3d& position) cons
         const Vec3d to = w.scene.WorldPosition(state.starNodes[m]) - position;
         const double distance = std::max(Length(to), 1.0);
         const double flux = hole ? std::pow(star.radius * 3000.0 / distance, 2.0) : star.luminosity / std::pow(distance / kAstronomicalUnit, 2.0);
-        const float power = static_cast<float>(1.5 * (1.0 - std::exp(-flux * 0.035)) * (hole ? 1.0 : std::exp(-distance / reach)));
+        // El ojo (y una camara) ven la luz en escala casi logaritmica: se usa la raiz del flujo. A 1 UA
+        // de un sol la nave queda bien iluminada, con sombras duras; a 5 UA aun se nota el sol; a
+        // 20 UA casi todo es la luz suave de la nebulosa.
+        const float power = static_cast<float>((hole ? 1.5 : 1.15) * (1.0 - std::exp(-(hole ? flux * 0.035 : std::sqrt(flux) * 1.6))) * (hole ? 1.0 : std::exp(-distance / reach)));
         const Vec3f tint = hole ? Vec3f{1.0f, 0.62f, 0.32f} : astro::BlackbodyColor(star.temperature);
         const Source source{to, {tint.x * power, tint.y * power, tint.z * power, 1.0f}, power};
         if (power > best.power) {
@@ -82,6 +93,32 @@ SceneLight GameLayer::LightAt(const FrameContext& c, const Vec3d& position) cons
             best = source;
         } else if (power > second.power) {
             second = source;
+        }
+    }
+
+    // Eclipse: un planeta o una luna entre la nave y su estrella le quita la luz directa, con una
+    // penumbra del ancho aparente de la estrella. Entonces solo queda lo que devuelven la niebla
+    // y el propio planeta.
+    const float unblocked = best.power;  // la nebulosa de alrededor sigue iluminada aunque la nave no
+    if (best.power > 0.0f) {
+        const Vec3d toStar = Normalize(best.to);
+        const double starDistance = Length(best.to);
+        for (const int index : state.bodies) {
+            const Body& b = w.bodies[static_cast<std::size_t>(index)];
+            if (!Alive(b) || b.radius < 100.0) continue;
+            const Vec3d to = w.scene.WorldPosition(b.node) - position;
+            const double along = Dot(to, toStar);
+            if (along <= 0.0 || along >= starDistance) continue;
+            const double miss = Length(to - toStar * along);
+            if (miss > b.radius * 1.5) continue;
+            // Angulos vistos desde la nave: el del planeta y el de la estrella (para la penumbra).
+            const double planet = std::asin(std::min(b.radius / std::max(Length(to), b.radius), 1.0));
+            const double gap = std::atan2(miss, along);
+            const double sun = std::max(0.0047 * kAstronomicalUnit / starDistance, 0.002);
+            const double covered = std::clamp((planet + sun - gap) / (2.0 * sun), 0.0, 1.0);
+            const float keep = static_cast<float>(1.0 - covered * covered * (3.0 - 2.0 * covered));
+            best.power *= keep;
+            best.color = {best.color.r * keep, best.color.g * keep, best.color.b * keep, 1.0f};
         }
     }
 
@@ -107,7 +144,12 @@ SceneLight GameLayer::LightAt(const FrameContext& c, const Vec3d& position) cons
     light.color = best.color;
     light.direction2 = Normalize(c.viewRotation.TransformDirection(Vec3f(second.to)));
     light.color2 = second.color;
-    light.ambient = 0.08f + 0.44f * std::exp(-best.power * 1.8f);
+    // Cerca de un sol el ambiente casi desaparece (sombras negras, como en el vacio); lejos, la
+    // nebulosa pone una luz suave que nunca llega a ser plana del todo.
+    // Se mide con la luz sin eclipsar: a la sombra de un planeta el ambiente no sube, la nave queda
+    // a oscuras salvo lo que devuelven la niebla y el planeta.
+    light.ambient = 0.12f + 0.43f * std::exp(-unblocked * 2.2f);
+    if (unblocked > 0.0f) light.ambient *= 0.45f + 0.55f * best.power / unblocked;  // en la sombra, algo menos
 
     // La luz ambiente es la de la niebla: lleva su color.
     const Color fog = NebulaColor(session_.NebulaTone());
@@ -151,9 +193,19 @@ void GameLayer::CollectAtmospheres(const FrameContext& c, FramePacket& out) cons
         double size = 0;
     };
     std::vector<Found> found;
+    std::vector<std::pair<double, Vec4f>> blockers;
     for (const int index : state.bodies) {
         const Body& b = w.bodies[static_cast<std::size_t>(index)];
         if (!Alive(b) || b.renderable < 0 || b.kind == astro::PlanetClass::Belt) continue;
+        {
+            // Todo cuerpo grande y cercano tapa la luz del sol, tenga aire o no.
+            const Vec3d rel = w.scene.WorldPosition(b.node) - c.cameraPosition;
+            const double size = b.radius / std::max(Length(rel), 1.0);
+            if (size > 0.002 && b.radius > 100.0) {
+                const Vec3f v = c.viewRotation.TransformDirection(Vec3f(rel));
+                blockers.push_back({size, Vec4f{v.x, v.y, v.z, static_cast<float>(b.radius)}});
+            }
+        }
         const int surface = w.renderables[static_cast<std::size_t>(b.renderable)].surface;
         if (surface < 0) continue;
         const Color air = w.surfaceStore[static_cast<std::size_t>(surface)].atmosphere;
@@ -179,6 +231,8 @@ void GameLayer::CollectAtmospheres(const FrameContext& c, FramePacket& out) cons
     }
     std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return a.size > b.size; });
     for (const Found& f : found) out.atmospheres.push_back(f.air);
+    std::sort(blockers.begin(), blockers.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& b : blockers) out.lightBlockers.push_back(b.second);
 }
 
 int GameLayer::RotorOfPart(const std::string& name) {
@@ -187,6 +241,46 @@ int GameLayer::RotorOfPart(const std::string& name) {
     int rotor = 0;
     while (i < name.size() && name[i] >= '0' && name[i] <= '9') rotor = rotor * 10 + (name[i++] - '0');
     return i > 5 && i < name.size() && name[i] == '_' ? rotor : 0;
+}
+
+GameLayer::Lamp GameLayer::LampOfPart(const std::string& name, int index) {
+    Lamp lamp;
+    const auto has = [&](const char* word) { return name.find(word) != std::string::npos; };
+    if (has("soporte") || has("mastil") || has("base")) return lamp;  // lo que sostiene la lampara
+    lamp.phase = static_cast<float>((index * 37) % 100) * 0.0137f;
+    if (has("baliza")) {
+        lamp.kind = LampKind::Strobe;
+        lamp.color = {1.7f, 1.65f, 1.55f, 1.0f};  // mas fuerte quema de blanco el casco de al lado
+        lamp.range = 90.0f;
+    } else if (has("luz_babor") || has("luz_estribor")) {
+        lamp.kind = LampKind::Navigation;
+        lamp.color = has("babor") ? Color{1.5f, 0.16f, 0.12f, 1.0f} : Color{0.14f, 1.4f, 0.33f, 1.0f};
+        lamp.range = 75.0f;
+        lamp.phase = 0.0f;  // las dos de navegacion laten a la vez
+    } else if (name.size() > 6 && name.compare(name.size() - 6, 6, "_luces") == 0 && !has("anillo")) {
+        lamp.kind = LampKind::Work;
+        lamp.color = {1.1f, 0.9f, 0.62f, 1.0f};
+        lamp.range = has("bahia") ? 85.0f : 65.0f;
+    }
+    return lamp;
+}
+
+float GameLayer::LampBlink(const Lamp& lamp, double seconds) {
+    const double t = seconds + lamp.phase;
+    switch (lamp.kind) {
+        case LampKind::Strobe: {
+            // Destello doble cada 1,6 s; entre medias, un rescoldo tenue.
+            const double cycle = std::fmod(t, 1.6);
+            return cycle < 0.09 || (cycle > 0.24 && cycle < 0.33) ? 1.0f : 0.06f;
+        }
+        case LampKind::Navigation: {
+            // Latido lento: encendida algo mas de medio segundo, apagandose suave.
+            const double cycle = std::fmod(t, 1.2) / 1.2;
+            return cycle < 0.55 ? 1.0f : static_cast<float>(0.25 + 0.75 * std::exp(-(cycle - 0.55) * 9.0));
+        }
+        case LampKind::Work: return 1.0f;
+        default: return 1.0f;
+    }
 }
 
 Quatf GameLayer::SpinOf(int spin, double phase) {
@@ -214,15 +308,29 @@ void GameLayer::UpdateRings(const FrameContext& c) {
     ringPhase_ = std::fmod(ringPhase_ + ringRate_ * dt, 6.283185307179586 * 64.0);
 }
 
-void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAsset& model, const Vec3d& position, const Quatd& rotation, int modules, std::uint32_t id, double assembly, const Vec3d* origin) const {
+namespace {
+// Piezas del glTF que no se dibujan nunca: ni montadas en el casco, ni sueltas, ni en los restos.
+// La pieza sigue en el modelo y en su zona, asi que el choque y el casco por zonas no cambian.
+bool HiddenPart(const ModelPart& p) { return p.name == "proa_escudo"; }
+}  // namespace
+
+void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAsset& model, const Vec3d& position, const Quatd& rotation, int modules, std::uint32_t id, double assembly, const Vec3d* origin,
+                          const std::vector<PartMotion>* motion, PartFilter filter, const Anomaly* anomaly) const {
     const Vec3d rel = position - c.cameraPosition;
-    if (Length(rel) > kModelRange) return;
+    // Lo que mide como un planeta (el planeta coraza) se ve desde mucho mas lejos.
+    if (Length(rel) > kModelRange + (anomaly ? anomaly->radius * 40.0 : 0.0)) return;
     const Quatf toWorld = Quatf::Cast(rotation);
     const Mat4f matrix = toWorld.ToMatrix();
     const Quatf toView = c.camera.Orientation().Conjugate() * toWorld;
 
     // La propia nave lleva su casco por zonas: lo perdido no se dibuja y lo danado lo ensena el shader.
     const bool ownShip = assets_.ship && &model == assets_.ship.get() && partZones_.size() == model.parts.size();
+    // Las naves y bastiones alienigenas, igual, con las zonas de su maqueta.
+    const int alien = !ownShip && anomaly ? AlienModelOf(*anomaly) : -1;
+    const std::vector<int>* alienZones = alien >= 0 && assets_.alienPartZones[static_cast<std::size_t>(alien)].size() == model.parts.size() ? &assets_.alienPartZones[static_cast<std::size_t>(alien)] : nullptr;
+    const HullZones* zoneState = ownShip ? &session_.Ship().zones : alienZones ? &anomaly->zones : nullptr;
+    const HullZones* zoneHeat = ownShip ? &session_.ZoneHeat() : alienZones ? &anomaly->zoneHeat : nullptr;
+    const float powered = anomaly && anomaly->disabled ? 0.06f : 1.0f;  // apagada: sus luces se van
     // Cerca de la luz, la luz de la nave viene de hacia donde avanza (ShipLight).
     const SceneLight light = ownShip ? ShipLight(c, LightAt(c, position)) : LightAt(c, position);
     const ShipState& ship = session_.Ship();
@@ -233,13 +341,23 @@ void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAs
         ++part;
         // Las piezas mod_N solo aparecen con N modulos instalados.
         if (modules >= 0 && p.name.rfind("mod_", 0) == 0 && std::atoi(p.name.c_str() + 4) > modules) continue;
-        const int zone = ownShip ? partZones_[part - 1] : -1;
-        if (zone >= 0 && ZoneLost(ship.zones, zone)) continue;
+        const int zone = ownShip ? partZones_[part - 1] : alienZones ? (*alienZones)[part - 1] : -1;
+        if (zone >= 0 && ZoneLost(*zoneState, zone)) continue;
         if (ownShip && PieceLost(ship, static_cast<int>(part) - 1)) continue;  // arrancada sola
+        if (HiddenPart(p)) continue;
+        if (filter != PartFilter::All && (p.name.rfind("andamio_", 0) == 0) != (filter == PartFilter::OnlyScaffold)) continue;
+        // Una animacion mueve la parte entera: su centro y su giro.
+        Vec3f partPosition = p.position;
+        Quatf partRotation = p.rotation;
+        if (motion && part - 1 < motion->size()) {
+            const PartMotion& moved = (*motion)[part - 1];
+            partPosition = moved.rotation.ToMatrix().TransformDirection(p.position) + moved.offset;
+            partRotation = moved.rotation * p.rotation;
+        }
         // Los anillos giran sobre el eje de la nave, que pasa por el origen del modelo.
         const int spin = ownShip && part - 1 < partSpin_.size() ? partSpin_[part - 1] : 0;
         const Quatf turn = SpinOf(spin);
-        Vec3f at = Vec3f(rel) + matrix.TransformDirection(turn.ToMatrix().TransformDirection(p.position) * kMetre);
+        Vec3f at = Vec3f(rel) + matrix.TransformDirection(turn.ToMatrix().TransformDirection(partPosition) * kMetre);
 
         // Despliegue: cada pieza sale de la nave, viaja y encaja en su sitio, una tras otra.
         float placed = 1.0f;
@@ -249,27 +367,55 @@ void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAs
             placed = placed * placed * (3.0f - 2.0f * placed);
             if (origin) at = Vec3f(*origin - c.cameraPosition) + (at - Vec3f(*origin - c.cameraPosition)) * placed;
         }
+        // Lamparas: alumbran alrededor aunque la propia lampara quede fuera de la pantalla.
+        float lampGlow = 1.0f;
+        if (ownShip && part - 1 < partLamp_.size() && partLamp_[part - 1].kind != LampKind::None) {
+            const Lamp& lamp = partLamp_[part - 1];
+            lampGlow = LampBlink(lamp, c.time);
+            float power = lampGlow * shipLights_;
+            if (zone >= 0) power *= static_cast<float>(std::clamp(ship.zones[static_cast<std::size_t>(zone)] * 1.6, 0.0, 1.0));
+            if (power > 0.01f) {
+                PointLight l;
+                l.viewPosition = c.viewRotation.TransformDirection(at);
+                l.range = lamp.range * kMetre;
+                l.color = {lamp.color.r * power, lamp.color.g * power, lamp.color.b * power, 1.0f};
+                out.pointLights.push_back(l);
+                // Las balizas y las de navegacion llevan un halo en la niebla.
+                if (lamp.kind != LampKind::Work && l.viewPosition.z > 0.05f) {
+                    SpriteInstance s;
+                    s.viewPosition = l.viewPosition;
+                    s.pixelRadius = std::max((lamp.kind == LampKind::Strobe ? 16.0f : 10.0f) * kMetre / l.viewPosition.z * c.camera.FocalPx(), 2.0f);
+                    s.tint = {lamp.color.r * power * 0.35f, lamp.color.g * power * 0.35f, lamp.color.b * power * 0.35f, 1.0f};
+                    s.id = 0x7D000000u + part;
+                    s.texture = glow_;
+                    s.blend = BlendMode::Additive;
+                    out.sprites.push_back(s);
+                }
+            }
+        }
         const float radius = p.radius * kMetre * p.scale;
         if (!c.frustum.SphereVisible(at, radius * 1.2f)) continue;
         MeshInstance m;
         m.viewPosition = c.viewRotation.TransformDirection(at);
         m.scale = p.scale * kMetre * (0.35f + 0.65f * placed);
-        m.rotation = toView * Quatf::FromAxisAngle({0.3f, 1.0f, 0.2f}, (1.0f - placed) * 3.0f) * turn * p.rotation;
+        m.rotation = toView * Quatf::FromAxisAngle({0.3f, 1.0f, 0.2f}, (1.0f - placed) * 3.0f) * turn * partRotation;
         ApplyLight(m, light);
         m.color = p.color;
-        m.emissive = p.emissive + (1.0f - placed) * 1.4f;
+        m.emissive = (p.emissive + (1.0f - placed) * 1.4f) * powered;
         m.id = 0x70000000u + id * 256u + part;
         m.mesh = p.mesh;
         m.texture = p.texture;
-        m.foreground = id == 0;  // la propia nave va dentro de la burbuja: su lente no la deforma
+        // La propia nave va dentro de la burbuja, y con ella lo que lleva encima: la lente no la deforma.
+        m.foreground = id == 0 || id >= kCarriedIds;
         if (zone >= 0 && hullDetail_ > 0) {
             const std::size_t z = static_cast<std::size_t>(zone);
-            m.damage = static_cast<float>(1.0 - ship.zones[z]);
-            m.damageHeat = static_cast<float>(session_.ZoneHeat()[z]);
-            m.damageDetail = hullDetail_;
+            m.damage = static_cast<float>(1.0 - (*zoneState)[z]);
+            m.damageHeat = static_cast<float>((*zoneHeat)[z]);
+            // Sin crateres clavados (solo la nave los lleva): en un alienigena, como mucho las abolladuras.
+            m.damageDetail = ownShip ? hullDetail_ : std::min(hullDetail_, 2);
             m.damageSeed = static_cast<float>(part * 7u % 64u);
             // Lo que brilla por si mismo se apaga con el dano: luces y anillo de campo.
-            m.emissive *= static_cast<float>(std::clamp(ship.zones[z] * 1.6, 0.0, 1.0));
+            m.emissive *= static_cast<float>(std::clamp((*zoneState)[z] * 1.6, 0.0, 1.0));
         }
         if (ownShip) {
             // El motor de impulso montado cambia el color y la fuerza del escape.
@@ -278,7 +424,7 @@ void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAs
                 m.color = {engine.glow[0], engine.glow[1], engine.glow[2], 1.0f};
                 m.emissive *= 1.0f + 0.45f * static_cast<float>(ship.loadout.engine - 1);
             }
-            m.emissive *= shipLights_;
+            m.emissive *= shipLights_ * lampGlow;
             if (hullDetail_ >= 3) PartCraters(p, zone, spin, m, out);
         }
         out.meshes.push_back(m);
@@ -287,9 +433,13 @@ void GameLayer::DrawModel(const FrameContext& c, FramePacket& out, const ModelAs
 
 // Lo que se ha soltado del casco: cada zona perdida se aleja girando con sus piezas.
 void GameLayer::DrawLostPieces(const FrameContext& c, FramePacket& out) const {
-    if (!assets_.ship || partZones_.size() != assets_.ship->parts.size()) return;
     const Vec3d origin = session_.GetWorld().origin;
     for (const GameSession::LostPiece& piece : session_.LostPieces()) {
+        // De la nave o de una maqueta alienigena, cada una con el reparto de zonas de sus piezas.
+        const bool alien = piece.model >= 0 && piece.model < kAlienModelCount;
+        const ModelAsset* model = alien ? AlienModelAsset(assets_, static_cast<AlienModel>(piece.model)).get() : assets_.ship.get();
+        const std::vector<int>& zonesOf = alien ? assets_.alienPartZones[static_cast<std::size_t>(piece.model)] : partZones_;
+        if (!model || zonesOf.size() != model->parts.size()) continue;
         const Vec3d center = piece.absolute - origin;
         const Vec3d rel = center - c.cameraPosition;
         if (Length(rel) > kModelRange) continue;
@@ -301,12 +451,13 @@ void GameLayer::DrawLostPieces(const FrameContext& c, FramePacket& out) const {
         // Se enfria al alejarse: el primer momento aun brilla al rojo.
         const float heat = static_cast<float>(std::exp(-piece.age / 8.0));
         std::uint32_t index = 0;
-        for (const ModelPart& p : assets_.ship->parts) {
+        for (const ModelPart& p : model->parts) {
             ++index;
+            if (HiddenPart(p)) continue;
             // Una pieza arrancada sola, o todas las de su zona.
-            if (piece.piece >= 0 ? static_cast<int>(index) - 1 != piece.piece : partZones_[index - 1] != piece.zone) continue;
+            if (piece.piece >= 0 ? static_cast<int>(index) - 1 != piece.piece : zonesOf[index - 1] != piece.zone) continue;
             // Un anillo suelto sigue girando por inercia.
-            const Quatf turn = SpinOf(index - 1 < partSpin_.size() ? partSpin_[index - 1] : 0);
+            const Quatf turn = SpinOf(!alien && index - 1 < partSpin_.size() ? partSpin_[index - 1] : 0);
             const Vec3f at = Vec3f(rel) + matrix.TransformDirection(turn.ToMatrix().TransformDirection(p.position) * kMetre - zoneCenter);
             const float radius = p.radius * kMetre * p.scale;
             if (!c.frustum.SphereVisible(at, radius * 1.2f)) continue;
@@ -317,7 +468,7 @@ void GameLayer::DrawLostPieces(const FrameContext& c, FramePacket& out) const {
             ApplyLight(m, light);
             m.color = p.color;
             m.emissive = 0.0f;  // sin energia: sus luces ya no brillan
-            m.id = 0x77000000u + static_cast<std::uint32_t>(piece.zone) * 256u + index;
+            m.id = 0x77000000u + static_cast<std::uint32_t>(piece.model + 1) * 0x10000u + static_cast<std::uint32_t>(piece.zone) * 256u + index;
             m.mesh = p.mesh;
             m.texture = p.texture;
             if (hullDetail_ > 0) {
@@ -430,6 +581,7 @@ void GameLayer::DrawWreck(const FrameContext& c, FramePacket& out) const {
     const bool zoned = partZones_.size() == assets_.ship->parts.size();
     for (const ModelPart& p : assets_.ship->parts) {
         ++index;
+        if (HiddenPart(p)) continue;
         if (zoned && partZones_[index - 1] >= 0 && ZoneLost(session_.Ship().zones, partZones_[index - 1])) continue;  // ya se habia soltado
         const std::uint32_t h = Hash(index, 17, 91);
         // Las piezas tardan en soltarse: primero se abre la popa, y el resto la sigue.
@@ -526,9 +678,13 @@ void GameLayer::DrawWarpLens(const FrameContext& c, FramePacket& out) const {
     out.blackHoles.push_back(h);
 }
 
+// Los pulsos del barrido (tres anillos que salen de la nave) estan apagados por ahora. Para
+// volver a verlos, poner esto a true.
+constexpr bool kScanPulseVisible = false;
+
 // El barrido se ve como una onda que sale de la nave, en dos frecuencias.
 void GameLayer::DrawScanPulse(const FrameContext& c, FramePacket& out) const {
-    if (!session_.Scanning()) return;
+    if (!kScanPulseVisible || !session_.Scanning()) return;
     const float focal = c.camera.FocalPx();
     const Vec3f rel(session_.Ship().position - c.cameraPosition);
     const Vec3f view = c.viewRotation.TransformDirection(rel);
@@ -578,7 +734,18 @@ void Tangents(const Vec3f& n, Vec3f& t1, Vec3f& t2) {
 }  // namespace
 
 // Rayo contra los triangulos de las piezas que siguen en la nave, en metros del modelo.
-bool GameLayer::RayShip(const Vec3f& origin, const Vec3f& direction, int onlyZone, Vec3f& hit, Vec3f& normal, int& zone, int* spinOut) const {
+float GameLayer::HullReach(const Vec3f& direction) const {
+    // Un rayo desde lejos hacia el centro: lo primero que toca es lo que mas sobresale por ese lado.
+    constexpr float kFar = 5000.0f;
+    const Vec3f d = Normalize(direction + Vec3f{0, 0, 1e-9f});
+    Vec3f hit, normal;
+    int zone = -1;
+    float distance = 0.0f;
+    if (!RayShip(d * kFar, d * -1.0f, -1, hit, normal, zone, nullptr, &distance)) return 0.0f;
+    return std::max(kFar - distance, 0.0f);
+}
+
+bool GameLayer::RayShip(const Vec3f& origin, const Vec3f& direction, int onlyZone, Vec3f& hit, Vec3f& normal, int& zone, int* spinOut, float* distanceOut) const {
     if (!assets_.ship) return false;
     const ShipState& ship = session_.Ship();
     float best = 1e30f;
@@ -621,6 +788,7 @@ bool GameLayer::RayShip(const Vec3f& origin, const Vec3f& direction, int onlyZon
             if (Dot(n, sd) > 0.0f) n = n * -1.0f;
             normal = n;
             if (spinOut) *spinOut = spin;
+            if (distanceOut) *distanceOut = distance;
         }
     }
     return best < 1e29f;
@@ -941,7 +1109,11 @@ void GameLayer::DrawExhaust(const FrameContext& c, FramePacket& out) const {
     const Vec3f rel(ship.position - c.cameraPosition);
     const float lengths[] = {260.0f, 380.0f, 520.0f, 760.0f};
     const float density[] = {0.35f, 0.65f, 0.8f, 1.0f};
-    const float length = lengths[tier - 1] * static_cast<float>(0.4 + 0.6 * push);
+    // La estela crece con el empuje y con la velocidad que ya lleva; sin gas el chorro es mas corto y tenue.
+    const bool hasGas = session_.Ship().cargo.Get(Resource::Gas) > 0.0;
+    const float gasShrink = hasGas ? 1.0f : 0.5f;
+    const float speedShare = static_cast<float>(std::clamp(ship.speed / (session_.Rules().drive.impulseSpeed * engine.speed), 0.0, 1.0));
+    const float length = lengths[tier - 1] * static_cast<float>(0.4 + 0.6 * push) * (0.8f + 0.4f * speedShare) * gasShrink;
     const float time = static_cast<float>(c.time);
     std::uint32_t id = 0;
     const auto glow = [&](const Vec3f& at, float metres, const Color& tint) {
@@ -963,7 +1135,7 @@ void GameLayer::DrawExhaust(const FrameContext& c, FramePacket& out) const {
         if (ZoneLost(ship.zones, partZones_[i]) || PieceLost(ship, static_cast<int>(i))) continue;
         const float radius = p.radius * p.scale * 0.7f;
         const Vec3f nozzle = rel + matrix.TransformDirection(p.position * kMetre) + back * (radius * kMetre * 0.4f);
-        const float strength = static_cast<float>(push) * density[tier - 1] * std::clamp(static_cast<float>(Zone(ship.zones, static_cast<HullZone>(partZones_[i]))) * 1.4f, 0.2f, 1.0f);
+        const float strength = static_cast<float>(push) * density[tier - 1] * gasShrink * std::clamp(static_cast<float>(Zone(ship.zones, static_cast<HullZone>(partZones_[i]))) * 1.4f, 0.2f, 1.0f);
         constexpr int kSteps = 16;
         for (int k = 0; k < kSteps; ++k) {
             const float u = (static_cast<float>(k) + 0.5f) / kSteps;
@@ -985,15 +1157,13 @@ void GameLayer::DrawExhaust(const FrameContext& c, FramePacket& out) const {
     }
 }
 
-// Propulsores de maniobra: rendijas de iones a babor, estribor, arriba y abajo, en la proa y en la
-// popa. Al girar se encienden las que dan par hacia donde gira, con un soplo azul corto. Sin gas
-// (la nave gira con el giroscopio) se quedan apagadas.
-void GameLayer::DrawThrusters(const FrameContext& c, FramePacket& out, const SceneLight& light) const {
-    if (assets_.rcsSlit == kNoMesh) return;
+// Propulsores de maniobra: toberas de iones enrasadas a babor, estribor, arriba y abajo, en la proa
+// y en la popa. Al girar se encienden las que dan par hacia donde gira, con un soplo azul corto. Sin
+// gas (la nave gira con el giroscopio) no se ve nada.
+void GameLayer::DrawThrusters(const FrameContext& c, FramePacket& out, const SceneLight&) const {
     const ShipState& ship = session_.Ship();
     const Quatf toWorld = Quatf::Cast(ship.orientation);
     const Mat4f matrix = toWorld.ToMatrix();
-    const Quatf toView = c.camera.Orientation().Conjugate() * toWorld;
     const Vec3f rel(ship.position - c.cameraPosition);
     const Vec3f alpha = toWorld.Conjugate().ToMatrix().TransformDirection(Vec3f(ship.angularPush));
     const float push = std::clamp(Length(alpha) / 0.05f, 0.0f, 1.0f);
@@ -1011,29 +1181,35 @@ void GameLayer::DrawThrusters(const FrameContext& c, FramePacket& out, const Sce
             // Empuja hacia dentro (contra su normal): da par r x (-n).
             const Vec3f torque = Cross(at, normal * -1.0f);
             const float fire = Length(torque) > 1e-3f && push > 0.0f ? std::clamp(Dot(Normalize(torque), Normalize(alpha + Vec3f{0, 0, 1e-9f})), 0.0f, 1.0f) * push : 0.0f;
+            // Las toberas van enrasadas en el casco: no se dibuja pieza, solo el soplo al encenderse.
             const Vec3f where = rel + matrix.TransformDirection(at * kMetre);
-            MeshInstance m;
-            m.viewPosition = c.viewRotation.TransformDirection(where);
-            m.scale = 2.5f * kMetre;  // rendijas de unos 45 m: la nave mide mas de un kilometro
-            m.rotation = toView * UpAndForward(normal, Vec3f{0, 0, 1});
-            ApplyLight(m, light);
-            m.color = {0.55f, 0.75f, 1.0f, 1.0f};
-            m.emissive = (0.25f + 3.0f * fire) * shipLights_;
-            m.mesh = assets_.rcsSlit;
-            m.id = 0x7E000000u + id++;
-            m.foreground = true;
-            out.meshes.push_back(m);
+            ++id;
             if (fire < 0.05f) continue;
             const Vec3f outward = Normalize(matrix.TransformDirection(normal));
-            for (int j = 0; j < 4; ++j) {
+            // Rendija: punto brillante en la boca y un chorro fino de iones que se abre y se apaga.
+            {
+                const Vec3f mouth = c.viewRotation.TransformDirection(where);
+                if (mouth.z > 0.05f) {
+                    SpriteInstance s;
+                    s.viewPosition = mouth;
+                    s.pixelRadius = std::max(9.0f * kMetre / mouth.z * focal, 1.5f);
+                    s.tint = {1.6f * fire, 1.9f * fire, 2.6f * fire, 1.0f};
+                    s.id = 0x7E800000u + id * 8u + 7u;
+                    s.texture = glow_;
+                    s.blend = BlendMode::Additive;
+                    s.fogReach = 50.0f;
+                    out.sprites.push_back(s);
+                }
+            }
+            for (int j = 0; j < 6; ++j) {
                 const float flicker = 0.75f + 0.25f * std::sin(time * 40.0f + static_cast<float>(j * 3 + k));
-                const float d = (18.0f + 40.0f * static_cast<float>(j)) * (0.5f + fire);
+                const float d = (14.0f + 30.0f * static_cast<float>(j)) * (0.5f + fire);
                 const Vec3f view = c.viewRotation.TransformDirection(where + outward * (d * kMetre));
                 if (view.z <= 0.05f) continue;
                 const float b = fire * flicker * std::exp(-static_cast<float>(j) * 0.6f);
                 SpriteInstance s;
                 s.viewPosition = view;
-                s.pixelRadius = std::max((14.0f + 14.0f * static_cast<float>(j)) * kMetre / view.z * focal, 1.5f);
+                s.pixelRadius = std::max((10.0f + 8.0f * static_cast<float>(j)) * kMetre / view.z * focal, 1.5f);
                 s.tint = {1.0f * b, 1.25f * b, 2.4f * b, 1.0f};
                 s.id = 0x7E800000u + id * 8u + static_cast<std::uint32_t>(j);
                 s.texture = glow_;
@@ -1169,7 +1345,15 @@ void GameLayer::DrawModules(const FrameContext& c, FramePacket& out, const Vec3d
         const ShipModuleKind kind = ship.loadout.modules[i];
         const ModuleSlot& s = design.slots[i];
         if (kind == ShipModuleKind::None || s.kind != SlotKind::External || !SlotWorking(ship, static_cast<int>(i))) continue;
-        place(assets_.moduleMeshes[static_cast<std::size_t>(kind)], Vec3f(s.position), Vec3f(s.normal), 1.6f, kind == ShipModuleKind::ArmorPlate ? dark : metal, 0.0f);
+        // La bahia y las torretas del glTF, a escala real: su -Y sale del casco, asi que se les da media
+        // vuelta sobre Z. Los canones miran hacia la proa.
+        const ModelAsset* gltf = kind == ShipModuleKind::DroneBay ? assets_.droneBay.get() : assets_.moduleModels[static_cast<std::size_t>(kind)].get();
+        if (gltf) {
+            const Quatd mount = rotation * Quatd::Cast(UpAndForward(Vec3f(s.normal), Vec3f{0, 0, 1}) * Quatf::FromAxisAngle({0, 0, 1}, 3.14159265f));
+            DrawModel(c, out, *gltf, position + rotation.ToMatrix().TransformDirection(s.position * 0.001), mount, -1, kBayIds + static_cast<std::uint32_t>(i));
+            continue;
+        }
+        place(assets_.moduleMeshes[static_cast<std::size_t>(kind)], Vec3f(s.position), Vec3f(s.normal), kind == ShipModuleKind::DroneBay ? 1.0f : 1.6f, kind == ShipModuleKind::ArmorPlate ? dark : metal, 0.0f);
     }
 
     const ZoneLayout* layout = CustomZoneLayout();
@@ -1210,11 +1394,143 @@ void GameLayer::DrawModules(const FrameContext& c, FramePacket& out, const Vec3d
     }
 }
 
+void GameLayer::DrawOrigami(const FrameContext& c, FramePacket& out, const Station* s) const {
+    const ShipState& ship = session_.Ship();
+    if (!assets_.origami) {  // sin el glTF, una ya soltada se ve como la maqueta de la central
+        if (s) DrawModel(c, out, *assets_.powerStation, session_.StationPosition(*s), session_.StationRotation(*s), 0, static_cast<std::uint32_t>(s->id) + 16u);
+        return;
+    }
+    if (!s) {  // plegada alrededor de las bodegas: la pose de reposo del modelo
+        const Vec3d at = ship.position + ship.orientation.ToMatrix().TransformDirection(Vec3d{0, 0, -kOrigamiAft});
+        DrawModel(c, out, *assets_.origami, at, ship.orientation * kOrigamiMount, -1, kCarriedOrigami, 1.0, nullptr, nullptr, PartFilter::NoScaffold);
+        return;
+    }
+    // Se abre (los 9 primeros segundos de la animacion), se aparta sin moverse por dentro, y luego
+    // saca los brazos (el resto de la animacion).
+    const double age = s->deployAge;
+    double t = age;
+    if (age > GameSession::kShipyardOpenSeconds) t = GameSession::kShipyardOpenSeconds + std::max(age - GameSession::kShipyardOpenSeconds - GameSession::kShipyardSlideSeconds, 0.0);
+    const std::vector<PartMotion>* motion = nullptr;
+    if (assets_.origamiDeploy && assets_.origamiTrack.size() == assets_.origami->parts.size()) {
+        assets_.origamiDeploy->Pose(std::min(t, assets_.origamiDeploy->duration), origamiPose_);
+        origamiMotion_.assign(assets_.origami->parts.size(), PartMotion{});
+        for (std::size_t i = 0; i < origamiMotion_.size(); ++i) {
+            const int track = assets_.origamiTrack[i];
+            if (track >= 0 && static_cast<std::size_t>(track) < origamiPose_.size()) origamiMotion_[i] = origamiPose_[static_cast<std::size_t>(track)];
+        }
+        motion = &origamiMotion_;
+    }
+    DrawModel(c, out, *assets_.origami, session_.StationPosition(*s), session_.StationRotation(*s), -1, static_cast<std::uint32_t>(s->id) + 16u, 1.0, nullptr, motion, PartFilter::NoScaffold);
+}
+
+namespace {
+// El andamio (construir_estacion.py): anillos a 228 m del eje, a la altura de los nudos de arriba
+// (y = -54 en el motor) y 18 m por debajo de los de abajo (y = 72).
+constexpr float kScaffoldRadius = 228.0f, kScaffoldMidY = 9.0f;
+constexpr double kScaffoldFold = 1.0;     // s: los puntales se pliegan antes de que se muevan los nudos
+constexpr double kScaffoldThrust = 8.0;   // m/s2 con que sale despedido cada sector
+constexpr double kScaffoldGone = 25.0;    // s despues de soltarse: ya a 2,5 km, no se dibuja mas
+double Smooth01(double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+}  // namespace
+
+bool GameLayer::ScaffoldMotion(const ModelAsset& origami, double age, std::vector<PartMotion>& out) {
+    out.assign(origami.parts.size(), PartMotion{});
+    const double loose = age - GameSession::kShipyardOpenSeconds - GameSession::kShipyardSlideSeconds;
+    if (loose > kScaffoldGone) return false;
+    const float fold = static_cast<float>(Smooth01(age / kScaffoldFold));
+    for (std::size_t i = 0; i < origami.parts.size(); ++i) {
+        const ModelPart& p = origami.parts[i];
+        if (p.name.rfind("andamio_", 0) != 0) continue;
+        const int sector = std::atoi(p.name.c_str() + 8) - 1;  // andamio_NN...: del vertice NN-1 al NN
+        if (sector < 0) continue;
+        Quatf rotation;
+        Vec3f offset;
+        // Un puntal se pliega 90 grados sobre su bisagra, el vertice del anillo, hacia el siguiente.
+        if (p.name.find("_puntal") != std::string::npos) {
+            const float a = 6.2831853f * static_cast<float>(sector) / 16.0f;
+            const Vec3f hinge{kScaffoldRadius * std::cos(a), p.position.y, kScaffoldRadius * std::sin(a)};
+            rotation = Quatf::FromAxisAngle({0, 1, 0}, -1.5707963f * fold);  // gira hacia angulos mayores
+            offset = hinge - rotation.ToMatrix().TransformDirection(hinge);
+        }
+        // Suelta, cada sector sale hacia fuera dando vueltas despacio.
+        if (loose > 0.0) {
+            const float a = 6.2831853f * (static_cast<float>(sector) + 0.5f) / 16.0f;
+            const Vec3f out_{std::cos(a), 0.0f, std::sin(a)};
+            const Vec3f center = out_ * kScaffoldRadius + Vec3f{0, kScaffoldMidY, 0};
+            const float spin = static_cast<float>(loose * 0.12) * (sector % 2 == 0 ? 1.0f : -1.0f);
+            const Quatf tumble = Quatf::FromAxisAngle({-out_.z, 0.0f, out_.x}, spin);
+            const float push = static_cast<float>(0.5 * kScaffoldThrust * loose * loose);
+            offset = tumble.ToMatrix().TransformDirection(offset - center) + center + out_ * push;
+            rotation = tumble * rotation;
+        }
+        out[i] = {offset, rotation};
+    }
+    return true;
+}
+
+void GameLayer::DrawScaffold(const FrameContext& c, FramePacket& out, const Station* s) const {
+    if (!assets_.origami) return;
+    const ShipState& ship = session_.Ship();
+    if (!s) {
+        const Vec3d at = ship.position + ship.orientation.ToMatrix().TransformDirection(Vec3d{0, 0, -kOrigamiAft});
+        DrawModel(c, out, *assets_.origami, at, ship.orientation * kOrigamiMount, -1, kScaffoldId, 1.0, nullptr, nullptr, PartFilter::OnlyScaffold);
+        return;
+    }
+    // Se queda donde se solto la estacion, con la orientacion que tenia: la de la estacion.
+    if (!ScaffoldMotion(*assets_.origami, s->deployAge, scaffoldMotion_)) return;
+    DrawModel(c, out, *assets_.origami, session_.ShipyardLaunchPosition(*s), session_.StationRotation(*s), -1, static_cast<std::uint32_t>(s->id) + 2048u, 1.0, nullptr, &scaffoldMotion_, PartFilter::OnlyScaffold);
+}
+
+void GameLayer::DrawDrones(const FrameContext& c, FramePacket& out, const SceneLight& light) const {
+    (void)light;
+    const ShipState& ship = session_.Ship();
+    const ShipDesign& design = CurrentShipDesign();
+    if (!assets_.drone) return;
+    const auto glowAt = [&](const Vec3d& at, float metres, float minPixels, const Color& tint, std::uint32_t id) {
+        const Vec3f view = c.viewRotation.TransformDirection(Vec3f(at - c.cameraPosition));
+        if (view.z <= 0.05f) return;
+        SpriteInstance glow;
+        glow.viewPosition = view;
+        glow.pixelRadius = std::max(metres * kMetre / view.z * c.camera.FocalPx(), minPixels);
+        glow.tint = tint;
+        glow.id = id;
+        glow.texture = glow_;
+        glow.blend = BlendMode::Additive;
+        out.sprites.push_back(glow);
+    };
+    std::uint32_t index = 0;
+    for (const MiningDrone& d : session_.Drones()) {
+        ++index;
+        if (d.slot < 0 || d.slot >= static_cast<int>(design.slots.size())) continue;
+        if (d.state == DroneState::Docked) {
+            // Posado en su puesto de la bahia, con la proa como ella.
+            const ModuleSlot& s = design.slots[static_cast<std::size_t>(d.slot)];
+            const Quatd bay = ship.orientation * Quatd::Cast(UpAndForward(Vec3f(s.normal), Vec3f{0, 0, 1}) * Quatf::FromAxisAngle({0, 0, 1}, 3.14159265f));
+            const Vec3f spot = assets_.droneSpots[static_cast<std::size_t>(std::clamp(d.index, 0, static_cast<int>(assets_.droneSpots.size()) - 1))];
+            const Vec3d at = ship.position + ship.orientation.ToMatrix().TransformDirection(s.position * 0.001) + bay.ToMatrix().TransformDirection(Vec3d(spot) * 0.001);
+            DrawModel(c, out, *assets_.drone, at, bay, -1, kBayIds + 64u + index);
+            continue;
+        }
+        // En vuelo o minando: mira hacia donde va, y se ve de lejos por sus motores.
+        const Quatd facing = TurnedToward(Quatd{}, d.heading);
+        DrawModel(c, out, *assets_.drone, d.position, facing, -1, kFlyingDrone + index);
+        const bool mining = d.state == DroneState::Mining;
+        glowAt(d.position, 40.0f, 2.5f, mining ? Color{1.6f, 0.7f, 0.25f, 1.0f} : Color{0.6f, 0.9f, 1.6f, 1.0f}, 0x77000000u + index);
+        if (mining) {  // la broca y los laseres, chispeando contra la roca
+            const float flicker = 0.6f + 0.4f * static_cast<float>(std::sin(c.time * 23.0 + index * 1.7));
+            glowAt(d.position + d.heading * 0.02, 18.0f * flicker, 1.5f, Color{2.0f * flicker, 0.5f * flicker, 0.15f * flicker, 1.0f}, 0x77100000u + index);
+        }
+    }
+}
+
 void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
     // A pie, dentro de la cubierta: es una caja cerrada, y lo de fuera ni se ve ni se dibuja.
     if (session_.OnFoot()) {
         const Vec3d origin = session_.DeckOrigin();
-        DrawModel(c, out, *(session_.DeckKind() == StationKind::Mining ? assets_.miningDeck : assets_.powerDeck), origin, Quatd{}, -1, 1u);
+        DrawModel(c, out, *assets_.powerDeck, origin, Quatd{}, -1, 1u);
         std::uint32_t id = 2;
         const auto person = [&](const ModelAsset& model, const HumanoidState& body) {
             DrawModel(c, out, model, origin + DeckToWorld(body.position), Quatd::FromAxisAngle({0, 1, 0}, body.yaw), -1, id++);
@@ -1238,6 +1554,12 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
         DrawModel(c, out, *assets_.ship, ship.position, wreckRotation_, -1, 0);
         const SceneLight shipLight = ShipLight(c, LightAt(c, ship.position));
         DrawModules(c, out, ship.position, wreckRotation_, shipLight);
+        // La origami plegada y su andamio van con la nave mientras no se haya soltado.
+        if (ship.stationAboard) {
+            DrawOrigami(c, out, nullptr);
+            DrawScaffold(c, out, nullptr);
+        }
+        DrawDrones(c, out, shipLight);
         DrawThrusters(c, out, shipLight);
         DrawExhaust(c, out);
         DrawDockTube(c, out);
@@ -1256,8 +1578,13 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
 
     for (const Station& s : session_.Stations().All()) {
         if (!session_.StationVisible(s)) continue;
+        if (s.kind == StationKind::Shipyard) {
+            DrawOrigami(c, out, &s);
+            DrawScaffold(c, out, &s);
+            continue;
+        }
         const Vec3d position = session_.StationPosition(s);
-        const ModelRef& model = s.kind == StationKind::Mining ? assets_.miningStation : assets_.powerStation;
+        const ModelRef& model = assets_.powerStation;
         // La de energia mira a su estrella con la corola. La sesion la gira igual: ahi esta la escotilla.
         const Quatd rotation = session_.StationRotation(s);
         constexpr double kDeploySeconds = 6.0;
@@ -1285,7 +1612,7 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
 
     for (const Anomaly& a : session_.Anomalies()) {
         const Vec3d position = session_.AnomalyPosition(a);
-        DrawModel(c, out, *ModelFor(assets_, a), position, Quatd::FromAxisAngle({0, 1, 0}, static_cast<double>(a.yaw)), -1, static_cast<std::uint32_t>(a.id) + 4096u);
+        DrawModel(c, out, *ModelFor(assets_, a), position, Quatd::FromAxisAngle({0, 1, 0}, static_cast<double>(a.yaw)), -1, static_cast<std::uint32_t>(a.id) + 4096u, 1.0, nullptr, nullptr, PartFilter::All, &a);
     }
 
     // Proyectiles: un punto de luz con estela, de un color por tipo de dano. Lo que vuela hacia el blanco

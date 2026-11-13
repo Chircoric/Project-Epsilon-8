@@ -72,6 +72,30 @@ struct ImportedMarker {
 };
 bool LoadGltfMarkers(const std::string& path, std::vector<ImportedMarker>& out, std::string* error = nullptr);
 
+// Una animacion de un glTF, muestreada. Las partes de LoadGltf llevan ya aplicada la pose de reposo
+// (la de los nodos); aqui esta lo que se mueve cada una respecto a esa pose, en los ejes del motor:
+// un punto de la parte en reposo p pasa a estar en rotation * p + offset. Solo giro y traslacion: un
+// cambio de escala en la animacion se ignora.
+struct PartMotion {
+    Vec3f offset;   // m
+    Quatf rotation;
+};
+
+struct ModelAnimation {
+    std::string name;
+    double duration = 0;  // s
+    double step = 0;      // s entre muestras
+    std::vector<std::string> parts;                // nombre de cada parte, en el orden de LoadGltf
+    std::vector<std::vector<PartMotion>> samples;  // [muestra][parte]
+
+    // El movimiento de cada parte en el instante t (s), interpolado entre muestras y sujeto a
+    // [0, duration]. out queda con una entrada por parte.
+    void Pose(double t, std::vector<PartMotion>& out) const;
+};
+
+// Lee la animacion llamada name (vacio = la primera) y la muestrea a fps. Requiere cgltf.
+bool LoadGltfAnimation(const std::string& path, const std::string& name, ModelAnimation& out, double fps = 24.0, std::string* error = nullptr);
+
 // --- Modelos -------------------------------------------------------------------
 
 struct ModelPart {

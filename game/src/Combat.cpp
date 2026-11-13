@@ -14,7 +14,7 @@ constexpr double kLight = 299792.458;  // km/s
 }  // namespace
 
 const char* Name(DamageType type) {
-    static const char* const names[] = {"Cinético", "Fotónico", "Antimateria", "Térmico"};
+    static const char* const names[] = {"Cinético", "Fotónico", "Antimateria", "Térmico", "Explosivo", "Nuclear"};
     return names[static_cast<int>(type)];
 }
 

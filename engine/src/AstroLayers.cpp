@@ -27,6 +27,28 @@ Vec3d FamilyCenter(const SceneGraph& scene, const AsteroidBelt& belt, const Aste
     return center + scene.World(belt.parent).TransformDirection(OrbitPosition(f.orbit, simTime));
 }
 
+// Resolver la ecuacion de Kepler de miles de orbitas en cada fotograma era la mitad del trabajo del
+// procesador. Cada orbita se resuelve de verdad uno de cada kOrbitRefresh fotogramas, por turnos, y
+// entre medias avanza en linea recta con su velocidad. Si el tiempo simulado salta (acelerado, o al
+// cargar una partida) y la orbita giraria mas de kOrbitDrift, se resuelve en el acto. El error de
+// la linea recta es radio x angulo^2 / 2: como mucho 2e-8 del radio, unos km en un anillo de
+// cientos de millones.
+constexpr std::uint64_t kOrbitRefresh = 16;
+constexpr double kOrbitDrift = 2.0e-4;  // rad
+
+template <class Sample>
+Vec3d SampledOrbitPosition(const KeplerOrbit& o, Sample& s, double simTime, bool due) {
+    const double dt = simTime - s.time;
+    if (s.valid && !due && std::abs(dt) * o.meanMotion <= kOrbitDrift) return s.position + s.velocity * dt;
+    const double E = EccentricAnomalyAt(o, simTime);
+    const double rate = o.meanMotion / (1.0 - o.elements.eccentricity * std::cos(E));  // dE/dt
+    s.position = OrbitPositionFromEccentric(o, E);
+    s.velocity = o.p * (-o.elements.semiMajorAxis * std::sin(E) * rate) + o.q * (o.semiMinorAxis * std::cos(E) * rate);
+    s.time = simTime;
+    s.valid = true;
+    return s.position;
+}
+
 }  // namespace
 
 Vec3d FamilyPosition(const SceneGraph& scene, const AsteroidBelt& belt, const AsteroidFamily& family, double simTime) { return FamilyCenter(scene, belt, family, simTime); }
@@ -150,6 +172,17 @@ void AsteroidLayer::Collect(const FrameContext& c, FramePacket& out) {
         const double centerDistance = Length(center - c.cameraPosition);
         const bool selected = belt.body >= 0 && belt.body == world_.highlightBody;
 
+        // Las orbitas guardadas de este cinturon; si en su sitio hay ahora otro, se empieza de cero.
+        if (samples_.size() < world_.belts.size()) samples_.resize(world_.belts.size());
+        BeltSamples& samples = samples_[beltIndex];
+        if (samples.seed != belt.seed || samples.inner != belt.inner || samples.outer != belt.outer || samples.dust.size() != belt.dust.size() || samples.families.size() != belt.families.size()) {
+            samples.seed = belt.seed;
+            samples.inner = belt.inner;
+            samples.outer = belt.outer;
+            samples.dust.assign(belt.dust.size(), OrbitSample{});
+            samples.families.assign(belt.families.size(), OrbitSample{});
+        }
+
         // Dos anillos marcan los bordes del campo: asi se ve donde esta sin calcular ni una roca.
         const float ringPixels = static_cast<float>(belt.outer / std::max(centerDistance, 1.0)) * focal;
         if (belt.outer > belt.inner && ringPixels >= kPathMinPixels * 3.0f && c.features.Enabled(Feature::OrbitLines)) {
@@ -181,7 +214,8 @@ void AsteroidLayer::Collect(const FrameContext& c, FramePacket& out) {
                 std::vector<SpriteInstance>& output = dustChunks_[chunk];
                 output.clear();
                 for (std::size_t i = begin; i < end; ++i) {
-                    const Vec3d world = center + frame.TransformDirection(OrbitPosition(belt.dust[i], c.simTime));
+                    // Cada mota la toca un solo hilo: su muestra se puede escribir aqui.
+                    const Vec3d world = center + frame.TransformDirection(SampledOrbitPosition(belt.dust[i], samples.dust[i], c.simTime, (i + frame_) % kOrbitRefresh == 0));
                     const Vec3f view = c.viewRotation.TransformDirection(Vec3f(world - c.cameraPosition));
                     if (view.z <= nearZ) continue;
                     SpriteInstance s;
@@ -265,8 +299,14 @@ void AsteroidLayer::Collect(const FrameContext& c, FramePacket& out) {
 
         for (std::size_t familyIndex = 0; familyIndex < belt.families.size(); ++familyIndex) {
             const AsteroidFamily& f = belt.families[familyIndex];
-            const Vec3d familyCenter = FamilyCenter(c.scene, belt, f, c.simTime);
+            // De lejos basta la posicion guardada para saber que no esta a la vista; la que se va a
+            // dibujar se resuelve exacta, igual que la calcula el juego para apuntar y chocar.
             ++calculated;
+            if (!f.fixed) {
+                const Vec3d rough = center + frame.TransformDirection(SampledOrbitPosition(f.orbit, samples.families[familyIndex], c.simTime, (familyIndex + frame_) % kOrbitRefresh == 0));
+                if (Length(rough - c.cameraPosition) > f.radius + settings_.nearRange + 200.0) continue;
+            }
+            const Vec3d familyCenter = FamilyCenter(c.scene, belt, f, c.simTime);
             const double distance = Length(familyCenter - c.cameraPosition);
             if (distance > f.radius + settings_.nearRange) continue;
 
@@ -350,8 +390,7 @@ void AsteroidLayer::Collect(const FrameContext& c, FramePacket& out) {
             else ++it;
         }
     }
-    out.stats.asteroidsCalculated += calculated;
-}
+    out.stats.asteroidsCalculated += calculated;}
 
 bool AsteroidLayer::NearestFamily(const World& world, const Vec3d& position, double simTime, Vec3d& center, int beltIndex) {
     double best = 1.0e300;

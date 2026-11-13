@@ -35,15 +35,17 @@ double BallsDistance(const std::vector<ZoneBall>& balls, const Vec3d& p) {
 }
 
 // Lo mas cerca que puede estar una zona: si ya hay otra mas cerca, no hace falta mirar sus bolas.
-double ZoneBound(int zone, const Vec3d& p) {
-    if (!gLayout) return 0.0;
-    const ZoneBall& b = gLayout->bounds[static_cast<std::size_t>(zone)];
+// layout nulo = la maqueta de la nave.
+double ZoneBound(const ZoneLayout* layout, int zone, const Vec3d& p) {
+    if (!layout) return 0.0;
+    const ZoneBall& b = layout->bounds[static_cast<std::size_t>(zone)];
+    if (layout->balls[static_cast<std::size_t>(zone)].empty()) return 1e300;  // zona sin piezas: nunca esta cerca
     return std::max(Length(p - b.center) - b.radius, 0.0);
 }
 
 // Distancia de un punto del casco a la superficie de cada zona, con su forma aproximada (m).
-double ZoneDistance(int zone, const Vec3d& p) {
-    if (gLayout) return BallsDistance(gLayout->balls[static_cast<std::size_t>(zone)], p);
+double ZoneDistance(const ZoneLayout* layout, int zone, const Vec3d& p) {
+    if (layout) return BallsDistance(layout->balls[static_cast<std::size_t>(zone)], p);
     switch (static_cast<HullZone>(zone)) {
         case HullZone::Bow: return std::max(Length(p - Vec3d{0, 0, 470}) - 70.0, 0.0);
         case HullZone::Bridge: return std::max(Length(p - Vec3d{0, -80, 340}) - 90.0, 0.0);
@@ -148,12 +150,14 @@ int ZoneOfPart(const std::string& rawName, const Vec3f& position) {
     return NearestZone(Vec3d{position.x, position.y, position.z});
 }
 
-int NearestZone(const Vec3d& p) {
+namespace {
+
+int NearestIn(const ZoneLayout* layout, const Vec3d& p) {
     int best = static_cast<int>(HullZone::Spine);
     double nearest = 1e300;
     for (int z = 0; z < kHullZoneCount; ++z) {
-        if (ZoneBound(z, p) >= nearest) continue;
-        const double d = ZoneDistance(z, p);
+        if (ZoneBound(layout, z, p) >= nearest) continue;
+        const double d = ZoneDistance(layout, z, p);
         if (d < nearest) {
             nearest = d;
             best = z;
@@ -163,31 +167,34 @@ int NearestZone(const Vec3d& p) {
 }
 
 // Avanza a saltos tan largos como la distancia a la pieza mas cercana: nunca se salta ninguna.
-bool TraceZones(const Vec3d& origin, const Vec3d& direction, double length, int& zone, Vec3d& point) {
+// El paso minimo crece con el modelo: en una estacion de kilometros, medio metro seria eterno.
+bool TraceIn(const ZoneLayout* layout, const Vec3d& origin, const Vec3d& direction, double length, int& zone, Vec3d& point) {
+    const double touch = layout ? layout->touch : 0.5;
     double travelled = 0.0;
     for (int step = 0; step < 512 && travelled <= length; ++step) {
         const Vec3d p = origin + direction * travelled;
         double nearest = 1e300;
         int best = -1;
         for (int z = 0; z < kHullZoneCount; ++z) {
-            if (ZoneBound(z, p) >= nearest) continue;
-            const double d = ZoneDistance(z, p);
+            if (ZoneBound(layout, z, p) >= nearest) continue;
+            const double d = ZoneDistance(layout, z, p);
             if (d < nearest) {
                 nearest = d;
                 best = z;
             }
         }
-        if (nearest < 0.5) {
+        if (best < 0) return false;
+        if (nearest < touch) {
             zone = best;
             point = p;
             return true;
         }
-        travelled += std::max(nearest, 0.5);
+        travelled += std::max(nearest, touch);
     }
     return false;
 }
 
-ZoneImpact ProjectileImpact(const Vec3d& start, const Vec3d& end) {
+ZoneImpact ImpactIn(const ZoneLayout* layout, const Vec3d& start, const Vec3d& end) {
     ZoneImpact impact;
     const Vec3d path = end - start;
     const double length = Length(path);
@@ -196,12 +203,56 @@ ZoneImpact ProjectileImpact(const Vec3d& start, const Vec3d& end) {
     // La recta entera, desde bien fuera de la nave: un paso del proyectil puede ser mas largo que ella.
     const double closest = Dot(Vec3d{0, 0, 0} - start, direction);
     const Vec3d nearPoint = start + direction * closest;
-    const double reach = gLayout ? std::max(1500.0, Length(gLayout->extent) * 1.2) : 1500.0;
+    const double reach = layout ? std::max(1500.0, Length(layout->extent) * 1.2) : 1500.0;
     const Vec3d entry = nearPoint - direction * reach;
-    if (TraceZones(entry, direction, reach * 2.0, impact.zone, impact.point)) return impact;
-    impact.zone = NearestZone(nearPoint);
+    if (TraceIn(layout, entry, direction, reach * 2.0, impact.zone, impact.point)) return impact;
+    impact.zone = NearestIn(layout, nearPoint);
     impact.point = nearPoint;
     return impact;
+}
+
+}  // namespace
+
+int NearestZone(const Vec3d& p) { return NearestIn(gLayout.get(), p); }
+int NearestZone(const ZoneLayout& layout, const Vec3d& p) { return NearestIn(&layout, p); }
+
+bool TraceZones(const Vec3d& origin, const Vec3d& direction, double length, int& zone, Vec3d& point) { return TraceIn(gLayout.get(), origin, direction, length, zone, point); }
+bool TraceZones(const ZoneLayout& layout, const Vec3d& origin, const Vec3d& direction, double length, int& zone, Vec3d& point) { return TraceIn(&layout, origin, direction, length, zone, point); }
+
+ZoneImpact ProjectileImpact(const Vec3d& start, const Vec3d& end) { return ImpactIn(gLayout.get(), start, end); }
+ZoneImpact ProjectileImpact(const ZoneLayout& layout, const Vec3d& start, const Vec3d& end) { return ImpactIn(&layout, start, end); }
+
+bool ZonePresent(const ZoneLayout& layout, int zone) { return zone >= 0 && zone < kHullZoneCount && !layout.balls[static_cast<std::size_t>(zone)].empty(); }
+
+std::string ZoneLabel(const ZoneLayout* layout, int zone, bool article) {
+    const int z = std::clamp(zone, 0, kHullZoneCount - 1);
+    const std::size_t i = static_cast<std::size_t>(z);
+    const bool own = layout && !layout->names[i].empty();
+    const std::string name = own ? layout->names[i] : std::string(ZoneInfo(z).name);
+    if (!article) return name;
+    const bool masculine = own ? layout->masculine[i] : ZoneInfo(z).masculine;
+    return (masculine ? "el " : "la ") + name;
+}
+
+// Las maquetas alienigenas (GameModels.cpp): formas continuas sin nombres humanos. El cuerpo o el
+// disco sostienen la nave, como la espina; el ojo y el centro encendidos son su nucleo; las cuchillas
+// y el aro son lo que se puede arrancar. En un bastion, sus brazos se reparten por angulo como bodegas.
+int AlienZoneOfPart(const std::string& rawName, const Vec3f& position) {
+    const std::string name = Lower(rawName);
+    const bool port = Has(name, "babor") ? true : Has(name, "estribor") ? false : position.x < 0.0f;
+    if (Has(name, "cuchilla") || Has(name, "filo")) return static_cast<int>(port ? HullZone::PortNacelle : HullZone::StarboardNacelle);
+    if (Has(name, "ojo") || Has(name, "centro") || Has(name, "nucleo")) return static_cast<int>(HullZone::Core);
+    if (Has(name, "corazon")) return static_cast<int>(HullZone::Bridge);
+    if (Has(name, "cuerpo") || Has(name, "disco")) return static_cast<int>(HullZone::Spine);
+    if (Has(name, "aro") || Has(name, "luz") || Has(name, "anillo")) return static_cast<int>(HullZone::WarpRing);
+    if (Has(name, "radio") || Has(name, "pincho") || Has(name, "punta")) {
+        // Los brazos salen en el plano XZ: seis sectores de 60 grados.
+        double a = std::atan2(static_cast<double>(position.z), static_cast<double>(position.x));
+        if (a < 0.0) a += 2.0 * 3.14159265358979323846;
+        const int i = std::clamp(static_cast<int>(a / kSixth), 0, 5);
+        return static_cast<int>(HullZone::Hold1) + i;
+    }
+    return static_cast<int>(HullZone::Spine);
 }
 
 double EngineOutput(const HullZones& z) {
@@ -236,7 +287,7 @@ int ZoneHitFrom(const Vec3d& localDirection, double roll) {
     std::array<double, kHullZoneCount> weight{};
     double total = 0.0;
     for (int z = 0; z < kHullZoneCount; ++z) {
-        const double gap = ZoneDistance(z, entry) + 40.0;
+        const double gap = ZoneDistance(gLayout.get(), z, entry) + 40.0;
         weight[static_cast<std::size_t>(z)] = 1.0 / (gap * gap * gap * gap);
         total += weight[static_cast<std::size_t>(z)];
     }

@@ -84,11 +84,13 @@ struct ShipState {
     int computerTier = 1;      // computador de punteria: astros que cuenta y error que comete
     std::vector<WeaponMount> weapons;
     Inventory cargo;
+    ElementStock elements;       // elementos puros por numero atomico, en kg (Economy.h)
     int emitters = 0;            // emisores de energia negativa recuperados de las estructuras
     double shipHours = 0;        // tiempo a bordo: va mas lento que el de fuera
     DefenseState defense;
     double massFactor = 1.0;     // la maniobra se divide por esto: las placas de los conos pesan
     ShipLoadout loadout;         // modulos montados y motor de impulso (ShipModules.h)
+    bool stationAboard = true;   // la estacion origami va plegada alrededor de las bodegas (Stations.h)
     std::vector<double> pieces;  // integridad de cada pieza del modelo, de 0 a 1; vacio = sin piezas
 };
 
@@ -129,6 +131,9 @@ bool HyperUnlocked(const ShipState& ship, const DriveRules& rules);
 // Si la nave tiene la tecnologia de ese modo.
 bool DriveAvailable(const ShipState& ship, DriveMode mode, const DriveRules& rules);
 double HyperFactor(const ShipState& ship, const DriveRules& rules);  // veces c
+
+// Los motores de iones propulsan con gas: sin el, la velocidad maxima del impulso baja (DriveRules::ionNoGas).
+double IonGasFactor(const ShipState& ship, const DriveRules& rules);
 
 // Velocidad a fondo en un modo, en km/s.
 double TopSpeed(const ShipState& ship, DriveMode mode, const DriveRules& rules);

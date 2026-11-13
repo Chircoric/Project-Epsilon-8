@@ -109,8 +109,22 @@ private:
         float age = 0, duration = 3.0f;
         double speed = 0;
     };
+    // Donde estaba un punto de una orbita y como se movia, en el marco del padre. Entre un calculo
+    // exacto y el siguiente se avanza en linea recta: en unos segundos una orbita de anos no se curva.
+    struct OrbitSample {
+        Vec3d position, velocity;
+        double time = 0;
+        bool valid = false;
+    };
+    // Lo guardado de un cinturon; inner, outer y seed dicen si sigue siendo el mismo.
+    struct BeltSamples {
+        std::uint32_t seed = 0;
+        double inner = -1, outer = -1;
+        std::vector<OrbitSample> dust, families;
+    };
     const World& world_;
     AsteroidLayerSettings settings_;
+    std::vector<BeltSamples> samples_;       // por cinturon
     std::map<std::uint32_t, Cached> cache_;  // por semilla: se generan al acercarse
     std::uint64_t frame_ = 0;
     std::vector<RockDuel> duels_;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "game/Armament.h"
 #include "game/Defense.h"
 #include <cmath>
 
@@ -44,6 +45,8 @@ ShipState MakeShip(const Balance& rules) {
     s.defense = MakeDefense(rules.defense, rules.thermal);
     s.cargo.Add(Resource::Silicate, rules.ship.startSilicate);
     s.cargo.Add(Resource::Gas, rules.ship.startGas);
+    s.loadout.starter = true;  // sale con dos bahias de drones mineros
+    s.loadout.starterBays = rules.armament.starterBays;
     FitToDesign(s);
     return s;
 }
@@ -51,10 +54,24 @@ ShipState MakeShip(const Balance& rules) {
 void FitToDesign(ShipState& s) {
     const ShipDesign& design = CurrentShipDesign();
     s.loadout.modules.resize(design.slots.size(), ShipModuleKind::None);
+    s.loadout.ammo.resize(design.slots.size(), 0);
+    s.loadout.cooldown.resize(design.slots.size(), 0.0);
     // Un modulo en una ranura del tipo equivocado (otra nave) se quita.
     for (std::size_t i = 0; i < design.slots.size(); ++i)
         if (s.loadout.modules[i] != ShipModuleKind::None && ModuleSpec(s.loadout.modules[i]).slot != design.slots[i].kind) s.loadout.modules[i] = ShipModuleKind::None;
+    // Nave de serie: las bahias de drones van donde diga la nave que se use (puede cambiar al cargar el .glb).
+    if (s.loadout.starter) {
+        for (ShipModuleKind& m : s.loadout.modules)
+            if (m == ShipModuleKind::DroneBay) m = ShipModuleKind::None;
+        for (const int slot : StarterSlots(design)) s.loadout.modules[static_cast<std::size_t>(slot)] = ShipModuleKind::DroneBay;
+    }
     s.loadout.engine = std::clamp(s.loadout.engine, 1, kImpulseEngineCount);
+    // Los misiles solo van en bahias, y no caben mas que su capacidad.
+    static const ArmamentRules armament;
+    for (std::size_t i = 0; i < s.loadout.modules.size(); ++i) {
+        const HumanWeaponSpec* w = HumanWeaponOf(armament, s.loadout.modules[i]);
+        s.loadout.ammo[i] = w ? std::clamp(s.loadout.ammo[i], 0, w->capacity) : 0;
+    }
     s.pieces.resize(design.pieces.size(), 1.0);
 }
 
@@ -141,6 +158,8 @@ double HyperFactor(const ShipState& s, const DriveRules& r) {
     return std::min(r.hyperBase * (1.0 + r.hyperGrowth * std::log2(1.0 + extra)), r.hyperCap);
 }
 
+double IonGasFactor(const ShipState& s, const DriveRules& r) { return s.cargo.Get(Resource::Gas) > 0.0 ? 1.0 : r.ionNoGas; }
+
 double TopSpeed(const ShipState& s, DriveMode mode, const DriveRules& r) {
     // Un anillo danado deforma peor el espacio: llega menos lejos.
     const double ring = 0.4 + 0.6 * std::clamp(WarpIntegrity(s.zones), 0.0, 1.0);
@@ -148,7 +167,7 @@ double TopSpeed(const ShipState& s, DriveMode mode, const DriveRules& r) {
         case DriveMode::Cruise: return kLightSpeed * r.cruiseFraction * ring;
         case DriveMode::Warp: return kLightSpeed * r.warpFactor * ring;
         case DriveMode::Hyper: return kLightSpeed * (HyperUnlocked(s, r) ? HyperFactor(s, r) : r.warpFactor) * ring;
-        default: return r.impulseSpeed * ImpulseEngine(s.loadout.engine).speed;
+        default: return r.impulseSpeed * ImpulseEngine(s.loadout.engine).speed * IonGasFactor(s, r);
     }
 }
 
@@ -179,7 +198,7 @@ double MaintenancePower(const ShipState& s, const DriveRules& r) {
 
 double RequestedSpeed(const ShipState& s, const DriveRules& r) {
     const double t = std::clamp(s.throttle, 0.0, 1.0);
-    if (s.mode == DriveMode::Impulse) return r.impulseSpeed * ImpulseEngine(s.loadout.engine).speed * t;
+    if (s.mode == DriveMode::Impulse) return r.impulseSpeed * ImpulseEngine(s.loadout.engine).speed * IonGasFactor(s, r) * t;
     // Con un cuadrado, el mando sirve tanto para ir a 1000 km/s como para llegar al tope.
     return std::max(TopSpeed(s, s.mode, r) * t * t, r.impulseSpeed * t);
 }
@@ -285,7 +304,7 @@ double StepDrive(ShipState& s, const Balance& rules, double seconds, double exte
     // El motor de impulso montado (ShipModules.h) sube la velocidad y la aceleracion, y gasta mas.
     const ImpulseEngineSpec& impulse = ImpulseEngine(s.loadout.engine);
     const double accel = r.impulseAccel * impulse.accel * handling * engines * (s.energy > 0.0 ? 1.0 : r.emergencyFraction);
-    const double top = (s.energy > 0.0 ? r.impulseSpeed * impulse.speed : EmergencySpeed(r)) * std::min(1.0, 0.3 + engines);
+    const double top = (s.energy > 0.0 ? r.impulseSpeed * impulse.speed : EmergencySpeed(r)) * std::min(1.0, 0.3 + engines) * IonGasFactor(s, r);
     const bool bubble = s.warpSpeed > r.impulseSpeed;
 
     // Dentro de la burbuja el espacio se mueve con ella: ni gravedad ni nebulosa.
@@ -311,6 +330,13 @@ double StepDrive(ShipState& s, const Balance& rules, double seconds, double exte
             burn = r.impulseBurn * impulse.burn * std::abs(s.throttle) * seconds / kHour;
         }
         if (!bubble) s.velocity = s.velocity * std::exp(-r.drag * in.dragScale * exterior);
+    }
+
+    // El propelente de los iones sale de la bodega, en proporcion al empuje.
+    if (burn > 0.0 && r.impulseBurn > 0.0) {
+        const double full = r.impulseBurn * impulse.burn * seconds / kHour;
+        const double use = r.ionGas * seconds * std::min(burn / std::max(full, 1e-12), 1.0);
+        s.cargo.Add(Resource::Gas, -std::min(use, s.cargo.Get(Resource::Gas)));
     }
 
     const eps::Vec3d total = s.velocity + s.warpHeading * s.warpSpeed;

@@ -49,8 +49,8 @@ private:
     std::mutex mutex_;
     std::condition_variable wakeWorkers_;
     std::condition_variable workersDone_;
-    std::size_t generation_ = 0;
-    std::size_t pendingWorkers_ = 0;
+    std::size_t invitations_ = 0;    // hilos que aun pueden sumarse al reparto en curso
+    std::size_t activeWorkers_ = 0;  // hilos que estan dentro de el
     bool stop_ = false;
 
     const RangeFn* fn_ = nullptr;

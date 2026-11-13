@@ -60,6 +60,10 @@ public:
     // RGBA de 8 bits por canal, ya en memoria: texturas generadas por el juego.
     TextureId CreateTexture(const void* rgba, int width, int height);
 
+    // Mapas PBR de una textura de color, para las mallas que la usen: relieve (normal de tipo OpenGL)
+    // y oclusion-rugosidad-metal en R, G y B. kNoTexture deja el valor neutro.
+    void SetTextureMaps(TextureId color, TextureId normal, TextureId orm);
+
     // Sube una malla a la GPU. La malla en memoria puede liberarse despues.
     MeshId CreateMesh(const MeshData& mesh);
     void ReleaseMesh(MeshId id);
@@ -83,6 +87,10 @@ public:
     // Es lo que mas alivia a una tarjeta modesta: a 0.5 se pinta la cuarta parte de los pixeles.
     void SetRenderScale(float scale);
     float RenderScale() const { return renderScale_; }
+
+    // Sombras de la nave sobre si misma. Apagadas se ahorra dibujarla una segunda vez desde su
+    // estrella y las doce lecturas por pixel del mapa de sombras.
+    void SetShadows(bool enabled) { shadows_ = enabled; }
 
     void Render(const FramePacket& frame) override;
 
@@ -119,6 +127,10 @@ private:
 
     bool CreatePipelines();
     SDL_GPUGraphicsPipeline* CreatePipeline(const PipelineDesc& desc);
+    SDL_GPUGraphicsPipeline* CreateShadowPipeline();  // solo profundidad, sin color
+    // Dibuja la nave (las mallas de primer plano) vista desde su estrella. Devuelve si hay sombras y
+    // deja en shadowUniforms la matriz de vista al mapa.
+    bool DrawShadowMap(SDL_GPUCommandBuffer* cmd, const FramePacket& frame, float* shadowUniforms);
     TextureId UploadTexture(const void* rgba, int width, int height, int pitch, bool mipmaps);
     bool CreateNoiseVolume();
     bool EnsureTarget(int width, int height);
@@ -168,6 +180,7 @@ private:
         SDL_GPUBuffer* vertices = nullptr;
         SDL_GPUBuffer* indices = nullptr;
         std::uint32_t indexCount = 0;
+        float radius = 0;  // del vertice mas lejano al origen, en unidades de la malla
     };
     struct PostEffect {
         std::string name;
@@ -184,6 +197,8 @@ private:
 
     SDL_GPUGraphicsPipeline* alphaPipeline_ = nullptr;
     SDL_GPUGraphicsPipeline* additivePipeline_ = nullptr;
+    SDL_GPUGraphicsPipeline* softAlphaPipeline_ = nullptr;     // sprites del mundo que se funden con lo opaco
+    SDL_GPUGraphicsPipeline* softAdditivePipeline_ = nullptr;
     SDL_GPUGraphicsPipeline* linePipeline_ = nullptr;
     SDL_GPUGraphicsPipeline* skyPipeline_ = nullptr;
     SDL_GPUGraphicsPipeline* spherePipeline_ = nullptr;
@@ -202,11 +217,16 @@ private:
     SDL_GPUSampler* repeatSampler_ = nullptr;
     SDL_GPUSampler* postSampler_ = nullptr;    // sin mipmaps ni sesgo: lee imagenes completas
     SDL_GPUSampler* pointSampler_ = nullptr;
+    SDL_GPUSampler* meshSampler_ = nullptr;    // repeticion con anisotropia: las texturas de las mallas
+    TextureId flatNormal_ = kNoTexture, plainOrm_ = kNoTexture;
+    std::vector<std::array<TextureId, 2>> textureMaps_;  // por textura de color: relieve y ORM
 
     SDL_GPUTexture* target_ = nullptr;       // imagen final de 8 bits
     SDL_GPUTexture* scene_ = nullptr;        // escena HDR
     SDL_GPUTexture* lensSource_ = nullptr;   // copia de la escena que deforma el agujero negro
     SDL_GPUTexture* nebula_ = nullptr;       // nubes a media resolucion
+    SDL_GPUTexture* shadowMap_ = nullptr;    // la nave vista desde su estrella: sombras sobre si misma
+    SDL_GPUGraphicsPipeline* shadowPipeline_ = nullptr;
     SDL_GPUTexture* effectTarget_ = nullptr; // efectos del juego, alternando con target_
     SDL_GPUTexture* bloom_[kBloomLevels] = {};
     SDL_GPUTexture* noiseVolume_ = nullptr;
@@ -236,6 +256,7 @@ private:
     std::uint32_t skyStarCount_ = 0;
     std::uint32_t worldSpriteFirst_ = 0;
     bool hasScreenTint_ = false;
+    bool shadows_ = true;
 
     std::string screenshotPath_;
     std::string lastError_;

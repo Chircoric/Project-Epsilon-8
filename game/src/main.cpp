@@ -2,7 +2,7 @@
 //
 // Controles: raton = rumbo, W/S = mando, 1/2/3/4 = impulso, crucero, curvatura, hiper.
 //            Tab = siguiente objetivo, F = ruta asistida, X = pararla, Espacio = frenar y mantenerse.
-//            M = desplegar mina, P = desplegar central, E = recoger o explorar, U = mejorar.
+//            M = drones mineros, P = desplegar central, E = recoger o explorar, U = mejorar.
 //            R = escaner. I = analisis del objetivo. O = orbita aqui. C = cursor. H = teclas. Enter = dialogo.
 //            F1 = consola de comandos. Esc = pausa.
 //
@@ -11,6 +11,7 @@
 //   --screenshot a.png guarda el ultimo fotograma; requiere --frames
 //   --cmd "texto"      ejecuta un comando al empezar; se puede repetir
 //   --no-vsync         dibuja sin esperar al monitor
+//   --fixed-step       la partida avanza a pasos fijos de 1/60 s, como lo hara el servidor
 //   --size W H         tamano de la ventana
 //   --seed N           otra partida
 //   --mode N           salta el menu: 0 pacifico, 1 facil, 2 normal, 3 dificil, 4 realista
@@ -18,10 +19,10 @@
 //   --cursor           empieza con el cursor activo
 //   --click F X Y      clic simulado en el fotograma F, en esos pixeles; se puede repetir
 //   --wheel, --atlas, --atlas-astro  empieza con la rueda, el mapa o la vista de un astro abiertos
-//   --save a.sav       usa este archivo de partida. Con --frames no se guarda salvo que se indique
+//   --save a.sav       usa esta carpeta de partida (dentro van mundo.sav y jugadores/). Con --frames no se guarda salvo que se indique
 //   --load             carga la partida al empezar, sin pasar por el menu
 //   --quality N        calidad grafica: 0 baja, 1 media, 2 alta, 3 ultra. Sin ella, la guardada
-//   --page N           pagina del menu: 0 principal, 1 nueva partida, 2 configuracion, 3 creditos
+//   --page N           pagina del menu: 0 principal, 1 nueva partida, 2 configuracion, 3 creditos, 4 graficos
 //   --nave a.glb       usa este modelo glTF para la nave. Sin ella, modelos/nave.glb (o .gltf) junto
 //                      al ejecutable si existe; si no, la maqueta hecha por codigo
 //
@@ -35,15 +36,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "epsilon/Engine.h"
 #include "epsilon/SdlGpuBackend.h"
+#include "game/Armament.h"
 #include "game/GameHud.h"
 #include "game/GameLayer.h"
 #include "game/GameModels.h"
+#include "game/UiSounds.h"
 #include "game/Session.h"
 #include "ps_reticle.h"
 #include "ps_warp.h"
@@ -64,15 +69,22 @@ struct Options {
     std::string screenshot;
     std::string shipModel;         // .glb o .gltf de la nave; vacio = buscarlo junto al ejecutable
     std::vector<std::string> commands;
-    bool vsync = true, debug = false, noTutorial = false, cursor = false;
+    bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false;
     int mode = -1;                 // -1 = menu
     int quality = -1;              // -1 = la guardada; si no, GraphicsQuality
     int page = 0;                  // pagina del menu con la que empezar: MenuPage
+    int ui = -1;                   // --interfaz: 0 minimalista, 1 experta; -1 = la guardada
+    int uiScale = 0;               // --tamano: % de la interfaz; 0 = el guardado
     struct Click {
         int frame = -1;
         float x = 0, y = 0;
     };
     std::vector<Click> clicks;     // clics simulados; puede haber varios
+    struct TimedCommand {
+        int frame = 0;
+        std::string text;
+    };
+    std::vector<TimedCommand> timedCommands;  // --cmd-at F "orden": se ejecuta en el fotograma F
 };
 
 Options ParseOptions(int argc, char** argv) {
@@ -82,6 +94,12 @@ Options ParseOptions(int argc, char** argv) {
         if (a == "--frames" && i + 1 < argc) o.frames = std::atoi(argv[++i]);
         else if (a == "--screenshot" && i + 1 < argc) o.screenshot = argv[++i];
         else if (a == "--cmd" && i + 1 < argc) o.commands.push_back(argv[++i]);
+        else if (a == "--cmd-at" && i + 2 < argc) {
+            Options::TimedCommand c;
+            c.frame = std::atoi(argv[++i]);
+            c.text = argv[++i];
+            o.timedCommands.push_back(c);
+        }
         else if (a == "--seed" && i + 1 < argc) {
             o.seed = static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 10));
             o.seedGiven = true;
@@ -95,9 +113,15 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--atlas-astro") o.atlas = o.atlasAstro = true;
         else if (a == "--atlas-tabla") o.atlas = o.atlasTable = true;
         else if (a == "--no-vsync") o.vsync = false;
+        else if (a == "--fixed-step") o.fixedStep = true;
         else if (a == "--mode" && i + 1 < argc) o.mode = std::atoi(argv[++i]);
         else if (a == "--quality" && i + 1 < argc) o.quality = std::atoi(argv[++i]);
         else if (a == "--page" && i + 1 < argc) o.page = std::atoi(argv[++i]);
+        else if (a == "--interfaz" && i + 1 < argc) {
+            const std::string v = argv[++i];
+            o.ui = v == "minimalista" || v == "0" ? 0 : v == "experta" || v == "experto" || v == "1" ? 1 : -1;
+        }
+        else if (a == "--tamano" && i + 1 < argc) o.uiScale = std::atoi(argv[++i]);
         else if (a == "--no-tutorial") o.noTutorial = true;
         else if (a == "--cursor") o.cursor = true;
         else if (a == "--click" && i + 3 < argc) {
@@ -160,7 +184,8 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
             const bool bastion = word == "bastion" && a.stance == Stance::Hostile && a.kind == AnomalyKind::AlienStation;
             const bool neutral = word == "neutral" && a.stance == Stance::Neutral && a.kind == AnomalyKind::AlienShip;
             const bool haven = word == "refugio" && a.stance == Stance::Neutral && a.kind == AnomalyKind::AlienStation;
-            if (structure || hostile || neutral || bastion || haven) consider({Kind::Anomaly, a.system, a.id});
+            const bool armor = word == "coraza" && IsArmorPlanet(a);
+            if (structure || hostile || neutral || (bastion && !IsArmorPlanet(a)) || haven || armor) consider({Kind::Anomaly, a.system, a.id});
         }
         return best;
     };
@@ -181,23 +206,62 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         g.JumpTo(target, args.size() >= 2 ? std::atof(args[1].c_str()) : info->arrival);
         return "Junto a " + info->name;
     });
-    commands.Add("ir", "piloto automatico al objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.SetAutopilot(target) ? "Rumbo fijado" : commands.Fail("Sin objetivo"); });
-    commands.Add("mina", "despliega una mina en el objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.DeployMining(target) ? "Desplegada" : commands.Fail("No se pudo"); });
-    commands.Add("central", "despliega una central en el objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.DeployPower(target) ? "Desplegada" : commands.Fail("No se pudo"); });
-    commands.Add("usar", "recoge de una estacion o explora", [&](const CommandRegistry::Args&) -> std::string { return g.Interact(target) ? "Hecho" : commands.Fail("No se pudo"); });
+    commands.Add("eclipse", "pone la nave en la sombra del planeta objetivo, de espaldas al sol, para probar: eclipse [km]", [&, findContact](const CommandRegistry::Args& args) -> std::string {
+        const std::optional<TargetInfo> planet = g.Resolve(target);
+        const std::optional<TargetRef> starRef = findContact("estrella");
+        const std::optional<TargetInfo> star = starRef ? g.Resolve(*starRef) : std::nullopt;
+        if (!planet || !star) return commands.Fail("Hace falta un planeta como objetivo y una estrella");
+        const double km = args.empty() ? planet->arrival : std::atof(args[0].c_str());
+        // JumpTo coloca la nave en la direccion en que ya esta: se la pone antes detras del planeta.
+        g.Ship().position = planet->position + Normalize(planet->position - star->position) * km;
+        g.JumpTo(target, km);
+        const Vec3d toStar = star->position - g.Ship().position, toPlanet = planet->position - g.Ship().position;
+        char line[160];
+        std::snprintf(line, sizeof(line), " (sol a %.3g km, planeta a %.3g km, angulo %.1f grados)", Length(toStar), Length(toPlanet), std::acos(std::clamp(Dot(Normalize(toStar), Normalize(toPlanet)), -1.0, 1.0)) * 180.0 / kPi);
+        return "En la sombra de " + planet->name + line;
+    });
+    // Las ordenes del jugador pasan por GameSession::Apply, como las de la interfaz. Lo que queda
+    // llamando a la sesion directamente son trucos de prueba (saltar, regalo, nivel, aparecer...):
+    // en red se ejecutaran en el servidor, con el texto del comando.
+    using C = CommandType;
+    commands.Add("ir", "piloto automatico al objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Autopilot, target)) ? "Rumbo fijado" : commands.Fail("Sin objetivo"); });
+    commands.Add("drones", "manda los drones mineros al objetivo (planeta o campo)", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::DeployDrones, target)) ? "Drones fuera" : commands.Fail("No se pudo"); });
+    commands.Add("recoger-drones", "los drones mineros vuelven a sus bahias", [&](const CommandRegistry::Args&) -> std::string {
+        g.Apply(Order(C::RecallDrones));
+        return "Vuelven";
+    });
+    commands.Add("extraer", "elemento que extraen los drones (numero atomico; 0 = a granel)", [&](const CommandRegistry::Args& args) -> std::string {
+        if (!args.empty()) g.Apply(Order(C::ExtractElement, std::atoi(args[0].c_str())));
+        const int z = g.ExtractElement();
+        return z > 0 ? std::string(astro::Periodic(z).name) : std::string("A granel");
+    });
+    commands.Add("elemento", "para probar: suma kg de un elemento al inventario (elemento <z> <kg>)", [&](const CommandRegistry::Args& args) -> std::string {
+        if (args.size() < 2) return commands.Fail("Uso: elemento <z> <kg>");
+        g.Ship().elements.Add(std::atoi(args[0].c_str()), std::atof(args[1].c_str()));
+        return "Hecho";
+    });
+    commands.Add("estacion", "suelta la estacion origami donde esta la nave", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::DeployShipyard)) ? "Estacion soltada" : commands.Fail("No se pudo"); });
+    commands.Add("central", "despliega una central en el objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::DeployPower, target)) ? "Desplegada" : commands.Fail("No se pudo"); });
+    commands.Add("usar", "recoge de una estacion, entrega material a la origami o explora",[&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Interact, target)) ? "Hecho" : commands.Fail("No se pudo"); });
     commands.Add("motor", "motor impulso|crucero|hibrida|hiper", [&](const CommandRegistry::Args& args) -> std::string {
         if (args.empty()) return commands.Fail("Uso: motor <modo>");
         const DriveMode mode = args[0] == "hiper" ? DriveMode::Hyper : args[0] == "hibrida" ? DriveMode::Warp : args[0] == "crucero" ? DriveMode::Cruise : DriveMode::Impulse;
-        return g.SetDrive(mode) ? std::string(Name(mode)) : commands.Fail("No disponible");
+        return g.Apply(Order(C::SetDrive, static_cast<int>(mode))) ? std::string(Name(mode)) : commands.Fail("No disponible");
     });
     commands.Add("analisis", "abre el analisis del objetivo", [&](const CommandRegistry::Args&) -> std::string {
-        g.MarkAnalysisUsed();
+        g.Apply(Order(C::AnalysisUsed));
         return "Hecho";
     });
     commands.Add("mando", "mando -100..100", [&](const CommandRegistry::Args& args) -> std::string {
         if (args.empty()) return commands.Fail("Uso: mando <porcentaje>");
-        g.SetThrottle(std::atof(args[0].c_str()) / 100.0);
+        ShipCommand order = Order(C::SetThrottle);
+        order.amount = std::atof(args[0].c_str()) / 100.0;
+        g.Apply(order);
         return args[0];
+    });
+    commands.Add("frenar", "como pulsar Espacio: mando a cero y la nave quieta", [&](const CommandRegistry::Args&) -> std::string {
+        g.Apply(Order(C::HoldPosition));
+        return "Frenando";
     });
     commands.Add("tiempo", "segundos simulados por segundo real", [&](const CommandRegistry::Args& args) -> std::string {
         if (!args.empty()) g.TimeScale() = std::atof(args[0].c_str());
@@ -222,7 +286,7 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
             g.Ship().scannerTier = std::atoi(args[0].c_str());
             return std::to_string(g.Ship().scannerTier);
         }
-        return g.StartScan() ? "Barrido" : commands.Fail("No se pudo");
+        return g.Apply(Order(C::StartScan)) ? "Barrido" : commands.Fail("No se pudo");
     });
     commands.Add("casco", "fija el casco, para probar", [&](const CommandRegistry::Args& args) -> std::string {
         if (!args.empty()) g.Ship().hull = std::atof(args[0].c_str());
@@ -232,29 +296,75 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         g.MarkScanned(g.NearestSystem());
         return "Hecho";
     });
+    commands.Add("sondeo", "para probar: distancia en UA a las anomalias frias de este sistema y alcance del escaner", [&](const CommandRegistry::Args&) -> std::string {
+        const World& w = g.GetWorld();
+        const int system = g.NearestSystem();
+        const Vec3d center = w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(system)]);
+        char line[256];
+        std::snprintf(line, sizeof(line), "Sistema %d: radio %.2f UA, nave a %.2f UA del centro, alcance %.2f UA", system, w.extents[static_cast<std::size_t>(system)] / astro::kAstronomicalUnit,
+                      Length(g.Ship().position - center) / astro::kAstronomicalUnit, g.ScanRange() / astro::kAstronomicalUnit);
+        std::string out = line;
+        for (const Anomaly& a : g.Anomalies()) {
+            if (a.system != system || !a.cold) continue;
+            const Vec3d p = g.AnomalyPosition(a);
+            std::snprintf(line, sizeof(line), "\n  %s: a %.2f UA de la nave, %.2f UA del centro, firma %d, %s", a.name.c_str(), Length(p - g.Ship().position) / astro::kAstronomicalUnit, Length(p - center) / astro::kAstronomicalUnit,
+                          a.signature, a.revealed ? "revelada" : "oculta");
+            out += line;
+        }
+        std::snprintf(line, sizeof(line), "\n  Eco hasta %.2f UA%s", g.EchoRange() / astro::kAstronomicalUnit, g.EchoGuaranteed() ? " (tutorial: pista exacta garantizada)" : "");
+        out += line;
+        if (const std::optional<Vec3d> echo = g.EchoPosition()) {
+            const EchoHint& e = g.Echo();
+            std::snprintf(line, sizeof(line), "\n  Pista: %.2f UA, rumbo %.0f, elevacion %.0f, error %.2f UA%s, el punto queda a %.2f UA", e.distance / astro::kAstronomicalUnit, e.bearing, e.elevation,
+                          e.error / astro::kAstronomicalUnit, e.exact ? " (exacta)" : "", Length(*echo - g.Ship().position) / astro::kAstronomicalUnit);
+            out += line;
+        }
+        if (g.Echo().weak > 0) out += "\n  Senal debil mas alla del alcance: nivel " + std::to_string(g.Echo().needTier);
+        return out;
+    });
     // ---- Modo creativo ----
     commands.Add("creativo", "modo creativo: invulnerable, todo sin fin, todos los motores y sistemas: creativo [si|no]", [&](const CommandRegistry::Args& args) -> std::string {
         const bool on = args.empty() ? !g.Creative() : (args[0] == "si" || args[0] == "1");
         g.SetCreative(on);
         return on ? "Creativo activado. Prueba: aparecer, viajar, emisores, nivel, tiempo" : "Creativo desactivado";
     });
-    commands.Add("aparecer", "crea delante de la nave: aparecer <hostil|neutral|bastion|estacion|estructura> [km] [cantidad]", [&](const CommandRegistry::Args& args) -> std::string {
-        if (args.empty()) return commands.Fail("Uso: aparecer <hostil|neutral|bastion|estacion|estructura> [km] [cantidad]");
+    commands.Add("cinematica", "modo cinematica: la camara sigue cada impacto en el blanco, con tiempo lento (tecla N): cinematica [si|no]", [&](const CommandRegistry::Args& args) -> std::string {
+        const bool on = args.empty() ? !g.Cinematic() : (args[0] == "si" || args[0] == "1");
+        g.Apply(Order(C::Cinematic, on ? 1 : 0));
+        return on ? "Cinematica activada" : "Cinematica desactivada";
+    });
+    commands.Add("aparecer", "crea delante de la nave: aparecer <hostil|neutral|bastion|bastion1..5|estacion|estructura|capital|coraza> [km] [cantidad]", [&](const CommandRegistry::Args& args) -> std::string {
+        if (args.empty()) return commands.Fail("Uso: aparecer <hostil|neutral|bastion|bastion1..5|estacion|estructura|capital|coraza> [km] [cantidad]");
         const std::string& what = args[0];
         AnomalyKind kind = AnomalyKind::AlienShip;
         Stance stance = Stance::Hostile;
+        int level = 0, shipClass = -1;
         if (what == "neutral") stance = Stance::Neutral;
         else if (what == "bastion") kind = AnomalyKind::AlienStation;
+        else if (what.size() == 8 && what.rfind("bastion", 0) == 0 && what[7] >= '1' && what[7] <= '5') {
+            kind = AnomalyKind::AlienStation;
+            level = what[7] - '0';
+        } else if (what == "coraza") {
+            kind = AnomalyKind::AlienStation;
+            level = kArmorPlanetLevel;
+        } else if (what == "capital") shipClass = static_cast<int>(ShipClassId::SupremeCapital);
         else if (what == "estacion") { kind = AnomalyKind::AlienStation; stance = Stance::Neutral; }
         else if (what == "estructura") kind = AnomalyKind::Derelict;
         else if (what != "hostil") return commands.Fail("No conozco eso");
         const double km = args.size() >= 2 ? std::atof(args[1].c_str()) : 2000.0;
         const int count = args.size() >= 3 ? std::clamp(std::atoi(args[2].c_str()), 1, 20) : 1;
         int id = -1;
-        for (int i = 0; i < count; ++i) id = g.SpawnAnomaly(kind, stance, km * (1.0 + 0.15 * i));
+        for (int i = 0; i < count; ++i) id = g.SpawnAnomaly(kind, stance, km * (1.0 + 0.15 * i), level, shipClass);
         if (id < 0) return commands.Fail("No se pudo");
         target = TargetRef{Kind::Anomaly, g.NearestSystem(), id};
         return std::to_string(count) + " creado(s); el ultimo es el objetivo";
+    });
+    commands.Add("alerta", "alerta de la especie en el sistema actual (o en otro: alerta <sistema>), y si hay rendicion", [&](const CommandRegistry::Args& args) -> std::string {
+        const int system = args.empty() ? g.NearestSystem() : std::atoi(args[0].c_str());
+        char line[160];
+        std::snprintf(line, sizeof(line), "Sistema %d (region %d): alerta %.0f %%%s, revanchas %d", system, AlertRegion(system, g.Rules().alert), 100.0 * g.SystemAlert(system),
+                      g.Surrender() ? ", flota rendida" : "", g.Species().revenges);
+        return line;
     });
     commands.Add("viajar", "lleva la nave a la estrella de otro sistema: viajar <sistema>", [&](const CommandRegistry::Args& args) -> std::string {
         if (args.empty()) return commands.Fail("Uso: viajar <sistema>");
@@ -347,14 +457,14 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         return true;
     };
     commands.Add("escudo", "elige el campo: escudo <arena|plasma|em|amor|no>; sin argumento, el siguiente (como K)", [&, shieldArg](const CommandRegistry::Args& args) -> std::string {
-        if (args.empty()) return Name(g.CycleShield());
+        if (args.empty()) return Name(static_cast<ShieldKind>(g.Apply(Order(C::CycleShield)).count));
         if (args[0] == "no") {
-            g.SetShieldOn(false);
+            g.Apply(Order(C::ShieldOn, 0));
             return "Apagado";
         }
         ShieldKind kind = ShieldKind::Dust;
         if (!shieldArg(args[0], kind)) return commands.Fail("Uso: escudo <arena|plasma|em|amor|no>");
-        return g.SetShield(kind) ? std::string(Name(kind)) : commands.Fail("No lo tienes o no es un campo");
+        return g.Apply(Order(C::SetShield, static_cast<int>(kind))) ? std::string(Name(kind)) : commands.Fail("No lo tienes o no es un campo");
     });
     commands.Add("calor", "muestra el calor; con un numero, lo fija (100 es el limite)", [&](const CommandRegistry::Args& args) -> std::string {
         if (!args.empty()) g.Ship().defense.heat = std::clamp(std::atof(args[0].c_str()), 0.0, g.Rules().thermal.maximum);
@@ -363,7 +473,7 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
     commands.Add("refrigerante", "enciende o apaga uno: refrigerante <agua|hielo|nitrogeno|radiadores> <si|no>", [&, coolantArg](const CommandRegistry::Args& args) -> std::string {
         CoolantKind kind = CoolantKind::Water;
         if (args.size() < 2 || !coolantArg(args[0], kind)) return commands.Fail("Uso: refrigerante <agua|hielo|nitrogeno|radiadores> <si|no>");
-        g.SetCoolant(kind, args[1] == "si" || args[1] == "1");
+        g.Apply(Order(C::Coolant, static_cast<int>(kind), args[1] == "si" || args[1] == "1" ? 1 : 0));
         return "Hecho";
     });
     commands.Add("destruir", "destruye la anomalia objetivo, para probar", [&](const CommandRegistry::Args&) -> std::string {
@@ -386,18 +496,17 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
     };
     commands.Add("disparar", "dispara al objetivo: disparar [torreta|espinal|misil|drones]; sin argumento, todo lo que este listo", [&, weaponArg](const CommandRegistry::Args& args) -> std::string {
         WeaponKind kind = WeaponKind::Turret;
-        if (weaponArg(args, kind)) return g.Fire(kind, target) ? "Disparo" : commands.Fail("No se pudo");
-        const int fired = g.FireAll(target);
+        if (weaponArg(args, kind)) return g.Apply(Order(C::Fire, target, static_cast<int>(kind))) ? "Disparo" : commands.Fail("No se pudo");
+        const int fired = g.Apply(Order(C::FireAll, target)).count;
         return fired > 0 ? std::to_string(fired) + " armas" : commands.Fail("Nada listo");
     });
     commands.Add("apuntar", "gira el rumbo a la solucion de tiro: apuntar [torreta|espinal|misil|drones]", [&, weaponArg](const CommandRegistry::Args& args) -> std::string {
         WeaponKind kind = WeaponKind::Spinal;
         weaponArg(args, kind);
-        return g.AimAtSolution(target, kind) ? "Apuntando" : commands.Fail("Sin solucion");
+        return g.Apply(Order(C::Aim, target, static_cast<int>(kind))) ? "Apuntando" : commands.Fail("Sin solucion");
     });
     commands.Add("alinear", "el rumbo sigue la solucion del canon espinal, como B", [&](const CommandRegistry::Args&) -> std::string {
-        g.TrackTarget(target);
-        return g.Tracking() ? "Alineando" : commands.Fail("Sin solucion");
+        return g.Apply(Order(C::Track, target)) ? "Alineando" : commands.Fail("Sin solucion");
     });
     commands.Add("astro", "fija como objetivo el astro numero N de este sistema, como sale en los datos", [&](const CommandRegistry::Args& args) -> std::string {
         if (args.empty()) return commands.Fail("Uso: astro <indice>");
@@ -406,14 +515,14 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         return info ? "Objetivo: " + info->name : commands.Fail("No existe");
     });
     commands.Add("atracar","atraca en la estacion objetivo; con 'ya', sin esperar al haz", [&](const CommandRegistry::Args& args) -> std::string {
-        return g.Dock(target, !args.empty() && args[0] == "ya") ? "Atracando" : commands.Fail("No se pudo");
+        return g.Apply(Order(C::Dock, target, !args.empty() && args[0] == "ya" ? 1 : 0)) ? "Atracando" : commands.Fail("No se pudo");
     });
     commands.Add("soltar", "suelta las amarras", [&](const CommandRegistry::Args&) -> std::string {
-        g.Undock();
+        g.Apply(Order(C::Undock));
         return "Hecho";
     });
-    commands.Add("apie", "baja a la cubierta de la estacion donde esta atracada", [&](const CommandRegistry::Args&) -> std::string { return g.Disembark() ? "A pie" : commands.Fail("Hay que estar atracada"); });
-    commands.Add("abordo", "vuelve a la nave desde cualquier punto de la cubierta", [&](const CommandRegistry::Args&) -> std::string { return g.Board(true) ? "A bordo" : commands.Fail("No estas a pie"); });
+    commands.Add("apie", "baja a la cubierta de la estacion donde esta atracada", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Disembark)) ? "A pie" : commands.Fail("Hay que estar atracada"); });
+    commands.Add("abordo", "vuelve a la nave desde cualquier punto de la cubierta", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Board, 1)) ? "A bordo" : commands.Fail("No estas a pie"); });
     commands.Add("vistapie", "cambia entre primera y tercera persona", [&](const CommandRegistry::Args&) -> std::string {
         g.ToggleFootView();
         return g.FirstPerson() ? "Primera persona" : "Tercera persona";
@@ -422,17 +531,61 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         if (!args.empty()) g.Ship().computerTier = std::atoi(args[0].c_str());
         return std::to_string(g.Ship().computerTier);
     });
-    commands.Add("orbitar", "circulariza alrededor de lo que domina aqui", [&](const CommandRegistry::Args&) -> std::string { return g.EnterOrbitHere() ? "En orbita" : commands.Fail("No se pudo"); });
+    commands.Add("orbitar", "circulariza alrededor de lo que domina aqui", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Orbit)) ? "En orbita" : commands.Fail("No se pudo"); });
     commands.Add("seguir", "sigue tras perder la nave", [&](const CommandRegistry::Args&) -> std::string {
-        g.ContinueAfterDefeat();
+        g.Apply(Order(C::Continue));
         return "Hecho";
     });
+    commands.Add("tutorial", "salta a un paso del tutorial, con su objetivo en pantalla: tutorial <paso> [leer]; sin nada, dice en cual esta", [&](const CommandRegistry::Args& args) -> std::string {
+        Dialogue& talk = g.Conversation();
+        if (!args.empty()) {
+            if (talk.StepCount() == 0) talk.Start(MakeTutorial());
+            talk.Resume(static_cast<std::size_t>(std::max(std::atoi(args[0].c_str()), 0)));
+            if (args.size() < 2 || args[1] != "leer") talk.SkipLines();  // con "leer", empieza por sus lineas
+        }
+        if (!talk.Active()) return "Tutorial terminado (" + std::to_string(talk.StepCount()) + " pasos)";
+        return "Paso " + std::to_string(talk.Step()) + " de " + std::to_string(talk.StepCount()) + ": " + (talk.Current()->objective.empty() ? std::string("solo diálogo") : talk.Current()->objective);
+    });
+}
+
+// Sonido de un clic segun lo que hace: abrir un panel suena a panel, confirmar un cambio en la
+// nave o en la partida suena a confirmacion, y el resto, a clic.
+UiSound SoundFor(HudActionType type) {
+    switch (type) {
+        case HudActionType::ToggleAtlas:
+        case HudActionType::ToggleWorkshop:
+        case HudActionType::ToggleKeys:
+        case HudActionType::MenuPage:
+        case HudActionType::Analyze:
+            return UiSound::Panel;
+        case HudActionType::Dock:
+        case HudActionType::Undock:
+        case HudActionType::Board:
+        case HudActionType::Disembark:
+        case HudActionType::Orbit:
+        case HudActionType::StartMode:
+        case HudActionType::SaveGame:
+        case HudActionType::LoadGame:
+        case HudActionType::Continue:
+            return UiSound::Confirm;
+        default:
+            return UiSound::Click;
+    }
 }
 
 // Resumen de una partida para el menu.
 std::string SaveSummary(const SaveData& d) {
     char text[120];
-    std::snprintf(text, sizeof(text), "%s   Dia %.1f   %zu estaciones   %d emisores", ModeInfo(d.mode).name, d.simTime / 86400.0, d.stations.size(), d.ship.emitters);
+    const ShipSave* ship = d.Ship();
+    std::snprintf(text, sizeof(text), "%s   Dia %.1f   %zu estaciones   %d emisores", ModeInfo(d.world.mode).name, d.world.simTime / 86400.0, d.world.stations.size(), ship ? ship->ship.emitters : 0);
+    return text;
+}
+
+// Un identificador nuevo para este jugador: 16 cifras hexadecimales al azar.
+std::string NewPlayerId() {
+    std::random_device device;
+    char text[20];
+    std::snprintf(text, sizeof(text), "%08x%08x", static_cast<unsigned>(device()), static_cast<unsigned>(device()));
     return text;
 }
 
@@ -443,24 +596,44 @@ int Run(Options options) {
     }
 
     // Las partidas viven en la carpeta de datos del usuario, no junto al ejecutable.
+    // Una partida es una carpeta: mundo.sav y jugadores/<id>.sav (SaveGame.h).
     std::string savePath = options.savePath;
-    std::string settingsPath;
+    std::string settingsPath, legacySave;
+    std::string playerId = "local";
     if (options.frames == 0) {
         if (char* folder = SDL_GetPrefPath("Epsilon", "Nebulosa")) {
-            if (savePath.empty()) savePath = std::string(folder) + "partida.sav";
+            if (savePath.empty()) {
+                savePath = std::string(folder) + "partida";
+                legacySave = std::string(folder) + "partida.sav";  // hasta la version 12, un solo archivo
+            }
             settingsPath = std::string(folder) + "ajustes.txt";
             SDL_free(folder);
         }
     }
+    // El identificador del jugador se crea una vez y se queda en ajustes.txt.
+    if (!settingsPath.empty()) {
+        GameSettings stored = LoadSettings(settingsPath);
+        if (stored.playerId.empty()) {
+            stored.playerId = NewPlayerId();
+            SaveSettings(settingsPath, stored);
+        }
+        playerId = stored.playerId;
+    }
     std::optional<SaveData> saved;
+    std::string saveProblem;
     if (!savePath.empty()) {
         std::string problem;
-        saved = LoadFromFile(savePath, &problem);
-        if (!saved && problem != "sin partida guardada") std::printf("Aviso: no se pudo leer la partida: %s\n", problem.c_str());
+        saved = LoadGame(savePath, playerId, &problem);
+        if (!saved && problem != "sin partida guardada") {
+            std::printf("Aviso: no se pudo leer la partida: %s\n", problem.c_str());
+            saveProblem = problem;  // el menu lo ensena
+        } else if (!saved && !legacySave.empty() && std::filesystem::exists(FilePath(legacySave))) {
+            saveProblem = "es de una versión anterior, de un solo archivo. Ya no se puede cargar: empiece una misión nueva.";
+        }
     }
     // La galaxia sale de la semilla: tiene que ser la de la partida guardada.
-    if (saved && !options.seedGiven) options.seed = saved->seed;
-    if (saved && saved->seed != options.seed) saved.reset();
+    if (saved && !options.seedGiven) options.seed = saved->world.seed;
+    if (saved && saved->world.seed != options.seed) saved.reset();
     SDL_Window* window = SDL_CreateWindow("Nebulosa", options.width, options.height, SDL_WINDOW_RESIZABLE);
     if (!window) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
@@ -501,6 +674,7 @@ int Run(Options options) {
             // La nave se carga antes que la partida: su forma decide las zonas del casco y la eslora.
             const MeshUpload upload = [&](const MeshData& m) { return backend.CreateMesh(m); };
             GameAssets assets = BuildGameAssets(upload, MakeHullTexture(backend));
+            RegisterAlienZones(assets);  // los alienigenas, con su casco por zonas
             {
                 // La nave de un .glb, si lo hay: --nave o modelos/nave.glb junto al ejecutable.
                 const std::string folder = SDL_GetBasePath() ? std::string(SDL_GetBasePath()) + "modelos/" : "modelos/";
@@ -514,13 +688,40 @@ int Run(Options options) {
                         }
                 }
                 std::vector<ImportedMarker> markers;
+                // Cada imagen se sube una vez, aunque la usen veinte piezas y varios modelos. Si junto a
+                // "x_color.png" hay "x_normal.png" y "x_orm.png", son su relieve y su rugosidad y metal.
+                std::map<std::string, TextureId> loaded;
+                const auto texture = [&](const std::string& file) {
+                    const std::filesystem::path p(file);
+                    const std::string full = p.is_absolute() || path.empty() ? file : (std::filesystem::path(path).parent_path() / p).string();
+                    if (const auto found = loaded.find(full); found != loaded.end()) return found->second;
+                    const TextureId id = backend.LoadTexture(full, 2048);
+                    loaded[full] = id;
+                    const std::string suffix = "_color.png";
+                    if (id != kNoTexture && full.size() > suffix.size() && full.compare(full.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                        const std::string stem = full.substr(0, full.size() - suffix.size());
+                        std::error_code ignored;
+                        const auto map = [&](const char* name) { return std::filesystem::exists(stem + name, ignored) ? backend.LoadTexture(stem + name, 2048) : kNoTexture; };
+                        backend.SetTextureMaps(id, map("_normal.png"), map("_orm.png"));
+                    }
+                    return id;
+                };
+                // La estacion origami (con su animacion), la bahia de drones y el dron.
+                {
+                    std::string log;
+                    LoadStationAndDrones(assets, folder, upload, texture, &log);
+                    if (!log.empty()) std::printf("%s", log.c_str());
+                    if (assets.origami) std::printf("Estacion origami: %zu piezas%s\n", assets.origami->parts.size(), assets.origamiDeploy ? ", con su despliegue" : "");
+                }
+                // Naves alienigenas por clase y torretas humanas; sus zonas cambian con el modelo.
+                {
+                    std::string log;
+                    LoadCombatModels(assets, folder, upload, texture, &log);
+                    if (!log.empty()) std::printf("%s", log.c_str());
+                    RegisterAlienZones(assets);
+                }
                 if (!path.empty()) {
                     std::string error;
-                    const auto texture = [&](const std::string& file) {
-                        const std::filesystem::path p(file);
-                        const std::string full = p.is_absolute() ? file : (std::filesystem::path(path).parent_path() / p).string();
-                        return backend.LoadTexture(full, 2048);
-                    };
                     if (ModelRef custom = LoadShipModel(path, upload, texture, &error)) {
                         assets.ship = custom;
                         assets.customShip = true;
@@ -544,6 +745,7 @@ int Run(Options options) {
                 std::printf("Modulos: %zu ranuras exteriores, %zu bahias interiores, %zu piezas\n", exterior, design->slots.size() - exterior, design->pieces.size());
             }
             GameSession session(engine, rules, options.seed);
+            session.SetPlayer(playerId, "Piloto");
             session.RefitToDesign();
             GameLayer layer(session, assets, SdlGpuBackend::kGlowTexture, SdlGpuBackend::kRingTexture, fog);
             engine.AddLayer(&layer);
@@ -556,9 +758,13 @@ int Run(Options options) {
             // La camara se aparta en proporcion a la nave: la maqueta mide 0,55 km de proa al centro.
             const double shipScale = std::max(rules.ship.bow / 0.55, 1.0);
             double viewDistance = 2.4 * shipScale;
+            // Lo mas cerca que puede ponerse la camara sin entrar en el casco, por donde mira ahora (km).
+            double hullFloor = 0.0;
+            Vec3f hullLook{0, 0, 0};  // direccion en que se midio, en el modelo
             RegisterCommands(engine.Commands(), session, target);
-            engine.Commands().Add("vista", "camara: vista <grados> [km]", [&](const CommandRegistry::Args& args) -> std::string {
+            engine.Commands().Add("vista", "camara: vista <grados> [km] [grados de elevacion; positivos, desde abajo]", [&](const CommandRegistry::Args& args) -> std::string {
                 if (!args.empty()) viewOrbit = Quatd::FromAxisAngle({0, 1, 0}, -std::atof(args[0].c_str()) * kPi / 180.0);
+                if (args.size() >= 3) viewOrbit = viewOrbit * Quatd::FromAxisAngle({1, 0, 0}, std::atof(args[2].c_str()) * kPi / 180.0);
                 if (args.size() >= 2) viewDistance = std::atof(args[1].c_str());
                 return "Hecho";
             });
@@ -587,6 +793,9 @@ int Run(Options options) {
             const bool hudReady = hud.Initialize(backend, base + "fonts");
             if (!hudReady) std::printf("Aviso: no se pudo iniciar la interfaz.\n");
             if (hudReady) backend.SetOverlay(&hud);
+            // Sonidos de la interfaz. Sin dispositivo de audio, el juego sigue en silencio.
+            UiSounds sounds;
+            if (!sounds.Initialize(base + "audio/ui")) std::printf("Aviso: sin sonidos de interfaz.\n");
 
             const int warpEffect = backend.AddPostEffect("curvatura", gPsWarp, sizeof(gPsWarp), true);
             if (warpEffect < 0) std::printf("Aviso: %s\n", backend.LastError().c_str());
@@ -594,7 +803,7 @@ int Run(Options options) {
             if (reticleEffect < 0) std::printf("Aviso: %s\n", backend.LastError().c_str());
 
             HudInput ui;
-            engine.Commands().Add("modulo", "monta un modulo (atracada): modulo <ranura> <tipo 0..7>; sin nada, lista ranuras y tipos", [&](const CommandRegistry::Args& args) -> std::string {
+            engine.Commands().Add("modulo", "monta un modulo (atracada): modulo <ranura> <tipo>; sin nada, lista ranuras y tipos", [&](const CommandRegistry::Args& args) -> std::string {
                 const ShipDesign& design = CurrentShipDesign();
                 if (args.size() < 2) {
                     std::string list = "Tipos:";
@@ -604,15 +813,37 @@ int Run(Options options) {
                         list += " " + std::to_string(i) + "=" + PrettyName(design.slots[i].name) + (i < session.Ship().loadout.modules.size() && session.Ship().loadout.modules[i] != ShipModuleKind::None ? std::string(" [") + ModuleSpec(session.Ship().loadout.modules[i]).name + "]" : "");
                     return list;
                 }
-                std::string why;
-                const int kind = std::atoi(args[1].c_str());
-                if (kind < 0 || kind >= static_cast<int>(ShipModuleKind::Count)) return "Tipo desconocido";
-                return session.InstallModule(std::atoi(args[0].c_str()), static_cast<ShipModuleKind>(kind), &why) ? "Hecho" : why;
+                const CommandResult done = session.Apply(Order(CommandType::InstallModule, std::atoi(args[1].c_str()), std::atoi(args[0].c_str())));
+                return done ? "Hecho" : done.why;
             });
-            engine.Commands().Add("impulsor", "cambia el motor de impulso (atracada): impulsor <1.." + std::to_string(kImpulseEngineCount) + ">", [&](const CommandRegistry::Args& args) -> std::string {
+            engine.Commands().Add("mover", "mueve una bahia de drones de serie a otro hueco exterior (atracada): mover <de> <a>", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.size() < 2) return "Uso: mover <ranura origen> <ranura destino>";
+                const CommandResult done = session.Apply(Order(CommandType::MoveModule, std::atoi(args[0].c_str()), std::atoi(args[1].c_str())));
+                return done ? "Hecho" : done.why;
+            });
+            engine.Commands().Add("plano", "fabrica el plano de un arma humana (atracada en la origami): plano <0.." + std::to_string(kBlueprintCount - 1) + ">; sin nada, lista los planos", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.empty()) {
+                    std::string list;
+                    for (int id = 0; id < kBlueprintCount; ++id) list += std::to_string(id) + "=" + BlueprintName(id).substr(7) + (HasBlueprint(session.Ship().loadout, id) ? " [hecho]" : "") + (id + 1 < kBlueprintCount ? ", " : "");
+                    return list;
+                }
+                const CommandResult done = session.Apply(Order(CommandType::Blueprint, std::atoi(args[0].c_str())));
+                return done ? "Hecho" : done.why;
+            });
+            engine.Commands().Add("misiles", "fabrica misiles para una bahia (atracada): misiles <ranura> [cantidad]; sin cantidad, hasta llenarla", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.empty()) return "Uso: misiles <ranura> [cantidad]";
+                const CommandResult made = session.Apply(Order(CommandType::Missiles, std::atoi(args[0].c_str()), args.size() > 1 ? std::atoi(args[1].c_str()) : 0));
+                return made ? std::to_string(made.count) + " fabricados" : made.why;
+            });
+            engine.Commands().Add("puntual", "monta puntos de defensa puntual (atracada): puntual <n>; sin nada, dice cuantos hay", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.empty()) return std::to_string(session.Ship().loadout.pointDefense) + " de " + std::to_string(session.PointDefenseCapacity()) + " puntos";
+                const CommandResult done = session.Apply(Order(CommandType::PointDefense, std::atoi(args[0].c_str())));
+                return done ? "Hecho" : done.why;
+            });
+            engine.Commands().Add("impulsor","cambia el motor de impulso (atracada): impulsor <1.." + std::to_string(kImpulseEngineCount) + ">", [&](const CommandRegistry::Args& args) -> std::string {
                 if (args.empty()) return std::string("Motor: ") + ImpulseEngine(session.Ship().loadout.engine).name;
-                std::string why;
-                return session.SetImpulseEngine(std::atoi(args[0].c_str()), &why) ? "Hecho" : why;
+                const CommandResult done = session.Apply(Order(CommandType::ImpulseEngine, std::atoi(args[0].c_str())));
+                return done ? "Hecho" : done.why;
             });
             engine.Commands().Add("taller", "abre o cierra el taller de modulos (atracada)", [&](const CommandRegistry::Args&) -> std::string {
                 ui.workshop = !ui.workshop && session.CanRefit();
@@ -652,10 +883,62 @@ int Run(Options options) {
                 const int zone = session.ShootHull(p + d * 2000.0, p - d * 2000.0, amount);
                 return std::string("Da en: ") + ZoneInfo(zone).name;
             });
+            // El alienigena mas cercano: el objetivo si es uno, y si no el que este mas cerca de la nave.
+            const auto nearestAlien = [&]() -> Anomaly* {
+                Anomaly* best = nullptr;
+                double closest = 1e300;
+                for (Anomaly& a : session.Anomalies()) {
+                    if (a.hull <= 0.0 || !ZonesOf(a)) continue;
+                    if (target.kind == TargetRef::Kind::Anomaly && target.index == a.id) return &a;
+                    const double d = Length(session.AnomalyPosition(a) - session.Ship().position);
+                    if (d < closest) {
+                        closest = d;
+                        best = &a;
+                    }
+                }
+                return best;
+            };
+            engine.Commands().Add("danar_enemigo", "golpe del jugador, sin escudos, en una zona del alienigena mas cercano: danar_enemigo <zona> <% de su casco>; sin nada, lista sus zonas", [&](const CommandRegistry::Args& args) -> std::string {
+                Anomaly* a = nearestAlien();
+                if (!a) return engine.Commands().Fail("No hay ningun alienigena con zonas cerca. Prueba: aparecer hostil 3");
+                const ZoneLayout* layout = ZonesOf(*a);
+                if (args.size() < 2) {
+                    std::string list = a->name + ":";
+                    for (int z = 0; z < kHullZoneCount; ++z)
+                        if (ZonePresent(*layout, z)) list += " " + std::to_string(z) + " " + ZoneLabel(layout, z) + " " + std::to_string(static_cast<int>(a->zones[static_cast<std::size_t>(z)] * 100.0)) + "%";
+                    return list;
+                }
+                const int zone = std::atoi(args[0].c_str());
+                if (zone < 0 || zone >= kHullZoneCount) return engine.Commands().Fail("Zona desconocida");
+                const int id = a->id;
+                session.DamageAnomalyZone(id, zone, a->maxHull * std::atof(args[1].c_str()) / 100.0);
+                const Anomaly* after = nullptr;
+                for (const Anomaly& b : session.Anomalies())
+                    if (b.id == id) after = &b;
+                if (!after || after->hull <= 0.0) return "Destruida";
+                return ZoneLabel(ZonesOf(*after), zone) + ": " + std::to_string(static_cast<int>(after->zones[static_cast<std::size_t>(zone)] * 100.0)) + "%, casco " + std::to_string(static_cast<int>(after->hull / after->maxHull * 100.0)) + "%" + (after->disabled ? ", apagada" : "");
+            });
+            engine.Commands().Add("interfaz", "cambia la interfaz: interfaz minimalista|experta [tamano 100..150]", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.empty()) return ui.settings.Minimal() ? "Minimalista" : "Experta";
+                if (args[0] == "minimalista") ui.settings.uiStyle = UiStyle::Minimal;
+                else if (args[0] == "experta" || args[0] == "experto") ui.settings.uiStyle = UiStyle::Expert;
+                else return "Uso: interfaz minimalista|experta [tamano]";
+                if (args.size() >= 2) ui.settings.uiScale = std::clamp(std::atoi(args[1].c_str()), kUiScales[0], kUiScales[kUiScaleCount - 1]);
+                if (!settingsPath.empty()) SaveSettings(settingsPath, ui.settings);
+                return ui.settings.Minimal() ? "Interfaz minimalista" : "Interfaz experta";
+            });
+            engine.Commands().Add("plegar", "pliega o despliega una ventana: plegar <0.." + std::to_string(static_cast<int>(HudPanel::Count) - 1) + ">", [&](const CommandRegistry::Args& args) -> std::string {
+                if (args.empty()) return "Uso: plegar <ventana>. 0 nave, 1 bodega, 2 sensores, 3 objetivo, 4 radar, 5 estructura, 6 soles, 7 nave (mín.), 8 señales (mín.), 9 objetivo (mín.), 10 detalles (mín.)";
+                const int p = std::atoi(args[0].c_str());
+                if (p < 0 || p >= static_cast<int>(HudPanel::Count)) return "Ventana desconocida";
+                ui.settings.folded ^= 1u << p;
+                return (ui.settings.folded >> p) & 1u ? "Plegada" : "Desplegada";
+            });
             ui.screen = options.mode >= 0 ? HudScreen::Playing : HudScreen::Menu;
             if (options.mode >= 0) session.SetMode(static_cast<GameModeId>(options.mode));
             ui.console = &console;
             if (saved) ui.savedGame = SaveSummary(*saved);
+            ui.saveProblem = saveProblem;
             ui.analysis = options.analysis;
             bool playing = ui.screen == HudScreen::Playing;
             if (options.noTutorial) session.Conversation().Stop();
@@ -667,31 +950,48 @@ int Run(Options options) {
             if (options.atlas) ui.atlas.selected = TargetRef{Kind::Star, 0, 0};
 
             session.Step(1.0 / 60.0, {});
-            for (const std::string& line : options.commands) std::printf("> %s\n%s\n", line.c_str(), engine.Commands().Execute(line).c_str());
-            if (options.atlas && target.kind != Kind::None) {
-                ui.atlas.selected = target;  // para ver un astro concreto desde la linea de ordenes
-                ui.atlas.system = target.system;
-            }
+            // Con --load los comandos corren despues de cargar la partida: si no, la carga los pisaria.
+            const auto runCommands = [&] {
+                for (const std::string& line : options.commands) std::printf("> %s\n%s\n", line.c_str(), engine.Commands().Execute(line).c_str());
+                if (options.atlas && target.kind != Kind::None) {
+                    ui.atlas.selected = target;  // para ver un astro concreto desde la linea de ordenes
+                    ui.atlas.system = target.system;
+                }
+            };
+            if (!options.load) runCommands();
 
             // La configuracion: cada calidad cambia la resolucion de la escena, el bloom, el grano
             // y el detalle de las superficies. Se parte de lo que el motor trae de serie.
             if (!settingsPath.empty()) ui.settings = LoadSettings(settingsPath);
-            if (options.quality >= 0 && options.quality < static_cast<int>(GraphicsQuality::Count)) ui.settings.quality = static_cast<GraphicsQuality>(options.quality);
-            ui.page = static_cast<MenuPage>(std::clamp(options.page, 0, static_cast<int>(MenuPage::Credits)));
+            if (options.quality >= 0 && options.quality < static_cast<int>(GraphicsQuality::Count)) {
+                ui.settings.quality = static_cast<GraphicsQuality>(options.quality);
+                ui.settings.graphics = OptionsOf(ui.settings.quality);
+            }
+            if (options.ui == 0) ui.settings.uiStyle = UiStyle::Minimal;
+            else if (options.ui == 1) ui.settings.uiStyle = UiStyle::Expert;
+            if (options.uiScale > 0) ui.settings.uiScale = std::clamp(options.uiScale, kUiScales[0], kUiScales[kUiScaleCount - 1]);
+            ui.page = static_cast<MenuPage>(std::clamp(options.page, 0, static_cast<int>(MenuPage::Interface)));
+            // La primera vez se elige la interfaz antes que nada.
+            if (ui.screen == HudScreen::Menu && ui.settings.uiStyle == UiStyle::Unset && ui.page == MenuPage::Main) ui.page = MenuPage::Interface;
             const PostSettings basePost = engine.Post();
             const LodSettings baseLod = engine.Lod();
             const auto applySettings = [&] {
-                const QualityProfile& p = Profile(ui.settings.quality);
-                backend.SetRenderScale(p.renderScale);
-                engine.Post().bloom = basePost.bloom && p.bloom;
-                engine.Post().grain = p.film ? basePost.grain : 0.0f;
-                engine.Post().aberration = p.film ? basePost.aberration : 0.0f;
-                engine.Lod().maxOctaves = p.maxOctaves;
-                engine.Lod().detailBias = baseLod.detailBias + p.detailBias;
-                engine.Lod().sphereMinPixels = p.sphereMinPixels;
-                layer.SetHullDetail(p.hullDamage);
+                // Cada opcion por separado (la pestaña de graficos); una calidad solo las rellena.
+                const GraphicsOptions& g = ui.settings.graphics;
+                const QualityProfile& surfaces = Profile(static_cast<GraphicsQuality>(std::clamp(g.surfaces, 0, static_cast<int>(GraphicsQuality::Count) - 1)));
+                backend.SetRenderScale(static_cast<float>(g.renderScale) / 100.0f);
+                backend.SetShadows(g.shadows);
+                engine.Post().bloom = basePost.bloom && g.bloom;
+                engine.Post().grain = g.film ? basePost.grain : 0.0f;
+                engine.Post().aberration = g.film ? basePost.aberration : 0.0f;
+                engine.Lod().maxOctaves = surfaces.maxOctaves;
+                engine.Post().detail = std::clamp(g.lighting, 0, 3);  // la luz de los shaders: 3 = ultra
+                engine.Lod().detailBias = baseLod.detailBias + surfaces.detailBias;
+                engine.Lod().sphereMinPixels = surfaces.sphereMinPixels;
+                layer.SetHullDetail(std::clamp(g.hullDamage, 0, 3));
                 backend.SetVsync(options.vsync && ui.settings.vsync);
                 if (options.frames == 0) SDL_SetWindowFullscreen(window, ui.settings.fullscreen);
+                sounds.SetVolume(static_cast<float>(ui.settings.uiVolume) / 100.0f);
             };
             const auto storeSettings = [&] {
                 applySettings();
@@ -705,6 +1005,8 @@ int Run(Options options) {
             std::uint64_t rendered = 0;
             bool running = true, orbitingCamera = false, atlasDrag = false;
             int contactIndex = -1;
+            std::size_t lastTutorialStep = session.Conversation().Step();
+            std::string lastLogLine;
             double titleClock = 0, frameSeconds = 1.0 / 60.0;
 
             // El raton dirige la nave, o mira a pie, solo si nada de la interfaz lo necesita.
@@ -716,7 +1018,7 @@ int Run(Options options) {
             const auto setCursor = [&](bool on) {
                 cursor = on;
                 syncMouse();
-                if (on) session.MarkCursorUsed();
+                if (on) session.Apply(Order(CommandType::CursorUsed));
             };
 
             const auto openWheel = [&](bool on) {
@@ -761,7 +1063,7 @@ int Run(Options options) {
             const auto writeGame = [&] {
                 if (savePath.empty() || !playing) return;
                 std::string problem;
-                if (SaveToFile(savePath, session.Snapshot(), &problem)) return;
+                if (SaveGame(savePath, session.Snapshot(), &problem)) return;
                 std::printf("Aviso: no se pudo guardar: %s\n", problem.c_str());
                 session.Announce("No se pudo guardar la partida.");
             };
@@ -772,11 +1074,15 @@ int Run(Options options) {
                     std::printf("Aviso: %s\n", problem.c_str());
                     return;
                 }
-                beginGame(saved->mode);
+                beginGame(saved->world.mode);
                 session.TakeSaveRequest();
                 session.Announce("Partida cargada.");
             };
-            if (options.load) loadGame();
+            if (options.load) {
+                loadGame();
+                if (options.cursor) session.Apply(Order(CommandType::CursorUsed));  // la carga borra lo que setCursor marco al empezar
+                runCommands();
+            }
 
             const auto selectNext = [&] {
                 if (session.Contacts().empty()) return;
@@ -786,40 +1092,50 @@ int Run(Options options) {
 
             const auto perform = [&](const HudAction& a) {
                 using T = HudActionType;
+                using C = CommandType;
+                // Lo que cambia la partida va como orden (GameSession::Apply); lo demas es de la interfaz.
                 switch (a.type) {
-                    case T::Drive: session.SetDrive(static_cast<DriveMode>(a.value)); break;
-                    case T::Go: session.SetAutopilot(target); break;
-                    case T::Stop: session.CancelAutopilot(); break;
-                    case T::Mine: session.DeployMining(target); break;
-                    case T::Power: session.DeployPower(target); break;
-                    case T::Use: session.Interact(target); break;
-                    case T::Scan: session.StartScan(); break;
-                    case T::Upgrade:
-                        if (target.kind == Kind::Station) {
-                            const Station* s = session.Stations().Find(target.index);
-                            if (s) session.UpgradeStation(s->id, s->kind == StationKind::Mining ? ModuleKind::Drill : ModuleKind::Collector);
+                    case T::Drive: session.Apply(Order(C::SetDrive, a.value)); break;
+                    case T::Go: session.Apply(Order(C::Autopilot, target)); break;
+                    case T::Stop: session.Apply(Order(C::CancelAutopilot)); break;
+                    case T::Mine:  // drones: al objetivo, o de vuelta si ya trabajan
+                        if (session.DronesOut() > 0 || session.DroneSite()) {
+                            if (session.DroneSite() && *session.DroneSite() != target && (target.kind == Kind::Planet || target.kind == Kind::Belt)) session.Apply(Order(C::DeployDrones, target));
+                            else session.Apply(Order(C::RecallDrones));
+                        } else {
+                            session.Apply(Order(C::DeployDrones, target));
                         }
+                        break;
+                    case T::Shipyard: session.Apply(Order(C::DeployShipyard)); break;
+                    case T::ExtractElement: session.Apply(Order(C::ExtractElement, a.value)); break;
+                    case T::Power: session.Apply(Order(C::DeployPower, target)); break;
+                    case T::Use: session.Apply(Order(C::Interact, target)); break;
+                    case T::Scan:
+                        if (session.Apply(Order(C::StartScan))) sounds.Play(UiSound::RadarScan);
+                        break;
+                    case T::Upgrade:
+                        if (target.kind == Kind::Station) session.Apply(Order(C::UpgradeStation, target.index, static_cast<int>(ModuleKind::Collector)));
                         break;
                     case T::SelectContact:
                         if (static_cast<std::size_t>(a.value) < session.Contacts().size()) target = session.Contacts()[static_cast<std::size_t>(a.value)].target;
                         break;
-                    case T::NextDialogue: session.Conversation().Next(); break;
+                    case T::NextDialogue: session.Apply(Order(C::NextDialogue)); break;
+                    case T::ReplayTip: session.Apply(Order(C::ReplayTip)); break;
                     case T::ToggleCursor: setCursor(!cursor); break;
                     case T::ToggleKeys: ui.showKeys = !ui.showKeys; break;
                     case T::StartMode: beginGame(static_cast<GameModeId>(a.value)); break;
-                    case T::Continue: session.ContinueAfterDefeat(); break;
+                    case T::Continue: session.Apply(Order(C::Continue)); break;
                     case T::Resume: ui.screen = HudScreen::Playing; syncMouse(); break;
-                    case T::Orbit: session.EnterOrbitHere(); break;
+                    case T::Orbit: session.Apply(Order(C::Orbit)); break;
                     case T::Shield:
-                        if (a.value == -1) session.CycleShield();
-                        else if (a.value == -2) session.SetShieldOn(false);
-                        else session.SetShield(static_cast<ShieldKind>(a.value));
+                        if (a.value == -1) session.Apply(Order(C::CycleShield));
+                        else if (a.value == -2) session.Apply(Order(C::ShieldOn, 0));
+                        else session.Apply(Order(C::SetShield, a.value));
                         break;
-                    case T::Coolant: {
-                        const CoolantKind kind = static_cast<CoolantKind>(a.value);
-                        session.SetCoolant(kind, !session.Ship().defense.coolantOn[static_cast<std::size_t>(a.value)]);
+                    case T::Coolant:
+                        if (a.value >= 0 && a.value < static_cast<int>(CoolantKind::Count))
+                            session.Apply(Order(C::Coolant, a.value, session.Ship().defense.coolantOn[static_cast<std::size_t>(a.value)] ? 0 : 1));
                         break;
-                    }
                     case T::CloseWheel: openWheel(false); break;
                     case T::RadarRange: ui.radarRange = std::clamp(ui.radarRange + a.value, 0, kRadarRangeCount - 1); break;
                     case T::ToggleTrajectory: ui.trajectory = !ui.trajectory; break;
@@ -829,14 +1145,13 @@ int Run(Options options) {
                         openWheel(false);
                         break;
                     case T::WorkshopSlot: ui.workshopSlot = a.value; break;
-                    case T::InstallModule: {
-                        std::string why;
-                        if (!session.InstallModule(a.index, static_cast<ShipModuleKind>(a.value), &why)) session.Notice(why);
-                        break;
-                    }
+                    case T::InstallModule:
                     case T::ImpulseEngine: {
-                        std::string why;
-                        if (!session.SetImpulseEngine(a.value, &why)) session.Notice(why);
+                        const CommandResult done = session.Apply(a.type == T::InstallModule ? Order(C::InstallModule, a.value, a.index) : Order(C::ImpulseEngine, a.value));
+                        if (!done) {
+                            session.Notice(done.why);
+                            sounds.Play(UiSound::Error);
+                        }
                         break;
                     }
                     case T::ToggleAtlas:
@@ -864,14 +1179,14 @@ int Run(Options options) {
                         ui.atlas.zoom = 1.0;
                         break;
                     case T::AtlasTarget: target = ui.atlas.selected; break;
-                    case T::Dock: session.Dock(target); break;
-                    case T::Undock: session.Undock(); break;
+                    case T::Dock: session.Apply(Order(C::Dock, target)); break;
+                    case T::Undock: session.Apply(Order(C::Undock)); break;
                     case T::Disembark:
-                        session.Disembark();
+                        session.Apply(Order(C::Disembark));
                         syncMouse();
                         break;
                     case T::Board:
-                        session.Board();
+                        session.Apply(Order(C::Board));
                         syncMouse();
                         break;
                     case T::Quit: running = false; break;
@@ -881,8 +1196,24 @@ int Run(Options options) {
                         break;
                     case T::Quality:
                         ui.settings.quality = static_cast<GraphicsQuality>(std::clamp(a.value, 0, static_cast<int>(GraphicsQuality::Count) - 1));
+                        ui.settings.graphics = OptionsOf(ui.settings.quality);
                         storeSettings();
                         break;
+                    case T::Graphics: {
+                        // value: la opcion; index: su nuevo valor (en las de si o no se ignora).
+                        GraphicsOptions& g = ui.settings.graphics;
+                        switch (static_cast<GraphicsOption>(a.value)) {
+                            case GraphicsOption::RenderScale: g.renderScale = std::clamp(a.index, 25, 100); break;
+                            case GraphicsOption::Bloom: g.bloom = !g.bloom; break;
+                            case GraphicsOption::Film: g.film = !g.film; break;
+                            case GraphicsOption::Surfaces: g.surfaces = std::clamp(a.index, 0, 3); break;
+                            case GraphicsOption::Lighting: g.lighting = std::clamp(a.index, 0, 3); break;
+                            case GraphicsOption::HullDamage: g.hullDamage = std::clamp(a.index, 0, 3); break;
+                            case GraphicsOption::Shadows: g.shadows = !g.shadows; break;
+                        }
+                        storeSettings();
+                        break;
+                    }
                     case T::ToggleFullscreen:
                         ui.settings.fullscreen = !ui.settings.fullscreen;
                         storeSettings();
@@ -891,18 +1222,46 @@ int Run(Options options) {
                         ui.settings.vsync = !ui.settings.vsync;
                         storeSettings();
                         break;
+                    case T::UiVolume:
+                        ui.settings.uiVolume = std::clamp(a.value * 25, 0, 100);
+                        storeSettings();
+                        break;
+                    case T::SetUiStyle: {
+                        const bool firstTime = ui.settings.uiStyle == UiStyle::Unset;
+                        ui.settings.uiStyle = a.value == 0 ? UiStyle::Minimal : UiStyle::Expert;
+                        storeSettings();
+                        // La primera eleccion sale antes del menu: elegida, se pasa a el.
+                        if (firstTime && ui.page == MenuPage::Interface) {
+                            ui.page = MenuPage::Main;
+                            ui.pageClock = 0.0;
+                        }
+                        break;
+                    }
+                    case T::UiScale:
+                        ui.settings.uiScale = kUiScales[std::clamp(a.value, 0, kUiScaleCount - 1)];
+                        storeSettings();
+                        break;
+                    case T::TogglePanel:
+                        if (a.value >= 0 && a.value < static_cast<int>(HudPanel::Count)) {
+                            ui.settings.folded ^= 1u << a.value;
+                            storeSettings();
+                        }
+                        break;
                     case T::Analyze:
                         ui.analysis = !ui.analysis;
-                        session.MarkAnalysisUsed();
+                        session.Apply(Order(C::AnalysisUsed));
                         break;
                     case T::LoadGame: loadGame(); break;
                     case T::Fire:
-                        if (a.value >= 0) session.Fire(static_cast<WeaponKind>(a.value), target);
-                        else if (session.FireAll(target) == 0) session.Announce("Nada listo para disparar.");
+                        if (a.value >= 0) session.Apply(Order(C::Fire, target, a.value));
+                        else if (!session.Apply(Order(C::FireAll, target))) {
+                            session.Announce("Nada listo para disparar.");
+                            sounds.Play(UiSound::Error);
+                        }
                         break;
                     case T::Track:
-                        if (session.Tracking()) session.StopTracking();
-                        else session.TrackTarget(target);
+                        if (session.Tracking()) session.Apply(Order(C::StopTracking));
+                        else session.Apply(Order(C::Track, target));
                         break;
                     case T::SaveGame:
                         writeGame();
@@ -911,6 +1270,8 @@ int Run(Options options) {
                 }
             };
 
+            bool wasScanning = false;
+            int tutorialDone = session.Conversation().Completions();
             while (running) {
                 ShipControls controls;
                 bool clicked = false;
@@ -946,11 +1307,13 @@ int Run(Options options) {
                         else if (ui.page == MenuPage::Main && e.key.key == SDLK_RETURN) loadGame();
                         else if (e.key.key == SDLK_ESCAPE) {
                             if (ui.page == MenuPage::Main) running = false;
-                            else perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Main)});
+                            else if (ui.page == MenuPage::Interface && ui.settings.uiStyle == UiStyle::Unset) perform({HudActionType::SetUiStyle, 1});  // sin elegir, la de siempre
+                            else perform({HudActionType::MenuPage, static_cast<int>(ui.page == MenuPage::Graphics ? MenuPage::Settings : MenuPage::Main)});
                         }
                     } else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && ui.screen == HudScreen::Paused) {
                         if (e.key.key == SDLK_ESCAPE) {
-                            if (ui.page == MenuPage::Settings) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Main)});
+                            if (ui.page == MenuPage::Graphics) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)});
+                            else if (ui.page == MenuPage::Settings) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Main)});
                             else perform({HudActionType::Resume});
                         }
                     } else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
@@ -994,10 +1357,12 @@ int Run(Options options) {
                             case SDLK_G: perform({HudActionType::Fire, -1}); break;
                             case SDLK_B: perform({HudActionType::Track}); break;
                             case SDLK_K: perform({HudActionType::Shield, -1}); break;
+                            case SDLK_N: session.Apply(Order(CommandType::Cinematic, session.Cinematic() ? 0 : 1)); break;
                             case SDLK_RETURN:
                                 if (session.Phase() == GamePhase::GameOver) perform({HudActionType::Continue});
                                 else perform({HudActionType::NextDialogue});
                                 break;
+                            case SDLK_BACKSPACE: perform({HudActionType::ReplayTip}); break;
                             default: break;
                         }
                     } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
@@ -1025,7 +1390,8 @@ int Run(Options options) {
                         if (e.wheel.mouse_x < l.viewX) ui.atlas.scroll = std::max(ui.atlas.scroll + (e.wheel.y > 0.0f ? -2 : 2), 0);
                         else ui.atlas.zoom = std::clamp(ui.atlas.zoom * (e.wheel.y > 0.0f ? 1.2 : 1.0 / 1.2), ui.atlas.astro ? 0.05 : 0.5, 2.0e5);
                     } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-                        viewDistance = std::clamp(viewDistance * (e.wheel.y > 0.0f ? 0.9 : 1.1), 1.2 * shipScale, 60.0);
+                        // Se puede acercar hasta rozar el casco (hullFloor), pero no meterse dentro.
+                        viewDistance = std::clamp(viewDistance * (e.wheel.y > 0.0f ? 0.9 : 1.1), std::max(0.15 * shipScale, hullFloor), 60.0);
                     } else if (e.type == SDL_EVENT_MOUSE_MOTION && !consoleOpen) {
                         if (atlasDrag) {
                             // Lo que hay bajo el raton lo acompana, como con la camara de la nave.
@@ -1061,17 +1427,42 @@ int Run(Options options) {
                     controls.throttleChange = axis(SDL_SCANCODE_F, SDL_SCANCODE_R) * 0.35;
                 }
 
-                for (const HudAction& a : hud.TakeActions()) perform(a);
+                if (hud.TakeHoverSound()) sounds.Play(UiSound::Hover);
+                for (const HudAction& a : hud.TakeActions()) {
+                    sounds.Play(SoundFor(a.type));
+                    perform(a);
+                }
+                // El sonido del barrido acaba con el barrido: al terminar, al cancelarse o al perder la nave.
+                const bool scanningNow = session.Scanning();
+                if (wasScanning && !scanningNow) sounds.Stop(UiSound::RadarScan);
+                wasScanning = scanningNow;
                 controls.view = viewOrbit;
 
+                for (const Options::TimedCommand& c : options.timedCommands)
+                    if (c.frame == static_cast<int>(rendered)) std::printf("[f%llu] > %s\n%s\n", static_cast<unsigned long long>(rendered), c.text.c_str(), engine.Commands().Execute(c.text).c_str());
                 const auto now = Clock::now();
                 const double realSeconds = std::min(std::chrono::duration<double>(now - last).count(), 0.05);
                 frameSeconds = realSeconds;
                 last = now;
-                session.Step(ui.screen == HudScreen::Playing ? realSeconds : 0.0, controls, static_cast<float>(options.width) * 0.5f);
+                const double stepSeconds = ui.screen == HudScreen::Playing ? realSeconds : 0.0;
+                if (options.fixedStep) session.StepFixed(stepSeconds, controls, static_cast<float>(options.width) * 0.5f);
+                else session.Step(stepSeconds, controls, static_cast<float>(options.width) * 0.5f);
+                // Con --frames, cada cambio de paso del tutorial se anota con el tiempo real que lleva la partida.
+                if (options.frames > 0 && session.Conversation().Step() != lastTutorialStep) {
+                    lastTutorialStep = session.Conversation().Step();
+                    std::printf("[f%llu, %.1f s reales] Tutorial: paso %zu\n", static_cast<unsigned long long>(rendered), std::chrono::duration<double>(now - start).count(), lastTutorialStep);
+                }
+                if (options.frames > 0 && !session.Log().empty() && session.Log().back() != lastLogLine) {
+                    lastLogLine = session.Log().back();
+                    std::printf("[f%llu, %.1f s reales] Registro: %s\n", static_cast<unsigned long long>(rendered), std::chrono::duration<double>(now - start).count(), lastLogLine.c_str());
+                }
+                // Un objetivo del tutorial cumplido suena; el destello lo pinta la interfaz.
+                if (session.Conversation().Completions() != tutorialDone) {
+                    tutorialDone = session.Conversation().Completions();
+                    sounds.Play(UiSound::Confirm);
+                }
                 if (session.TakeSaveDeletion() && !savePath.empty()) {
-                    std::error_code ignored;
-                    std::filesystem::remove(FilePath(savePath), ignored);
+                    DeleteGame(savePath);
                     saved.reset();
                     ui.savedGame.clear();
                     playing = false;  // no queda nada que guardar hasta empezar otra vez
@@ -1095,7 +1486,7 @@ int Run(Options options) {
                 // Apagada, la camara se aparta despacio y rodea la nave mientras se queda a oscuras.
                 const bool adrift = !alive && session.ShutDown();
                 const double age = session.WreckAge();
-                const double reach = alive ? viewDistance : adrift ? viewDistance * 0.6 + std::min(age, 14.0) * 0.12 : viewDistance + std::min(age, 6.0) * 0.9;
+                double reach = alive ? viewDistance : adrift ? viewDistance * 0.6 + std::min(age, 14.0) * 0.12 : viewDistance + std::min(age, 6.0) * 0.9;
                 const Quatd drift = alive ? Quatd{} : adrift ? Quatd::FromAxisAngle({0, 1, 0}, -(age * 0.035 + 0.9)) * Quatd::FromAxisAngle({1, 0, 0}, -0.25 + std::min(age, 14.0) * 0.012)
                                                              : Quatd::FromAxisAngle({0, 1, 0}, -(age * 0.08 + 0.5));
                 // La camara no va clavada al casco: lo sigue con un poco de retraso, y asi los giros
@@ -1111,9 +1502,35 @@ int Run(Options options) {
                 mixed.w = smoothed.w + (follow.w - smoothed.w) * blend;
                 smoothed = mixed.Normalized();
                 const Quatd chase = smoothed * viewOrbit * drift;
+                // De cerca, la camara se para fuera del casco: se ven las piezas de cerca sin meterse
+                // dentro. Un rayo desde lejos hacia el centro dice hasta donde sobresale la nave por
+                // ese lado; solo se repite cuando la vista gira.
+                if (alive) {
+                    const Vec3d back = chase.ToMatrix().TransformDirection(Vec3d{0.0, -0.26, -1.0});
+                    const double along = Length(back);  // la camara queda a reach * along del centro
+                    if (viewDistance * along < rules.ship.bow * 1.6 + 0.1) {
+                        const Vec3f look(Normalize(ship.orientation.Conjugate().ToMatrix().TransformDirection(back)));
+                        if (Dot(look, hullLook) < 0.9995f) {
+                            hullLook = look;
+                            const double hull = layer.HullReach(look) * 0.001;
+                            hullFloor = hull > 0.0 ? (hull * 1.08 + 0.06) / along : 0.0;  // a 60 m o mas del casco
+                        }
+                    } else {
+                        hullLook = Vec3f{0, 0, 0};
+                        hullFloor = 0.0;
+                    }
+                    reach = std::max(reach, hullFloor);
+                }
                 const Vec3d offset = chase.ToMatrix().TransformDirection(Vec3d{0.0, -reach * 0.26, -reach});
                 camera.SetPosition(center + offset);
                 camera.SetOrientation(Quatf::Cast(chase * Quatd::FromAxisAngle({1, 0, 0}, -(std::atan(0.26) + 0.08))));
+                // Modo cinematica: tras un impacto en el blanco, la camara lo rodea mirando al golpe.
+                Vec3d shotEye;
+                Quatd shotLook;
+                if (session.CinematicShot(shotEye, shotLook)) {
+                    camera.SetPosition(shotEye);
+                    camera.SetOrientation(Quatf::Cast(shotLook));
+                }
                 if (session.OnFoot()) {
                     // A pie: la cabeza mira con el raton; en tercera persona, la camara va detras y no
                     // atraviesa las paredes.
@@ -1156,6 +1573,14 @@ int Run(Options options) {
                 const Vec3d absolute = ship.position + world.origin;
                 const Vec3f fogDrift(Vec3d{std::fmod(absolute.x / 3.0e8, 16.0), std::fmod(absolute.y / 3.0e8, 16.0), std::fmod(absolute.z / 3.0e8, 16.0)});
                 engine.SetFog(static_cast<float>(session.Visibility()), fog, fogDrift);
+                {
+                    // La nebulosa es una nube alrededor: la camara se mueve dentro de una baldosa de
+                    // ruido de 12 veces la visibilidad tipica. Se cuenta en double para no temblar.
+                    const double tile = rules.world.fogDistance * 12.0;
+                    const Vec3d cameraAbsolute = camera.Position() + world.origin;
+                    const auto wrap = [&](double v) { const double x = v / tile; return static_cast<float>(x - std::floor(x)); };
+                    engine.SetFogCloud(Vec3f{wrap(cameraAbsolute.x), wrap(cameraAbsolute.y), wrap(cameraAbsolute.z)}, static_cast<float>(tile));
+                }
                 engine.SetFogRamp(NebulaRamp(), session.NebulaTone());
 
                 // Curvatura: cuanto mas cerca de c, mas se concentra el cielo por delante.

@@ -1,0 +1,21 @@
+Sonidos de la interfaz de Nebulosa
+==================================
+
+ui_click, ui_hover, ui_confirmar, ui_error, ui_panel
+    Sintetizados para el juego con tools/sfx_ui.py y el generador del mismo estilo. Son originales:
+    no llevan muestras de terceros y no tienen licencia externa.
+
+ui_radar_barrido.wav  (sonido del barrido de microondas y ultravioleta)
+    Derivado del archivo freesound_community-mrifromscrew-52510.mp3, de freesound_community
+    en Pixabay: https://pixabay.com/es/users/freesound_community-46691455/
+    Licencia: Pixabay Content License. Permite el uso, tambien comercial, y la modificacion,
+    sin atribucion obligatoria. No permite vender ni redistribuir el sonido sin modificar como
+    archivo suelto ni usarlo para dar a entender un respaldo de su autor.
+    Resumen oficial: https://pixabay.com/service/license-summary/
+    Credito: Sound Effect by freesound_community from Pixabay.
+
+    Cambios hechos: se detectaron los chasquidos del audio original, se escogieron 100 y se
+    ordenaron del tono mas agudo al mas grave (unos 2166 a 468 Hz); se les resto unos 19 dB y se
+    les anadio un eco de nave. Encima va una interferencia aguda muy baja (estatica de radio y
+    un silbido de unos 9,5 kHz) sintetizada para el juego, sin material de terceros.
+    Resultado: mono, 24 kHz, 30,0 s, WAV de 32 bits en coma flotante.

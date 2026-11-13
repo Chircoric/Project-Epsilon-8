@@ -52,21 +52,21 @@ Las teclas de vuelo también funcionan con el cursor activo; solo el ratón deja
 
 ### Rueda de opciones
 
-T abre la rueda y un clic elige; también se puede mantener el botón central, mover el ratón y soltar. La nave sigue volando, sin mandos, mientras está abierta. Las trece opciones están siempre en el mismo sitio, y lo que no sirve ahora se ve apagado: Escáner, Ir o Parar, Órbita, Atracar o Soltar, A pie, Usar, Mina, Central, Mejorar, Análisis, Mapa, Disparar y **Trayectoria** (o Quitar ruta).
+T abre la rueda y un clic elige; también se puede mantener el botón central, mover el ratón y soltar. La nave sigue volando, sin mandos, mientras está abierta. Las opciones están siempre en el mismo sitio, y lo que no sirve ahora se ve apagado: Escáner, Ir o Parar, Órbita, Atracar o Soltar, A pie, Usar, **Drones** (o Recoger drones), Central, **Estación** (suelta la origami), Mejorar, Análisis, Mapa, Disparar, **Trayectoria** (o Quitar ruta) y Taller.
 
 **Trayectoria** dibuja en verde lo que va a recorrer la nave en los próximos 30 segundos reales con el mando y el giro que lleva: una copia de la nave vuela sola, girando hacia donde apuntas y con la gravedad de ahí (junto a una estación, en su marco y con sus topes). Lleva una marca cada 5 segundos y «+30 s» al final.
 
 ### Atraque
 
-Cada estación tiene una **escotilla** con luz verde: la mina, en el costado del núcleo, entre dos brazos; la central, encima del depósito, lejos de los colectores. Con una estación propia como objetivo, **Atracar** en la rueda la lleva hasta ella, con la ruta si está lejos. A unos 50 000 km engancha un **haz de atraque** que primero la rodea, sin atravesarla, hasta ponerla delante de la escotilla, y luego la mete en línea recta con la proa por delante: no hay rebotes ni forma de pasarse. Atracada, la proa toca la escotilla y la sigue aunque la estación gire u orbite; se repara el casco y la partida se guarda así. Al dar mando, o con Soltar, sale; recién soltada, esa estación no choca hasta que la nave se aparta.
+Cada estación tiene una **escotilla** con luz verde: la central, encima del depósito, lejos de los colectores; la origami, en la esclusa del nudo 1, por fuera del anillo. En la origami la nave atraca paralela al eje del anillo. Con una estación propia como objetivo, **Atracar** en la rueda la lleva hasta ella, con la ruta si está lejos. A unos 50 000 km engancha un **haz de atraque** que primero la rodea, sin atravesarla, hasta ponerla delante de la escotilla, y luego la mete en línea recta con la proa por delante: no hay rebotes ni forma de pasarse. Atracada, la nave pone su compuerta frente a la escotilla, con la proa de lado, y un ducto las une. En la maqueta la compuerta está a estribor; en la nave glTF es la bahía de atraque bajo el puente, así que la nave se tumba hasta que su panza mira a la escotilla (el nodo vacío `atraque` del modelo dice dónde está y hacia dónde mira). La nave sigue a la escotilla aunque la estación gire u orbite; se repara el casco y la partida se guarda así. Al dar mando, o con Soltar, sale; recién soltada, esa estación no choca hasta que la nave se aparta.
 
 Sin atracar también se puede arrimar a mano hasta la escotilla. A menos de 3000 km de una estación propia, el tiempo se frena y la velocidad respecto a ella se recorta según la distancia, contada en segundos reales: acercarse va a la distancia entre 12 s y alejarse, entre 6 s. A menos de **25 km** el tiempo corre como el real y mandan los **propulsores finos**: acercarse va a la distancia entre 15 s (20 m/s como poco) y rodearla o alejarse, entre 12 s (120 m/s como poco). La nave cuenta como lo que es, 1,2 km de proa a popa y 400 m de ancho, así que puede pasar junto al casco; rozarlo a esas velocidades apenas abolla. El centro de la pantalla dice en qué zona estás y la velocidad máxima. Sin mando, unos estabilizadores frenan la deriva y la nave se queda al lado.
 
-En esos 3000 km la nave vuela **en el marco de la estación**: la estación la lleva consigo mientras orbita, su planeta o su estrella no tiran de ella y la velocidad que se ve es respecto a la estación. Al soltar amarras se queda donde estaba, y con el mando se mueve a su alrededor sin que la órbita la deje atrás. Una mina en un cinturón va a decenas de km/s con su cúmulo, y antes se quedaba atrás en cada paso (por eso la nave salía despedida); ahora va pegada. Alrededor de una mina en un cúmulo no quedan rocas en 15 km: las ha despejado ella.
+En esos 3000 km la nave vuela **en el marco de la estación**: la estación la lleva consigo mientras orbita, su planeta o su estrella no tiran de ella y la velocidad que se ve es respecto a la estación. Al soltar amarras se queda donde estaba, y con el mando se mueve a su alrededor sin que la órbita la deje atrás.
 
 ### A pie
 
-Atracada, **A pie** en la rueda baja a la cubierta de la estación: un hangar de 60 por 40 m con galería, escalera, columnas y carga. El de una mina tiene cajas de mineral y una cinta, y el de una central el núcleo de antimateria. Hay tres tripulantes que van de un sitio a otro. El tiempo corre a tiempo real, no a 60 veces. La gravedad es artificial, de 1 g. Se vuelve con E junto a la esclusa, la puerta azul.
+Atracada, **A pie** en la rueda baja a la cubierta de la estación: un hangar de 60 por 40 m con galería, escalera, columnas y carga. El de la central tiene el núcleo de antimateria. Hay tres tripulantes que van de un sitio a otro. El tiempo corre a tiempo real, no a 60 veces. La gravedad es artificial, de 1 g. Se vuelve con E junto a la esclusa, la puerta azul.
 
 Las personas usan un motor propio, [Humanoid.h](../engine/include/epsilon/Humanoid.h), en metros y con Y hacia arriba, dentro de un recinto que el juego coloca en el mundo. Así sus centímetros no se pierden aunque estén a muchas unidades astronómicas del origen. El cuerpo mide 1,8 m por 0,6, anda a 1,6 m/s, corre a 4,5, salta medio metro, sube solo escalones de 40 cm y no atraviesa nada. Con gravedad 0 flota, para cuando haga falta salir al vacío. La cubierta es una lista de cajas, [OnFoot.h](include/game/OnFoot.h): las mismas sirven para chocar y para dibujarse, así lo que se ve es lo que se pisa.
 
@@ -103,30 +103,38 @@ Esc vuelve atrás desde cualquier página. La configuración también se abre de
 
 Lo que más alivia a una tarjeta modesta es la escena: en Baja se pinta a la mitad de resolución, la cuarta parte de los píxeles, y luego se amplía. La interfaz va siempre a resolución completa, así que el texto sigue nítido. La configuración se guarda en `%APPDATA%\Epsilon\Nebulosa\ajustes.txt` y vale para todas las partidas. Los perfiles están en [Settings.cpp](src/Settings.cpp).
 
+**Gráficos**, dentro de Configuración (en el menú y en la pausa), deja cambiar cada cosa por separado: resolución de la escena (50, 67, 75 o 100 %), detalle de superficies, luz y nebulosa, daño del casco, bloom, grano y aberración, y las sombras de la nave. Elegir una calidad las pone todas de golpe; tocar una después deja la calidad como «Personalizada».
+
 ## Modos de juego
 
 | Modo | Daño | Al perder la nave |
 |---|---:|---|
 | Pacífico | Ninguno | Nada te ataca |
-| Fácil | ×0,5 | Vuelves al punto de control sin perder carga |
-| Normal | ×1 | Vuelves y pierdes un cuarto de la bodega |
-| Difícil | ×1,6 | Vuelves y pierdes la mitad de la bodega |
+| Fácil | ×0,5 | Reapareces sin perder carga |
+| Normal | ×1 | Reapareces y pierdes un cuarto de la bodega |
+| Difícil | ×1,6 | Reapareces y pierdes la mitad de la bodega |
 | Realista | ×1,6 | Lo pierdes todo y empiezas de cero |
 
-Se guarda un punto de control al desplegar una estación, al recoger de ella y al vaciar una estructura. Los emisores de energía negativa recuperados no se pierden en ningún modo salvo en Realista.
+Al perder la nave **el mundo no vuelve atrás**: estaciones, anomalías, reloj y lo descubierto siguen como estaban. La nave reaparece reparada y atracada en la última estación propia donde atracó, o en el punto de partida si no ha atracado en ninguna. Conserva niveles, emisores y lo que lleva montado, salvo los módulos que perdió en combate; de la bodega pierde lo que diga el modo. Es así porque el mismo mundo lo compartirán varias naves (`docs/multijugador.md`).
 
 ### Partidas guardadas
 
-La partida se guarda sola en cada punto de control, al localizar algo con el escáner y al salir. También hay un botón en la pausa. El menú ofrece seguir la partida guardada; una partida nueva la sustituye al llegar al primer punto de control. En Realista, perder la nave borra el archivo.
+Una partida es una carpeta, `%APPDATA%\Epsilon\Nebulosa\partida\`, con dos clases de archivo de texto (formato 13, `game/include/game/SaveGame.h`):
+
+- `mundo.sav`: lo que existe aunque no haya nadie jugando. Reloj, estaciones, anomalías, la especie y las naves.
+- `jugadores/<id>.sav`: lo de cada jugador. Qué nave lleva, el tutorial y lo que conoce (sistemas y astros analizados). El `<id>` se crea al azar la primera vez y se guarda en `ajustes.txt`.
+
+Las partidas anteriores, de un solo archivo `partida.sav`, ya no se cargan: el menú lo dice y hay que empezar una misión nueva.
+
+La partida se guarda sola al desplegar una estación, al recoger de ella, al atracar, al vaciar una estructura, al localizar algo con el escáner y al salir. También hay un botón en la pausa. El menú ofrece seguir la partida guardada; una partida nueva la sustituye la primera vez que se guarda. En Realista, perder la nave borra el archivo.
 
 El archivo está en `%APPDATA%\Epsilon\Nebulosa\partida.sav`. Es texto, una línea por dato, con el nombre del dato delante:
 
-- Se puede abrir y leer, y una versión nueva del juego puede añadir líneas sin romper las antiguas.
+- Se puede abrir y leer.
 - Los números vuelven exactamente iguales al cargar.
 - La última línea es una suma de control: un archivo cortado o tocado a mano se rechaza en lugar de cargarse a medias, así que editarlo a mano no sirve.
 - Se escribe en un archivo temporal y luego sustituye al bueno. Un corte de luz al guardar no destruye la partida anterior.
-- Una partida de antes de la versión 4 sigue valiendo: la materia oscura de la bodega se descarta, y haberla encontrado cuenta como el primer emisor de energía negativa.
-- Una de antes de la versión 5 se carga con los escudos y refrigerantes de serie, llenos, y la nave fría; los alienígenas reciben su escudo al cargar.
+- **Solo se carga la versión actual del formato (11).** Una partida de una versión anterior no se migra: se rechaza, y el menú dice por qué («partida de la versión 10, anterior a la actual…») y que hay que empezar una misión nueva, que la sustituye.
 
 Si hubiera que ocultar los datos, bastaría con cambiar [SaveGame.cpp](src/SaveGame.cpp): el resto del juego no conoce el formato.
 
@@ -138,13 +146,17 @@ Cuando el casco llega a cero, la nave se desmantela: las piezas se sueltan, esta
 
 Las cifras son unidades reales: la energía va de **petajulios a yottajulios** (PJ, EJ, ZJ, YJ) y la potencia de **gigavatios a exavatios** (GW, TW, PW, EW); la masa, en **toneladas, kilotoneladas y megatoneladas** (t, kt, Mt). Las conversiones están en [Units.h](include/game/Units.h).
 
-La nave guarda 1 ZJ de energía, 120 kt de antimateria y 3 Mt de carga. Una central junto a una estrella como el Sol capta unos 750 EW, dos millonésimas de su luz: un enjambre de espejos de unos 28 000 km de lado a esa distancia. Una mina da unas decenas de kt por hora.
+La nave guarda 1 ZJ de energía, 120 kt de antimateria y 3 Mt de carga. Una central junto a una estrella como el Sol capta unos 750 EW, dos millonésimas de su luz: un enjambre de espejos de unos 28 000 km de lado a esa distancia. Cada dron minero da unas decenas de kt por hora.
 
 ## Mecánicas
 
 ### La nebulosa
 
 La niebla oculta lo opaco según la distancia, y su espesor cambia de una zona a otra. Va del rojo al gris pasando por el naranja y el amarillo: el color cambia por zonas al viajar y también de un lado a otro del cielo.
+
+Es una nube de verdad alrededor de la nave (`nebula.hlsl`, `GasAt`): masas de gas que brillan con filamentos, calles de polvo gris que las cortan y huecos por los que se ve la nebulosa lejana. Cada masa tiene su color de la paleta, rojo, naranja, ocre o gris. Las formas están en el espacio, en baldosas de 12 veces la visibilidad (4,8 millones de km), así que se mueven al viajar. La luz depende de las estrellas cercanas: cae con el cuadrado de la distancia (plena a 1 UA de un sol, un cuarto a 5 UA, casi nada a 20 UA), y el borde de cada masa vuelto hacia la estrella se enciende. Lejos de los soles la nube es rojiza y oscura; junto a ellos brilla en naranja y amarillo. Los pasos por rayo dependen de la calidad: 12, 18, 26 o 34.
+
+Dentro de la nebulosa el lado de noche de los planetas no queda negro: recibe la luz de la nube, de su color. En Ultra, los planetas llevan además dispersión atmosférica (el suelo se lava hacia el borde y la luz del sol se enrojece al atravesar el aire), suelo rugoso (Oren-Nayar) y mar con Fresnel y brillo de microfacetas.
 
 Los planetas con atmósfera muestran aire iluminado sobre el borde, del color de su aire. Se apaga hacia el espacio y en el lado de noche, y su grueso cambia de un punto a otro y con el tiempo.
 
@@ -154,6 +166,7 @@ Las estrellas dispersan su luz en la niebla, con un brillo suave que no depende 
 
 ### Luz sobre la nave
 
+La nave proyecta sombras sobre sí misma: cada fotograma se dibuja vista desde su estrella en un mapa de sombras de 2048 × 2048, con penumbra suave (doce muestras en disco). La luz del sol se mide con la raíz del flujo: a 1 UA es plena y las sombras son casi negras; a 5 UA aún se nota; a 20 UA casi todo es la luz de la nebulosa. Un planeta o una luna entre la nave y su estrella la eclipsa, con penumbra. Las chapas iluminadas devuelven luz a lo que tienen alrededor (rebote), así que la sombra no es negra sino del color del sol, más tenue. La pintura blanca del casco es cerámica mate, como la de la NASA (rugosidad alrededor de 0,75, reparto de Oren-Nayar), y la luz ambiente de la nebulosa es más fuerte en la cara que mira a la estrella.
 Lejos de todo, la niebla reparte una luz suave de su mismo color. Cerca de una estrella o de un agujero negro manda una sola fuente: el lado iluminado brilla y las sombras son casi negras. Un planeta cercano devuelve la luz con su propio color, igual que una segunda estrella. Vale para la nave, las estaciones y los alienígenas. Lo que no se ve aparece en los sensores: primero como una señal sin identificar y, al acercarse, con su nombre y su actitud.
 
 ### Manejo y física
@@ -173,14 +186,14 @@ El punto de mira se dibuja con el color inverso de lo que tiene detrás, así qu
 
 ### Ruta asistida
 
-Con un objetivo, Ir, en la rueda, calcula y vuela la ruta: orienta la nave, viaja en crucero, forma una burbuja si va a otra estrella y hay antimateria para ello, frena y la deja en órbita circular, o junto a una estación. Rodea lo que se cruce, a 1,15 radios de un planeta y a 4 de una estrella, y reduce para poder trazar la curva. El lateral muestra la fase, la distancia y el tiempo que queda. Llegar a una mina al otro lado de un planeta lleva unos 20 segundos.
+Con un objetivo, Ir, en la rueda, calcula y vuela la ruta: orienta la nave, viaja en crucero, forma una burbuja si va a otra estrella y hay antimateria para ello, frena y la deja en órbita circular, o junto a una estación. Rodea lo que se cruce, a 1,15 radios de un planeta y a 4 de una estrella, y reduce para poder trazar la curva. El lateral muestra la fase, la distancia y el tiempo que queda. Llegar a una central al otro lado de su estrella lleva unos 80 segundos reales, con el tiempo a 600.
 
 La ruta no corre cerca de una masa: su velocidad depende de lo lejos que esté de cualquier cuerpo, y frena con margen para no pasarse nunca. Se probaron 18 rutas por tres galaxias, sin un rasguño.
 
 ### Choques y calor
 
 - Contra un planeta, una luna o un asteroide por encima de **1 km/s**, la nave **se hace añicos**. Por debajo, abolla el casco según el cuadrado de la velocidad.
-- Las **naves, bastiones, estructuras y estaciones propias también son sólidos**, con las mismas reglas de velocidad. Embestir una nave o un bastión le hace el mismo daño que recibe tu casco, y lo vuelve hostil. Atracando, la estación deja pasar a la nave. Con las estaciones propias cuenta la eslora entera de la nave, de proa a popa, y la esfera real de la estación (0,32 km la mina, 0,45 km la central).
+- Las **naves, bastiones, estructuras y estaciones propias también son sólidos**, con las mismas reglas de velocidad. Embestir una nave o un bastión le hace el mismo daño que recibe tu casco, y lo vuelve hostil. Atracando, la estación deja pasar a la nave. Con las estaciones propias cuenta la eslora entera de la nave, de proa a popa, y la esfera real de la estación (0,45 km la central). La origami es un anillo hueco de 470 m de radio y 45 m de grueso: cuenta la distancia al tubo, así que se puede pasar por dentro.
 - Las **rocas sueltas del anillo** también son sólidas (ver Cinturones).
 - Tocar una estrella la **vaporiza**. Dentro de **4 radios**, el calor quema el casco con la cuarta potencia de la distancia, y a 1,5 radios la evapora en unos segundos; cada nivel de blindaje de más acorta esa zona. La órbita de trabajo de una estación está mucho más lejos, a 8 radios.
 - Un paso largo no se salta nada: se comprueba todo el tramo recorrido, también en curvatura.
@@ -245,6 +258,12 @@ El juego carga la nave de `modelos/nave.glb` (o `.gltf`), junto al ejecutable, o
   - Con varias piezas por zona basta con empezar el nombre por la zona: `bodega_3_blindaje`, `gondola_babor_tobera`, `nucleo_motor_principal`.
 - **Anillos que giran:** una pieza cuyo nombre empieza por `rotor1_`, `rotor2_`… gira alrededor del eje de la nave. Los impares giran en un sentido y los pares en el otro, a la velocidad que da 1 g en la cara interior del anillo. Un anillo dañado gira más despacio, uno suelto sigue girando por inercia y, con la nave apagada, se van parando. Los cráteres giran con su anillo.
 - **Color, textura y brillo:** se usa el color base del material. Una textura en un archivo aparte se carga; una incrustada en el `.glb` todavía no. La emisión del material, con su intensidad (`KHR_materials_emissive_strength`, que Blender exporta solo), da el brillo propio de la pieza (luces y ventanas), y se apaga con el daño de su zona como el de la maqueta.
+- **Lámparas que alumbran:** según el nombre de la pieza, el juego la trata como lámpara (`GameLayer::LampOfPart`):
+  - las «baliza» dan un destello doble blanco cada 1,6 s;
+  - «luz_babor» y «luz_estribor» laten en rojo y verde;
+  - los focos cuyo nombre acaba en «_luces» (salvo las franjas del anillo) alumbran fijos.
+
+  Cada una ilumina el casco que tiene cerca, hasta 65–90 m, con una luz puntual del motor (`FramePacket::pointLights`, hasta 64 por fotograma; si hay más, cuentan las más cercanas a la cámara; sombreadas en `mesh.hlsl`), y las balizas y las de navegación llevan un halo. Lo que lleve «soporte», «mastil» o «base» en el nombre no es lámpara.
 
 ### Módulos
 
@@ -258,6 +277,7 @@ La nave se arma por módulos ([ShipModules.h](include/game/ShipModules.h)). Todo
   | Aleta de radiador | +25 % de refrigeración | 180 + 40 |
   | Antena de sensores | +30 % de alcance del escáner | 150 + 90 |
   | Placa de blindaje | Su zona aguanta un 40 % más | 320 |
+  | Bahía de drones | Dos drones mineros (ver Drones mineros). La nave sale con dos, en `hp_torreta_5` y `hp_torreta_6` | 300 + 120 |
 
 - **Bahías interiores:** no se ven. Hay dos por bodega, tres en la espina, dos en el núcleo, una en el puente y una en la proa:
 
@@ -343,7 +363,7 @@ En el centro hay un modelo en 3D. Se gira arrastrando con el ratón y se acerca 
 
 La rueda del ratón acerca cambiando el enfoque, no moviendo la cámara: así las órbitas no se deforman al pasar entre ellas. Arrastrar gira en el sentido de la mano, como la cámara de la nave.
 
-**Elementos.** Planetas, lunas, asteroides y estrellas tienen su composición por elementos, en porcentaje de masa: hidrógeno, helio, carbono, nitrógeno, oxígeno, magnesio, aluminio, silicio, azufre, calcio, hierro y níquel. Sale de sus materiales con recetas reales: un núcleo de hierro y níquel, rocas como el manto terrestre, agua, hielos de metano y amoníaco, y gas como el del Sol. Las estrellas usan su hidrógeno, su helio y los metales en proporción solar; los campos de asteroides, lo que daría una mina. Se ve en los datos del mapa y del análisis.
+**Elementos.** Planetas, lunas, asteroides y estrellas tienen su composición por elementos, en porcentaje de masa: hidrógeno, helio, carbono, nitrógeno, oxígeno, magnesio, aluminio, silicio, azufre, calcio, hierro y níquel. Sale de sus materiales con recetas reales: un núcleo de hierro y níquel, rocas como el manto terrestre, agua, hielos de metano y amoníaco, y gas como el del Sol. Las estrellas usan su hidrógeno, su helio y los metales en proporción solar; los campos de asteroides, lo que sacarían los drones. Se ve en los datos del mapa y del análisis.
 
 **Tabla periódica.** El botón **Tabla periódica** del mapa, o **Ver los 118 elementos** en los datos, enseña el porcentaje en masa de todos los átomos de lo elegido, del hidrógeno al oganesón, en su sitio de la tabla. El color de cada casilla dice cuánto hay en escala logarítmica, y al pasar el ratón sale el valor exacto, en ppm o ppb si es una traza. Los doce de arriba salen de las recetas. El resto sale de las abundancias de las condritas CI y del Sol (Lodders, 2003), repartidas según a qué se une cada elemento: los siderófilos, como el platino o el oro, van con el hierro; los calcófilos, como el cobre o el plomo, con el azufre; los litófilos, como las tierras raras o el uranio, con la roca; los volátiles, con el agua y los hielos; y los gases nobles, con el helio. Los hijos radiactivos del uranio, como el radio o el polonio, salen del equilibrio secular. Cada astro se aparta un poco de la media según su semilla, y a veces tiene una veta de un elemento escaso. Del 95 en adelante no hay nada: solo se fabrican. Servirá para diseñar tecnología y piezas.
 
@@ -366,14 +386,19 @@ Tampoco se conoce otro sistema hasta que un barrido lo localiza o se llega a él
 - La esfera real del astro, girando.
 - Un holograma del sistema con todas las órbitas, en escala logarítmica y con el astro resaltado.
 - Sus datos, composición y órbita.
-- Lo que daría una mina o una central.
+- Lo que sacarían los drones o daría una central.
 
 - La nave debe estar **quieta o en órbita**. Si enciende el motor, el barrido se pierde.
 - Gasta **160 EJ** y dura 30 segundos.
 - Encuentra anomalías a **6 UA** con el nivel 1, y localiza sistemas a unos **0,17 años luz**. Todo llega más lejos con cada nivel.
 - Lo mejor escondido pide más nivel: el barrido avisa de una señal débil.
 
-La estructura del sistema inicial está lejos de la nave al empezar, así que hay que moverse y repetir. `escaner 3` prueba otro nivel desde la consola.
+**Eco frío.** Lo frío que queda fuera del alcance pero dentro del **radio de eco** (4 veces el alcance: unas **24 UA** con el nivel 1; crece con el nivel y con las antenas de sensores) no se revela, pero el barrido da su **rumbo** (en grados sobre el plano del sistema, con su elevación) y su **distancia en UA**, y lo marca en pantalla con un círculo violeta, o con una flecha junto al anillo de giro si queda fuera de la vista. Con el nivel 1 el rumbo puede errar hasta 25° y la distancia un 30 %; cada nivel de más reduce los dos errores a la mitad. Si hay varios, señala el más cercano. La pista se borra al revelar lo que señalaba o al salir del sistema, y no se guarda: basta con barrer otra vez.
+
+- **La firma manda:** algo que pide más nivel que el del escáner no da rumbo; el barrido solo avisa de una «señal débil más allá del alcance» y del nivel que pide.
+- **El tutorial la garantiza:** mientras está en el paso de la estructura, la pista es exacta y llega aunque el eco no alcance (sin saltarse la firma). Fuera de ese paso, la regla normal.
+
+**La primera estructura** del sistema inicial está a entre **1,5 y 4 UA de su estrella** (`firstDerelictMinAu` y `firstDerelictMaxAu` en [Balance.h](include/game/Balance.h)): un barrido desde la órbita de la estrella, adonde el tutorial lleva para la central, la encuentra con el nivel 1. Desde la salida, a unas 10 a 25 UA, suele quedar dentro del eco. La posición sale de la semilla y gasta los mismos números que antes, así que el resto del reparto no cambia. `escaner 3` prueba otro nivel desde la consola, y `sondeo` dice a cuánto está cada anomalía fría y qué pista hay.
 
 ### Combate
 
@@ -433,14 +458,49 @@ Los que se gastan solo entran por encima del 40 %, primero los baratos. El panel
 
 | Estación | Dónde | Gratis | Después |
 |---|---|---|---|
-| Mina | Planetas y campos de asteroides | Mientras tengas menos de 3 | 150 kt de metal y 80 kt de silicatos |
+| Origami | En cualquier punto de un sistema, fuera de órbita y casi parada | Va a bordo desde el principio; hay una sola | — |
 | Central | Estrellas y agujeros negros | Solo la primera | 300 kt de metal y 200 kt de silicatos |
 
-Lo que da una mina sale de la composición real del sitio. Las dos producen solas, aunque estés en otro sistema, y guardan lo producido. **Hay que ir en persona a recogerlo**; `relayTier` deja preparado el enlace a distancia para más adelante. En órbita de una central propia, además, se repara el casco.
+**Estación origami (nivel 1).** Viaja plegada alrededor de las bodegas, entre los dos anillos de curvatura. La sujeta un **andamio provisional**:
+- dos anillos de celosía alrededor de los tanques;
+- abrazaderas en la espina, con radios que pasan entre los tanques;
+- un puntal recto hasta cada nudo.
 
-Cada estación tiene 4 huecos y cada módulo llega al nivel 5: taladro y tolva en la mina; colector, condensador y cuchara en la central.
+Al soltarla (**Estación** en la rueda, o `estacion` en la consola):
+1. Los puntales se pliegan contra el anillo del andamio durante 1 s.
+2. Se abre alrededor de la nave durante 9 s: es una corona en zigzag de 16 módulos que se aplana en un anillo de 1026 m.
+3. Se aparta 1,6 km hacia popa durante 12 s, sin llevarse la nave.
+4. Saca sus ocho brazos durante 6 s: cuatro con impresoras 3D y cuatro con láseres. A la vez, el andamio se suelta: sale despedido por sectores hacia fuera, dando vueltas, y se desecha a unos 2,5 km (`GameLayer::ScaffoldMotion`).
 
-Al desplegarla, las piezas salen de la nave por un haz y se montan una tras otra durante 6 segundos.
+Después:
+- Se queda quieta junto al planeta que domina ese punto o, si no hay ninguno, en el sistema.
+- Tiene ocho esclusas como la de la nave. La nave atraca en la del nudo 1, paralela al eje del anillo para que los anillos no choquen.
+- **Usar** (o ENTREGAR) le da todo el metal y el silicato de la bodega, salvo los 60 kt de silicato que son la munición del escudo de arena. Ese material servirá para construir naves.
+- No produce ni es modular hasta que exista la primera nave minera.
+- Para chocar cuenta como un anillo hueco: se puede pasar por dentro.
+
+Las cifras están en `StationRules` ([Balance.h](include/game/Balance.h)). El modelo y su animación son `modelos/estacion.gltf`; sus notas, en [assets/modelos/estacion_origami](../assets/modelos/estacion_origami/LEEME.md).
+
+Una central produce sola, aunque estés en otro sistema, y guarda lo producido. **Hay que ir en persona a recogerlo**; `relayTier` deja preparado el enlace a distancia para más adelante. En órbita de una central propia, además, se repara el casco. Tiene 4 huecos, y cada módulo (colector, condensador y cuchara) llega al nivel 5. Al desplegarla, las piezas salen de la nave por un haz y se montan una tras otra durante 6 segundos.
+
+La estación de minería ya no existe: la minería la hacen los drones. Las partidas viejas que tenían una la pierden al cargarse; el resto se conserva.
+
+### Drones mineros
+
+La nave sale con dos **bahías de drones**, módulos exteriores montados en `hp_torreta_5` y `hp_torreta_6`, en el módulo de popa. Cada bahía lleva dos drones de 34 m, posados encima. Una bahía nueva se monta en el taller como cualquier módulo exterior: cuesta 300 kt de metal y 120 de silicato.
+
+- Con un planeta o un campo **analizado** como objetivo, a menos de 40 000 km de su borde y con el impulso, **Drones** (en la rueda o en el panel del objetivo) los manda allí.
+- Cada dron hace este ciclo:
+  1. Vuela a 12 km/s simulados hasta la superficie, del lado de la nave, o hasta el cúmulo.
+  2. Mina hasta llenar su bodega de 20 kt, a 18 kt por hora con riqueza 1.
+  3. Vuelve y descarga en la nave según la composición del sitio.
+  4. Repite.
+- Con la bodega llena esperan posados con el mineral.
+- **Drones** otra vez, o `recoger-drones`, los hace volver.
+- Vuelven solos si la nave se aleja más de 200 000 km del sitio. Si la nave enciende otro motor que el impulso, se repliegan de golpe y descargan lo que traigan.
+- Una bahía perdida se lleva sus drones. Los drones no se guardan: al cargar una partida están todos posados y vacíos.
+
+Fuera se ven por el brillo de sus motores; minando, la broca chispea. Las cifras están en `DroneRules` ([Balance.h](include/game/Balance.h)). Los modelos son `modelos/dron.gltf` y `modelos/bahia_drones.gltf`; sus notas, en [assets/modelos/drones](../assets/modelos/drones/LEEME.md).
 
 ### Cinturones
 
@@ -484,7 +544,11 @@ Cada estructura guarda un emisor de energía negativa. Sacarlo lleva 2 horas sim
 
 ![Tutorial](../docs/juego_tutorial.png)
 
-El primer sistema enseña lo básico con diálogos de la IA de a bordo, escritos letra a letra: manejo, cursor, escaneo, análisis, mina, central, recoger y estructura. Cada paso espera a que lo hagas, y el juego no se detiene mientras tanto. `Dialogue` sirve para cualquier otra conversación: basta con darle otra lista de pasos.
+El primer sistema enseña lo básico con diálogos de la IA de a bordo, escritos letra a letra y con una sola idea por línea. Son 13 pasos: mando, frenar, cursor, escáner, análisis, drones mineros, estación origami (opcional: Enter la guarda para otro sitio), central, recoger, estructura, explorarla, burbuja Híbrida y despedida. Cada paso espera a que lo hagas, y el juego no se detiene mientras tanto.
+
+Mientras el objetivo está en pantalla, la interfaz **señala dónde se hace**: un marco cian que late y una flecha hacia la tecla, el panel o el botón. Una opción de la rueda se ilumina dentro de la rueda abierta; con la rueda cerrada se señala la T. Una ventana plegada se señala por su cabecera, con cómo desplegarla. Lo que no está a la vista sale en una etiqueta bajo el objetivo. Bajo el objetivo va también **lo que aún falta**, con cifras: «Nave quieta: no, va a 33 km/s (Espacio)», «Energía insuficiente: faltan 40 EJ», «Distancia: 10.17 UA, hace falta menos de 151461 km (Ir)» o, en la Híbrida, el coste de la burbuja junto a la antimateria que hay. En el paso de la estructura, la pista del escáner sale en el radar como un anillo violeta. Al cumplir un objetivo suena la confirmación y destella el borde de la pantalla; **REPETIR** (o Retroceso) vuelve a decir las líneas del paso.
+
+Lo que se señala es un `Highlight` de [Tutorial.h](include/game/Tutorial.h); `DialogueStep::guide` lo afina y dice qué falta. `Dialogue` sirve para cualquier otra conversación: basta con darle otra lista de pasos. Las partidas de antes del tutorial nuevo (versión 11) ya no se cargan.
 
 ## Interfaz
 
@@ -502,7 +566,9 @@ Con C, el ratón pasa a manejar la interfaz: se puede elegir motor, tocar un con
 |---|---|
 | `objetivo planeta` | Fija el objetivo. También: `campo`, `estrella`, `estacion`, `estructura`, `hostil`, `neutral`, `bastion`, `refugio` |
 | `saltar estructura 40` | Lleva la nave a 40 km del objetivo |
-| `ir`, `mina`, `central`, `usar`, `escaner` | Lo mismo que esas opciones de la rueda |
+| `ir`, `central`, `usar`, `escaner` | Lo mismo que esas opciones de la rueda |
+| `drones`, `recoger-drones` | Manda los drones mineros al objetivo (planeta o campo) o los hace volver |
+| `estacion` | Suelta la estación origami donde está la nave (fuera de órbita y casi parada) |
 | `motor crucero`, `mando 100` | Cambia de motor y acelera |
 | `regalo 2` | Da 2 emisores de energía negativa y recursos |
 | `creativo [si\|no]` | Modo creativo: nave invulnerable, energía, antimateria y materiales sin fin, todos los motores y niveles (también los escudos, el Campo de Amor incluido), todos los sistemas localizados y analizados. Los choques siguen frenando la nave, pero sin daño. El calor sigue contando, para probarlo. No se guarda |
@@ -544,7 +610,7 @@ Con C, el ratón pasa a manejar la interfaz: se puede elegir motor, tocar un con
 | [Balance.h](include/game/Balance.h) | **Todas las cifras** y los modos de juego |
 | [Economy.h](include/game/Economy.h) | Recursos, yacimientos y lo que da cada estrella |
 | [Ship.h](include/game/Ship.h) | Motores, manejo, energía y casco |
-| [Stations.h](include/game/Stations.h) | Minas, centrales, módulos y las estaciones gratis |
+| [Stations.h](include/game/Stations.h) | La origami, las centrales, sus módulos y las estaciones gratis |
 | [Anomalies.h](include/game/Anomalies.h) | Alienígenas y estructuras, con casco y arma |
 | [Combat.h](include/game/Combat.h) | Proyectiles, balística con gravedad y computador de puntería |
 | [Defense.h](include/game/Defense.h) | Escudos, calor y refrigeración |

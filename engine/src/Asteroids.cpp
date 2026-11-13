@@ -270,6 +270,13 @@ void BeltField(const AsteroidBelt& belt, const Mat4d& frame, const Vec3d& center
         const double omega = belt.spin * std::sqrt(belt.mu / (ri * ri * ri));
         const double turned = std::fmod(omega * simTime, 2.0 * kPi);
         const double span = reach / ri;
+        // La forma del anillo a cada altura solo depende de la banda: se calcula una vez, no en
+        // cada celda del arco.
+        constexpr int kShapeSlots = 96;
+        double shapes[kShapeSlots];
+        const int levels = k1 - k0 + 1;
+        if (levels <= kShapeSlots)
+            for (int k = k0; k <= k1; ++k) shapes[k - k0] = BeltFieldShape(belt, ri, (k + 0.5) * cell);
         int j0 = static_cast<int>(std::floor((phi - turned - span) / arc)), j1 = static_cast<int>(std::floor((phi - turned + span) / arc));
         if (j1 - j0 + 1 >= ring) {
             j0 = 0;
@@ -278,7 +285,7 @@ void BeltField(const AsteroidBelt& belt, const Mat4d& frame, const Vec3d& center
         for (int j = j0; j <= j1; ++j) {
             const int wrapped = ((j % ring) + ring) % ring;
             for (int k = k0; k <= k1; ++k) {
-                const double shape = BeltFieldShape(belt, ri, (k + 0.5) * cell);
+                const double shape = levels <= kShapeSlots ? shapes[k - k0] : BeltFieldShape(belt, ri, (k + 0.5) * cell);
                 if (shape < 0.01) continue;
                 CellRandom rng{CellSeed(belt.seed, tier.salt, i, wrapped, k)};
                 const int count = static_cast<int>(tier.perCell * shape + rng.Next());

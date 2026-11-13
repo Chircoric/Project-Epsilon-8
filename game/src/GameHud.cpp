@@ -6,6 +6,7 @@
 #include <imgui_impl_sdlgpu3.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -32,7 +33,12 @@ const ImU32 kAmber = Rgba(255, 170, 40), kAmberDim = Rgba(255, 150, 40, 0.34f), 
 const ImU32 kYellow = Rgba(255, 228, 96), kOrange = Rgba(255, 110, 24);
 const ImU32 kText = Rgba(255, 232, 188), kMuted = Rgba(206, 146, 74);
 const ImU32 kPanel = Rgba(18, 10, 4, 0.82f), kPanelDeep = Rgba(8, 4, 2, 0.88f), kShadow = Rgba(0, 0, 0, 0.85f);
-const ImU32 kHostile = Rgba(255, 58, 40), kNeutral = Rgba(208, 240, 120), kUnknown = Rgba(214, 196, 170), kVoid = Rgba(204, 132, 255), kOwn = Rgba(255, 228, 96);
+const ImU32 kHostile = Rgba(255, 58, 40), kNeutral = Rgba(208, 240, 120), kVoid = Rgba(204, 132, 255), kOwn = Rgba(255, 228, 96);
+// Lo que se pinta sobre el espacio no puede ser blanco: la nebulosa es roja, amarilla y gris, y el
+// blanco se pierde en el gris y en las estrellas. El cian es el contrario del rojo y del naranja y
+// no existe en la nebulosa, asi que se ve en las tres. Lleva debajo un trazo de tinta oscura.
+const ImU32 kSignal = Rgba(70, 232, 255), kSignalDim = Rgba(70, 232, 255, 0.38f), kSignalFaint = Rgba(70, 232, 255, 0.14f), kInk = Rgba(0, 12, 28, 0.85f);
+const ImU32 kUnknown = kSignal;
 
 std::string Format(const char* format, ...) {
     char text[220];
@@ -56,6 +62,19 @@ std::string Speed(double kmPerSecond) {
     return Format("%.0f km/s", kmPerSecond);
 }
 
+// Donde ha quedado este fotograma cada cosa que el tutorial puede senalar. Cada panel, tecla u
+// opcion de la rueda apunta aqui su rectangulo al dibujarse; al final, la guia los busca.
+struct Spots {
+    struct Spot {
+        bool seen = false;
+        bool folded = false;  // es la cabecera de una ventana plegada: hay que desplegarla
+        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    };
+    std::array<Spot, static_cast<std::size_t>(Highlight::Count)> at{};
+    Highlight want = Highlight::None;  // lo que senala el paso ahora
+    const Spot& operator[](Highlight h) const { return at[static_cast<std::size_t>(h)]; }
+};
+
 // Lienzo con el estado del raton: un boton se dibuja y se comprueba en la misma llamada.
 struct Ui {
     ImDrawList* d;
@@ -67,6 +86,20 @@ struct Ui {
     ImFont* logo;
     const HudInput& in;
     std::vector<HudAction>& actions;
+    std::uint64_t& hovered;  // primer elemento bajo el cursor del fotograma; 0 = ninguno
+    Spots* spots = nullptr;  // donde apuntar lo que el tutorial puede senalar; nulo = no se apunta
+
+    // Apunta donde ha quedado algo que el tutorial puede senalar.
+    void Mark(Highlight h, float x, float y, float w, float hh, bool folded = false) const {
+        if (!spots || h == Highlight::None || h == Highlight::Count) return;
+        spots->at[static_cast<std::size_t>(h)] = {true, folded, x, y, x + w, y + hh};
+    }
+    // La opcion de la rueda que el paso senala; Count = ninguna.
+    WheelOption WantedOption() const {
+        if (!spots) return WheelOption::Count;
+        const HighlightTarget where = Locate(spots->want);
+        return where.where == HighlightTarget::Where::Wheel ? where.option : WheelOption::Count;
+    }
 
     void Label(float x, float y, float size, ImU32 color, const std::string& value) const { LabelIn(text, x, y, size, color, value); }
     void LabelIn(ImFont* font, float x, float y, float size, ImU32 color, const std::string& value) const {
@@ -104,10 +137,40 @@ struct Ui {
     void Right(float x, float y, float size, ImU32 color, const std::string& value) const { Label(x - Width(size, value), y, size, color, value); }
     void Center(float x, float y, float size, ImU32 color, const std::string& value) const { Label(x - Width(size, value) * 0.5f, y, size, color, value); }
 
-    bool Hover(float x, float y, float w, float h) const { return in.cursor && in.mouseX >= x && in.mouseX <= x + w && in.mouseY >= y && in.mouseY <= y + h; }
+    bool Hover(float x, float y, float w, float h) const {
+        const bool over = in.cursor && in.mouseX >= x && in.mouseX <= x + w && in.mouseY >= y && in.mouseY <= y + h;
+        // Se identifica el rectangulo para saber si el cursor acaba de entrar en otro elemento.
+        if (over && hovered == 0) {
+            const std::int64_t key = static_cast<std::int64_t>(x) * 1000003 + static_cast<std::int64_t>(y) * 7919 + static_cast<std::int64_t>(w) * 31 + static_cast<std::int64_t>(h);
+            hovered = static_cast<std::uint64_t>(key) | 1u;  // nunca 0
+        }
+        return over;
+    }
 
-    // Panel con esquinas cortadas, cabecera rayada y un destello que recorre el borde.
-    void Panel(float x, float y, float w, float h, const char* heading, const char* code) const {
+    bool Folded(HudPanel p) const { return in.settings.Folded(p); }
+
+    // Flecha de plegar: hacia abajo si la ventana esta abierta, hacia la derecha si esta plegada.
+    void Chevron(float cx, float cy, float r, bool open, ImU32 color) const {
+        if (open) d->AddTriangleFilled(ImVec2(cx - r, cy - r * 0.5f), ImVec2(cx + r, cy - r * 0.5f), ImVec2(cx, cy + r * 0.6f), color);
+        else d->AddTriangleFilled(ImVec2(cx - r * 0.5f, cy - r), ImVec2(cx + r * 0.6f, cy), ImVec2(cx - r * 0.5f, cy + r), color);
+    }
+
+    // La cabecera de una ventana plegable: pulsarla la pliega o la despliega. Devuelve el ancho que
+    // ocupa la flecha, para que el codigo de la derecha se aparte.
+    float FoldHeader(float x, float y, float w, float headerH, HudPanel panel) const {
+        const bool open = !Folded(panel);
+        const bool over = Hover(x, y, w, headerH);
+        if (over) d->AddRectFilled(ImVec2(x + 2.0f * s, y + 2.0f * s), ImVec2(x + w - 2.0f * s, y + headerH), Rgba(255, 170, 40, 0.10f));
+        const float r = 5.0f * s, cx = x + w - 16.0f * s, cy = y + headerH * 0.5f + 1.0f * s;
+        d->AddCircleFilled(ImVec2(cx, cy), r + 5.0f * s, over ? Rgba(255, 170, 40, 0.30f) : Rgba(255, 150, 40, 0.10f), 20);
+        Chevron(cx, cy, r, open, over ? kYellow : kAmber);
+        if (over && in.clicked) actions.push_back({HudActionType::TogglePanel, static_cast<int>(panel)});
+        return 30.0f * s;
+    }
+
+    // Panel con esquinas cortadas, cabecera rayada y un destello que recorre el borde. Con fold, la
+    // cabecera pliega la ventana.
+    void Panel(float x, float y, float w, float h, const char* heading, const char* code, int fold = -1) const {
         const float cut = 12.0f * s;
         const ImVec2 p[6] = {{x + cut, y}, {x + w, y}, {x + w, y + h - cut}, {x + w - cut, y + h}, {x, y + h}, {x, y + cut}};
         d->AddConvexPolyFilled(p, 6, kPanel);
@@ -128,11 +191,59 @@ struct Ui {
 
         if (!heading) return;
         const float hy = y + 7.0f * s;
+        const float chevron = fold >= 0 ? FoldHeader(x, y, w, 26.0f * s, static_cast<HudPanel>(fold)) : 0.0f;
         Spaced(x + 16.0f * s, hy, 14.0f, kYellow, heading);
         const float start = x + 22.0f * s + SpacedWidth(14.0f, heading);
-        const float end = x + w - 12.0f * s - Width(10.5f, code);
+        const float end = x + w - 12.0f * s - chevron - Width(10.5f, code);
         for (float k = start; k < end - 4.0f * s; k += 5.0f * s) d->AddLine(ImVec2(k, hy + 11.0f * s), ImVec2(k + 3.0f * s, hy + 4.0f * s), kAmberFaint, 1.0f);
-        Right(x + w - 12.0f * s, hy + 3.0f * s, 10.5f, kMuted, code);
+        if (end >= start) Right(x + w - 12.0f * s - chevron, hy + 3.0f * s, 10.5f, kMuted, code);  // si no cabe, solo el titulo
+    }
+
+    // Ventana del modo minimalista: esquinas redondas, un solo borde y nada que se mueva. La
+    // cabecera, en letra grande, la pliega. Devuelve el alto de la cabecera.
+    float Soft(float x, float y, float w, float h, const std::string& heading, const std::string& note, HudPanel panel) const {
+        const float r = 12.0f * s;
+        d->AddRectFilled(ImVec2(x + 3.0f * s, y + 4.0f * s), ImVec2(x + w + 3.0f * s, y + h + 4.0f * s), Rgba(0, 0, 0, 0.35f), r);
+        d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), Rgba(16, 9, 5, 0.86f), r);
+        d->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), Rgba(255, 170, 60, 0.40f), r, 0, 1.2f * s);
+        const float headerH = 40.0f * s;
+        const bool open = !Folded(panel);
+        const bool over = Hover(x, y, w, headerH);
+        if (over) d->AddRectFilled(ImVec2(x + 1.0f, y + 1.0f), ImVec2(x + w - 1.0f, y + headerH), Rgba(255, 170, 40, 0.12f), r, open ? ImDrawFlags_RoundCornersTop : ImDrawFlags_RoundCornersAll);
+        d->AddRectFilled(ImVec2(x + 14.0f * s, y + 12.0f * s), ImVec2(x + 18.0f * s, y + headerH - 12.0f * s), kYellow, 2.0f * s);
+        Label(x + 28.0f * s, y + 9.0f * s, 18.0f, over ? kYellow : kText, heading);
+        const float cx = x + w - 22.0f * s, cy = y + headerH * 0.5f;
+        Chevron(cx, cy, 6.0f * s, open, over ? kYellow : kAmber);
+        if (!note.empty()) Right(cx - 18.0f * s, y + 12.0f * s, 14.0f, kMuted, note);
+        if (open) d->AddLine(ImVec2(x + 14.0f * s, y + headerH), ImVec2(x + w - 14.0f * s, y + headerH), Rgba(255, 170, 60, 0.18f), 1.0f);
+        if (over && in.clicked) actions.push_back({HudActionType::TogglePanel, static_cast<int>(panel)});
+        return headerH;
+    }
+
+    // Barra gruesa y redonda con su porcentaje: la forma de medir del modo minimalista.
+    void Bar(float x, float y, float w, const std::string& name, double value, ImU32 color, const std::string& reading = std::string()) const {
+        const double v = std::clamp(value, 0.0, 1.0);
+        Label(x, y, 16.0f, kText, name);
+        Right(x + w, y, 16.0f, color, reading.empty() ? Format("%.0f %%", v * 100.0) : reading);
+        const float by = y + 24.0f * s, bh = 10.0f * s;
+        d->AddRectFilled(ImVec2(x, by), ImVec2(x + w, by + bh), Rgba(255, 150, 40, 0.12f), bh * 0.5f);
+        if (v > 0.0) d->AddRectFilled(ImVec2(x, by), ImVec2(x + std::max(static_cast<float>(v) * w, bh), by + bh), color, bh * 0.5f);
+    }
+
+    // Boton redondo y grande del modo minimalista.
+    bool Pill(float x, float y, float w, float h, const std::string& caption, HudAction action, bool enabled = true, bool active = false) const {
+        const bool hover = enabled && Hover(x, y, w, h);
+        const float r = h * 0.5f;
+        const ImU32 fill = active ? Rgba(255, 150, 40, 0.45f) : hover ? Rgba(255, 170, 40, 0.26f) : Rgba(255, 150, 40, 0.08f);
+        d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), fill, r);
+        d->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), !enabled ? kAmberFaint : hover || active ? kYellow : kAmberDim, r, 0, (active ? 1.8f : 1.2f) * s);
+        const float size = 15.0f;
+        Center(x + w * 0.5f, y + (h - size * s * 1.15f) * 0.5f, size, !enabled ? kMuted : hover || active ? kYellow : kText, caption);
+        if (hover && in.clicked) {
+            actions.push_back(action);
+            return true;
+        }
+        return false;
     }
 
     // Barra de segmentos inclinados.
@@ -205,7 +316,7 @@ ImU32 ContactColor(const Contact& c) {
     if (c.stance == Stance::Hostile) return kHostile;
     if (c.stance == Stance::Neutral) return kNeutral;
     if (c.target.kind == Kind::Anomaly) return kVoid;
-    return kText;
+    return kSignal;
 }
 
 // Reloj de velocidad a escala logaritmica: 1 km/s, c y mas alla.
@@ -244,11 +355,21 @@ void SpeedGauge(const Ui& u, const GameSession& g, float cx, float cy, float r) 
     else if (ship.warpCharge > 0.0 && ship.warpCharge < 1.0) u.Center(cx, cy + 27.0f * s, 11.5f, kOrange, Format("BURBUJA %.0f %%", ship.warpCharge * 100.0));
 }
 
-void ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
+// Alto de una ventana plegada: solo la cabecera.
+constexpr float kFoldedHeight = 30.0f;
+
+float ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
     const ShipState& ship = g.Ship();
     const Balance& rules = g.Rules();
     const float s = u.s, w = kLeftWidth * s, h = kShipPanelHeight * s;
-    u.Panel(x, y, w, h, "NAVE", g.Creative() ? "CREATIVO  EPS-07" : "EPS-07");
+    const char* code = g.Creative() ? "CREATIVO  EPS-07" : "EPS-07";
+    if (u.Folded(HudPanel::Ship)) {
+        u.Panel(x, y, w, kFoldedHeight * s, "NAVE", (std::string(Name(ship.mode)) + "  " + Speed(ship.speed)).c_str(), static_cast<int>(HudPanel::Ship));
+        for (const Highlight inside : {Highlight::ShipPanel, Highlight::ScanButton, Highlight::HybridButton}) u.Mark(inside, x, y, w, kFoldedHeight * s, true);
+        return kFoldedHeight * s;
+    }
+    u.Panel(x, y, w, h, "NAVE", code, static_cast<int>(HudPanel::Ship));
+    u.Mark(Highlight::ShipPanel, x, y, w, h);
     SpeedGauge(u, g, x + 92.0f * s, y + 104.0f * s, 68.0f * s);
 
     const float mx = x + 182.0f * s, mw = w - 198.0f * s;
@@ -266,12 +387,14 @@ void ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
     if (hyper) {
         u.Button(bx, by, wide, bh, "IMPULSO", nullptr, {HudActionType::Drive, 0}, true, ship.mode == DriveMode::Impulse);
         u.Button(bx += wide + gap, by, wide, bh, "CRUCERO", nullptr, {HudActionType::Drive, 1}, true, ship.mode == DriveMode::Cruise);
+        u.Mark(Highlight::HybridButton, bx + wide + gap, by, widest, bh);
         u.Button(bx += wide + gap, by, widest, bh, "HÍBRIDA", nullptr, {HudActionType::Drive, 2}, CanCurve(ship, DriveMode::Warp, rules.drive), ship.mode == DriveMode::Warp);
         u.Button(bx += widest + gap, by, narrow, bh, "HIPER", nullptr, {HudActionType::Drive, 3}, true, ship.mode == DriveMode::Hyper);
     } else if (curves) {
         const float third = (w - 32.0f * s - gap * 2.0f) / 3.0f;
         u.Button(bx, by, third, bh, "IMPULSO", nullptr, {HudActionType::Drive, 0}, true, ship.mode == DriveMode::Impulse);
         u.Button(bx += third + gap, by, third, bh, "CRUCERO", nullptr, {HudActionType::Drive, 1}, true, ship.mode == DriveMode::Cruise);
+        u.Mark(Highlight::HybridButton, bx + third + gap, by, third, bh);
         u.Button(bx += third + gap, by, third, bh, "HÍBRIDA", nullptr, {HudActionType::Drive, 2}, CanCurve(ship, DriveMode::Warp, rules.drive), ship.mode == DriveMode::Warp);
     } else {
         const float half = (w - 32.0f * s - gap) * 0.5f;
@@ -292,6 +415,7 @@ void ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
     u.Right(x + w - 16.0f * s, line + 17.0f * s, 12.5f, kMuted, ModeInfo(g.Mode()).name);
     u.Label(x + 16.0f * s, line + 34.0f * s, 12.5f, kMuted, Format("Vista %s", Distance(g.Visibility()).c_str()));
     u.Right(x + w - 16.0f * s, line + 34.0f * s, 12.5f, kMuted, Format("Día %.2f   nave %.2f", g.SimTime() / 86400.0, ship.shipHours / 24.0));
+    u.Mark(Highlight::ScanButton, x + 16.0f * s, line + 55.0f * s, w - 32.0f * s, 26.0f * s);
     u.Button(x + 16.0f * s, line + 55.0f * s, w - 32.0f * s, 26.0f * s, g.Scanning() ? "BARRIENDO..." : std::string("ESCÁNER  -") + EnergyText(rules.scanner.energy), nullptr, {HudActionType::Scan}, g.CanScan() && !g.Scanning());
 
     // Defensa: el campo encendido (K cambia), las placas de proa y el calor con sus refrigerantes.
@@ -310,13 +434,44 @@ void ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
     const ImU32 heatColor = heat > 1.0 ? kHostile : heat > rules.thermal.coolStart ? kOrange : kNeutral;
     u.Meter(x + 16.0f * s, dy + 40.0f * s, w - 32.0f * s, "CALOR", heat, heatColor,
             Format("%.0f %%   agua %.0f  N2 %.0f  rad %.0f %%", heat * 100.0, d.water, d.nitrogen, g.RadiatorEfficiency() * 100.0));
+    return h;
 }
 
-void CargoPanel(const Ui& u, const GameSession& g, float x, float y) {
+// Los elementos que se tienen, de mas a menos masa, hasta max.
+std::vector<int> OwnedElements(const ElementStock& stock, std::size_t max) {
+    std::vector<int> owned;
+    for (int z = 1; z <= ElementStock::kCount; ++z)
+        if (stock.Get(z) > 0.0) owned.push_back(z);
+    std::stable_sort(owned.begin(), owned.end(), [&](int a, int b) { return stock.Get(a) > stock.Get(b); });
+    if (owned.size() > max) owned.resize(max);
+    return owned;
+}
+
+// Los prefijos del SI de la masa (mg, g, kg, t, kt, Mt) en una tira; se encienden los de lit (un bit por unidad).
+void MassPrefixes(const Ui& u, float x, float y, float w, unsigned lit) {
+    const float s = u.s, cell = w / static_cast<float>(kMassUnitCount), h = 20.0f * s;
+    for (int i = 0; i < kMassUnitCount; ++i) {
+        const bool on = ((lit >> i) & 1u) != 0u;
+        const float x0 = x + cell * static_cast<float>(i);
+        u.d->AddRectFilled(ImVec2(x0 + 1.0f * s, y), ImVec2(x0 + cell - 1.0f * s, y + h), on ? Rgba(255, 170, 40, 0.38f) : kPanelDeep);
+        u.d->AddRect(ImVec2(x0 + 1.0f * s, y), ImVec2(x0 + cell - 1.0f * s, y + h), on ? kYellow : kAmberDim, 0.0f, 0, on ? 1.6f : 1.0f);
+        u.Center(x0 + cell * 0.5f, y + h * 0.5f, 12.0f, on ? kYellow : kMuted, kMassUnits[i]);
+    }
+}
+
+float CargoPanel(const Ui& u, const GameSession& g, float x, float y) {
     const float s = u.s, w = kLeftWidth * s;
     const int shown = std::min(static_cast<int>(g.Stations().All().size()), 5);
-    const float h = (146.0f + 18.0f * static_cast<float>(shown)) * s;
-    u.Panel(x, y, w, h, "BODEGA", (MassText(g.Ship().cargo.Total()) + " / " + MassText(CargoCapacity(g.Ship(), g.Rules().ship))).c_str());
+    constexpr std::size_t kShownElements = 8;
+    const std::vector<int> owned = OwnedElements(g.Ship().elements, kShownElements);
+    const float elementsBlock = 22.0f + 17.0f * static_cast<float>((owned.size() + 1) / 2) + 30.0f;  // titulo, filas y diagrama
+    const float h = (164.0f + elementsBlock + 18.0f * static_cast<float>(shown)) * s;  // con la linea de los drones
+    const std::string code = MassText(g.Ship().cargo.Total()) + " / " + MassText(CargoCapacity(g.Ship(), g.Rules().ship));
+    if (u.Folded(HudPanel::Cargo)) {
+        u.Panel(x, y, w, kFoldedHeight * s, "BODEGA", code.c_str(), static_cast<int>(HudPanel::Cargo));
+        return kFoldedHeight * s;
+    }
+    u.Panel(x, y, w, h, "BODEGA", code.c_str(), static_cast<int>(HudPanel::Cargo));
     const float ix = x + 16.0f * s, iw = w - 32.0f * s;
     float line = y + 32.0f * s;
     const float half = iw * 0.5f;
@@ -335,20 +490,51 @@ void CargoPanel(const Ui& u, const GameSession& g, float x, float y) {
         line += 18.0f * s;
     }
     line += 8.0f * s;
-    const bool freeMine = g.Stations().NextIsFree(StationKind::Mining), freePower = g.Stations().NextIsFree(StationKind::Power);
+    // Elementos: inventario aparte, cada cantidad en su unidad mas cercana, y la tira de prefijos del SI
+    // con encendidas las unidades que aparecen.
+    {
+        int count = 0;
+        for (int z = 1; z <= ElementStock::kCount; ++z) count += g.Ship().elements.Get(z) > 0.0 ? 1 : 0;
+        u.Label(ix, line, 13.0f, kYellow, Format("ELEMENTOS %d", count));
+        u.Right(ix + iw, line + 1.0f * s, 11.5f, count > 0 ? kNeutral : kMuted, count > 0 ? ElementMassText(g.Ship().elements.Total()) : std::string("Sin elementos"));
+        line += 22.0f * s;
+        unsigned lit = 0;
+        for (std::size_t i = 0; i < owned.size(); ++i) {
+            const double kilograms = g.Ship().elements.Get(owned[i]);
+            lit |= 1u << MassUnitIndex(kilograms);
+            const float rx = ix + half * static_cast<float>(i % 2);
+            u.Label(rx, line, 13.0f, kMuted, astro::Periodic(owned[i]).symbol);
+            u.Right(rx + half - 10.0f * s, line, 13.0f, kText, ElementMassText(kilograms));
+            if (i % 2 == 1) line += 17.0f * s;
+        }
+        if (owned.size() % 2 == 1) line += 17.0f * s;
+        MassPrefixes(u, ix, line + 4.0f * s, iw, lit);
+        line += 30.0f * s;
+    }
+    // Drones: cuantos hay y cuantos estan fuera; y la origami, si sigue plegada en las bodegas.
+    {
+        const int total = static_cast<int>(g.Drones().size()), out = g.DronesOut();
+        u.Label(ix, line, 13.0f, kYellow, Format("DRONES %d", total));
+        u.Right(ix + iw, line + 1.0f * s, 11.5f, out > 0 ? kNeutral : kMuted, total == 0 ? "Sin bahías" : out > 0 ? Format("%d minando", out) : g.DroneSite() ? "Descargando" : "En sus bahías");
+        line += 18.0f * s;
+    }
+    const bool freePower = g.Stations().NextIsFree(StationKind::Power);
     u.Label(ix, line, 13.0f, kYellow, Format("ESTACIONES %d", static_cast<int>(g.Stations().All().size())));
-    u.Right(ix + iw, line + 1.0f * s, 11.5f, freeMine || freePower ? kNeutral : kMuted, freeMine && freePower ? "Mina y central gratis" : freeMine ? "Mina gratis" : freePower ? "Central gratis" : "Con coste");
+    u.Right(ix + iw, line + 1.0f * s, 11.5f, g.Ship().stationAboard || freePower ? kNeutral : kMuted,
+            g.Ship().stationAboard ? (freePower ? "Origami a bordo, central gratis" : "Origami a bordo") : freePower ? "Central gratis" : "Con coste");
     line += 18.0f * s;
     int count = 0;
     for (const Station& st : g.Stations().All()) {
         if (++count > 5) break;
-        const bool mining = st.kind == StationKind::Mining;
-        const double fill = mining ? st.stored.Total() / g.Stations().OreCapacity(st) : st.storedAntimatter / g.Stations().AntimatterCapacity(st);
-        u.Label(ix, line, 12.0f, kMuted, mining ? "MINA" : "CENTRAL");
-        u.Segments(ix + 66.0f * s, line + 4.0f * s, iw - 120.0f * s, 6.0f * s, fill, mining ? kAmber : kYellow, 18);
-        u.Right(ix + iw, line, 12.0f, kText, MassText(mining ? st.stored.Total() : st.storedAntimatter));
+        const bool origami = st.kind == StationKind::Shipyard;
+        const double fill = origami ? st.stored.Total() / g.Rules().stations.shipyardGoal
+                                    : st.storedAntimatter / g.Stations().AntimatterCapacity(st);
+        u.Label(ix, line, 12.0f, kMuted, origami ? "ORIGAMI" : "CENTRAL");
+        u.Segments(ix + 66.0f * s, line + 4.0f * s, iw - 120.0f * s, 6.0f * s, std::min(fill, 1.0), origami ? kAmber : kYellow, 18);
+        u.Right(ix + iw, line, 12.0f, kText, MassText(origami ? st.stored.Total() : st.storedAntimatter));
         line += 17.0f * s;
     }
+    return h;
 }
 
 // Radar en 3D: un disco visto en perspectiva con cinco capas de altura, en los ejes de la nave
@@ -361,7 +547,13 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
     const float s = u.s, w = kRadarWidth * s, h = kRadarHeight * s;
     const int index = std::clamp(u.in.radarRange, 0, kRadarRangeCount - 1);
     const double top = kRadarRanges[index], low = top * 1.0e-4;
-    u.Panel(x, y, w, h, "RADAR 3D", ("ALCANCE " + Distance(top)).c_str());
+    if (u.Folded(HudPanel::Radar)) {
+        u.Panel(x, y, w, kFoldedHeight * s, "RADAR 3D", Format("%zu SEÑALES", g.Contacts().size()).c_str(), static_cast<int>(HudPanel::Radar));
+        u.Mark(Highlight::RadarPanel, x, y, w, kFoldedHeight * s, true);
+        return;
+    }
+    u.Panel(x, y, w, h, "RADAR 3D", ("ALCANCE " + Distance(top)).c_str(), static_cast<int>(HudPanel::Radar));
+    u.Mark(Highlight::RadarPanel, x, y, w, h);
 
     // Alcance: menos y mas.
     const float bw = 24.0f * s, bh = 20.0f * s, by = y + 30.0f * s;
@@ -448,6 +640,26 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
         }
         if (b.selected) u.d->AddCircle(ImVec2(b.x, b.y), 8.0f * s, kYellow, 24, 1.2f * s);
     }
+    // La pista del escaner: un anillo violeta de trazos donde cae el punto estimado, con su tallo.
+    if (const std::optional<Vec3d> echo = g.EchoPosition()) {
+        const Vec3d rel = toShip.TransformDirection(*echo - ship.position);
+        const double flat = std::sqrt(rel.x * rel.x + rel.z * rel.z), distance = std::max(Length(rel), 1e-3);
+        const int layer = std::clamp(static_cast<int>(std::lround(std::atan2(-rel.y, flat) * 180.0 / 3.14159265358979 / 36.0)), -2, 2);
+        const float reach = static_cast<float>(std::clamp(std::log10(distance / low) / 4.0, 0.04, 1.0));
+        const double nx = flat > 1e-9 ? rel.x / flat : 0.0, nz = flat > 1e-9 ? rel.z / flat : 0.0;
+        const float px = cx + static_cast<float>(nx) * reach * rx, foot = cy - static_cast<float>(nz) * reach * ry;
+        const float py = foot - static_cast<float>(layer) * gap;
+        if (layer != 0) u.d->AddLine(ImVec2(px, foot), ImVec2(px, py), Rgba(204, 132, 255, 0.6f), 1.0f * s);
+        const float r = 7.0f * s;
+        for (int i = 0; i < 8; ++i) {
+            const float a = static_cast<float>(u.t * 0.8) + kTau * static_cast<float>(i) / 8.0f;
+            u.Arc(px, py, r, a, a + kTau / 8.0f * 0.55f, kVoid, 1.6f * s);
+        }
+        u.d->AddCircleFilled(ImVec2(px, py), 2.0f * s, kVoid);
+        u.Label(px + r + 4.0f * s, py - 7.0f * s, 10.5f, kVoid, "ECO");
+        u.Mark(Highlight::EchoMarker, px - r - 3.0f * s, py - r - 3.0f * s, (r + 3.0f * s) * 2.0f, (r + 3.0f * s) * 2.0f);
+    }
+
     // La nave, en el centro, apuntando al fondo.
     u.d->AddTriangleFilled(ImVec2(cx, cy - 7.0f * s), ImVec2(cx - 5.0f * s, cy + 4.0f * s), ImVec2(cx + 5.0f * s, cy + 4.0f * s), kYellow);
 
@@ -465,11 +677,18 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
     u.Label(x + 16.0f * s, y + h - 22.0f * s, 10.5f, kMuted, u.in.cursor ? "Pincha una señal para fijarla" : "C: cursor para elegir señales");
 }
 
-void ContactList(const Ui& u, const GameSession& g, const TargetRef* target, float x, float y) {
+float ContactList(const Ui& u, const GameSession& g, const TargetRef* target, float x, float y) {
     const float s = u.s, w = kRightWidth * s;
     const std::size_t rows = std::min<std::size_t>(g.Contacts().size(), 9);
     const float h = 40.0f * s + 18.0f * s * static_cast<float>(rows);
-    u.Panel(x, y, w, h, "SENSORES", Format("%zu SEÑALES", g.Contacts().size()).c_str());
+    if (u.Folded(HudPanel::Sensors)) {
+        u.Panel(x, y, w, kFoldedHeight * s, "SENSORES", Format("%zu SEÑALES", g.Contacts().size()).c_str(), static_cast<int>(HudPanel::Sensors));
+        u.Mark(Highlight::SensorsPanel, x, y, w, kFoldedHeight * s, true);
+        if (target) u.Mark(Highlight::PinnedContact, x, y, w, kFoldedHeight * s, true);
+        return kFoldedHeight * s;
+    }
+    u.Panel(x, y, w, h, "SENSORES", Format("%zu SEÑALES", g.Contacts().size()).c_str(), static_cast<int>(HudPanel::Sensors));
+    u.Mark(Highlight::SensorsPanel, x, y, w, h);
 
     const float ix = x + 14.0f * s, iw = w - 28.0f * s;
     float line = y + 36.0f * s;
@@ -479,12 +698,14 @@ void ContactList(const Ui& u, const GameSession& g, const TargetRef* target, flo
         const float rowH = 18.0f * s;
         const bool hover = u.Hover(x + 4.0f * s, line - 1.0f * s, w - 8.0f * s, rowH);
         if (selected || hover) u.d->AddRectFilled(ImVec2(x + 4.0f * s, line - 1.0f * s), ImVec2(x + w - 4.0f * s, line + rowH - 2.0f * s), Rgba(255, 170, 40, selected ? 0.22f : 0.12f));
+        if (selected) u.Mark(Highlight::PinnedContact, x + 4.0f * s, line - 1.0f * s, w - 8.0f * s, rowH - 1.0f * s);
         if (hover && u.in.clicked) u.actions.push_back({HudActionType::SelectContact, static_cast<int>(i)});
         u.d->AddQuadFilled(ImVec2(ix + 4.0f * s, line + 3.0f * s), ImVec2(ix + 8.0f * s, line + 7.0f * s), ImVec2(ix + 4.0f * s, line + 11.0f * s), ImVec2(ix, line + 7.0f * s), ContactColor(k));
         u.LabelIn(NameFont(u, k), ix + 14.0f * s, line, 13.0f, selected ? kYellow : ContactColor(k), k.name);
         u.Right(ix + iw, line + 1.0f * s, 12.0f, kMuted, Distance(k.distance));
         line += rowH;
     }
+    return h;
 }
 
 // Lo que se puede destruir: una nave o un bastion. Las estructuras no tienen casco.
@@ -515,10 +736,13 @@ void TargetPanel(const Ui& u, const GameSession& g, const TargetRef& target, flo
     const Anomaly* enemy = Attackable(g, &target);
     std::vector<std::string> lines;
     const Station* station = target.kind == Kind::Station ? g.Stations().Find(target.index) : nullptr;
-    if (station) {
-        if (station->kind == StationKind::Mining) lines.push_back("Extrae " + MassRateText(g.Stations().MiningPerHour(*station)) + "   guarda " + MassText(g.Stations().OreCapacity(*station)));
-        else lines.push_back("Capta " + PowerText(g.Stations().EnergyPerHour(*station)) + "   antimateria " + MassRateText(g.Stations().AntimatterPerHour(*station)));
-        if (station->kind == StationKind::Power) lines.push_back("Guarda " + MassText(g.Stations().AntimatterCapacity(*station)) + "   materia " + MassRateText(g.Stations().MatterPerHour(*station)));
+    if (station && station->kind == StationKind::Shipyard) {
+        lines.push_back("Material: " + MassText(station->stored.Get(Resource::Metal)) + " de metal, " + MassText(station->stored.Get(Resource::Silicate)) + " de silicato");
+        lines.push_back("Ocho brazos con impresoras 3D y láseres; ocho esclusas");
+        lines.push_back("No es modular hasta construir la primera nave minera");
+    } else if (station) {
+        lines.push_back("Capta " + PowerText(g.Stations().EnergyPerHour(*station)) + "   antimateria " + MassRateText(g.Stations().AntimatterPerHour(*station)));
+        lines.push_back("Guarda " + MassText(g.Stations().AntimatterCapacity(*station)) + "   materia " + MassRateText(g.Stations().MatterPerHour(*station)));
         std::string modules = "Módulos:";
         for (const Module& m : station->modules) modules += Format(" %s %d", Name(m.kind), m.level);
         if (station->modules.empty()) modules += " ninguno";
@@ -526,9 +750,16 @@ void TargetPanel(const Ui& u, const GameSession& g, const TargetRef& target, flo
     }
     const bool astroTarget = target.kind == Kind::Star || target.kind == Kind::Planet || target.kind == Kind::Belt;
     const float h = (118.0f + 16.0f * static_cast<float>(lines.size()) + (astroTarget ? 36.0f : 0.0f) + (enemy ? 168.0f : 0.0f)) * s;
-    u.Panel(x, y, w, h, "OBJETIVO", Distance(Length(info->position - g.Ship().position)).c_str());
-    const float ix = x + 16.0f * s;
     const bool known = g.Scanned(target);
+    if (u.Folded(HudPanel::Target)) {
+        const std::string name = known || target.kind == Kind::Star ? info->name : std::string("Señal");
+        u.Panel(x, y, w, kFoldedHeight * s, "OBJETIVO", (name + "  " + Distance(Length(info->position - g.Ship().position))).c_str(), static_cast<int>(HudPanel::Target));
+        u.Mark(Highlight::TargetPanel, x, y, w, kFoldedHeight * s, true);
+        return;
+    }
+    u.Panel(x, y, w, h, "OBJETIVO", Distance(Length(info->position - g.Ship().position)).c_str(), static_cast<int>(HudPanel::Target));
+    u.Mark(Highlight::TargetPanel, x, y, w, h);
+    const float ix = x + 16.0f * s;
     u.LabelIn(target.kind == Kind::Anomaly ? u.alien : u.text, ix, y + 30.0f * s, 16.0f, kYellow, known || target.kind == Kind::Star ? info->name : std::string("Señal sin identificar"));
     u.Label(ix, y + 50.0f * s, 12.5f, known ? kText : kOrange, known ? info->detail : std::string("Sin datos: usa el escáner"));
     float line = y + 67.0f * s;
@@ -564,8 +795,11 @@ void TargetPanel(const Ui& u, const GameSession& g, const TargetRef& target, flo
     if (astroTarget) u.Button(ix, y + h - 76.0f * s, w - 32.0f * s, 30.0f * s, "ANÁLISIS", nullptr, {HudActionType::Analyze});
     const float by = y + h - 40.0f * s, bh = 30.0f * s, bw = (w - 32.0f * s - 8.0f * s) / 2.0f;
     u.Button(ix, by, bw, bh, g.Autopilot() ? "PARAR" : "IR", nullptr, {g.Autopilot() ? HudActionType::Stop : HudActionType::Go});
-    if (target.kind == Kind::Planet || target.kind == Kind::Belt) u.Button(ix + bw + 8.0f * s, by, bw, bh, "MINA", nullptr, {HudActionType::Mine});
-    else if (target.kind == Kind::Star) u.Button(ix + bw + 8.0f * s, by, bw, bh, "CENTRAL", nullptr, {HudActionType::Power});
+    if (target.kind == Kind::Planet || target.kind == Kind::Belt) {
+        const bool here = g.DroneSite() && *g.DroneSite() == target;
+        u.Button(ix + bw + 8.0f * s, by, bw, bh, here ? "RECOGER DRONES" : "DRONES", nullptr, {HudActionType::Mine}, true, here);
+    } else if (target.kind == Kind::Star) u.Button(ix + bw + 8.0f * s, by, bw, bh, "CENTRAL", nullptr, {HudActionType::Power});
+    else if (station && station->kind == StationKind::Shipyard) u.Button(ix + bw + 8.0f * s, by, bw, bh, "ENTREGAR", nullptr, {HudActionType::Use});
     else if (station) {
         u.Button(ix + bw + 8.0f * s, by, bw * 0.5f - 2.0f * s, bh, "RECOGER", nullptr, {HudActionType::Use});
         u.Button(ix + bw * 1.5f + 10.0f * s, by, bw * 0.5f - 2.0f * s, bh, "MEJORA", nullptr, {HudActionType::Upgrade});
@@ -747,19 +981,6 @@ float ElementGrid(const Ui& u, const astro::Composition& c, float x, float y, fl
     return y + row * 4.0f + 6.0f * s;
 }
 
-// Un campo de asteroides: su composicion sale de lo que daria una mina.
-astro::Composition BeltElements(astro::BeltProfile profile) {
-    const Deposit deposit = DepositOf(profile);
-    const auto share = [&](Resource r) { return deposit.share[static_cast<std::size_t>(r)]; };
-    astro::Materials m;
-    m.iron = share(Resource::Metal);
-    m.silicate = share(Resource::Silicate);
-    m.water = share(Resource::Ice) * 0.7;
-    m.ices = share(Resource::Ice) * 0.3 + share(Resource::Gas);
-    m.carbon = 0.3;
-    return astro::ElementsOf(m);
-}
-
 // De que esta hecho el aire, deducido de la clase del astro y sus materiales.
 std::string AirText(const astro::BodyData& d) {
     const astro::Materials& m = d.materials;
@@ -805,12 +1026,12 @@ void BodyStats(const Ui& u, const GameSession& g, const astro::BodyData& data, c
     y += 4.0f * s;
     y = ElementGrid(u, astro::ElementsOf(m), x, y, w);
 
-    Heading(u, x, y, w, "PARA UNA MINA");
+    Heading(u, x, y, w, "PARA LOS DRONES");
     y += 25.0f * s;
     Deposit deposit;
     if (DepositOf(data, deposit)) {
         Row(u, x, y, half, "Riqueza", Format("x%.2f", deposit.richness));
-        Row(u, x2, y, half, "Extrae", MassRateText(g.Rules().stations.miningRate * deposit.richness)); y += row;
+        Row(u, x2, y, half, "Cada dron", MassRateText(g.Rules().drones.rate * deposit.richness)); y += row;
         std::string yields;
         for (int r = 0; r < static_cast<int>(Resource::Count); ++r) {
             const double share = deposit.share[static_cast<std::size_t>(r)];
@@ -829,6 +1050,30 @@ void BodyStats(const Ui& u, const GameSession& g, const astro::BodyData& data, c
     Row(u, x2, y, half, "Excentricidad", Format("%.3f", e.eccentricity)); y += row;
     Row(u, x, y, half, "Periodo", Duration(OrbitPeriod(e)));
     Row(u, x2, y, half, "Inclinación", Format("%.1f°", e.inclination * 180.0 / kPi));
+}
+
+std::string ShortPercent(double share);
+
+// Extraccion selectiva: se elige el elemento que sacan los drones y se ve cuanto rinde aqui.
+void ExtractionControl(const Ui& u, const GameSession& g, const TargetRef& target, float x, float y, float w) {
+    const float s = u.s;
+    const int z = g.ExtractElement();
+    u.d->AddRectFilled(ImVec2(x - 6.0f * s, y - 6.0f * s), ImVec2(x + w + 6.0f * s, y + 92.0f * s), Rgba(8, 4, 2, 0.92f));
+    Heading(u, x, y, w, "EXTRACCIÓN SELECTIVA");
+    y += 24.0f * s;
+    u.Label(x, y, 13.0f, z > 0 ? kYellow : kText, z > 0 ? Format("%s  %s  (Z %d)", astro::Periodic(z).symbol, astro::Periodic(z).name, z) : std::string("A granel (metal, silicato, hielo, gas)"));
+    y += 20.0f * s;
+    const float bw = (w - 4.0f * 6.0f * s) / 5.0f, bh = 24.0f * s;
+    const char* labels[] = {"-10", "-1", "+1", "+10", "GRANEL"};
+    const int next[] = {std::max(z - 10, 0), std::max(z - 1, 0), std::min(z + 1, astro::kPeriodicCount), std::min(z + 10, astro::kPeriodicCount), 0};
+    for (int i = 0; i < 5; ++i) u.Button(x + (bw + 6.0f * s) * static_cast<float>(i), y, bw, bh, labels[i], nullptr, {HudActionType::ExtractElement, next[i]}, true, i == 4 && z == 0);
+    y += bh + 6.0f * s;
+    if (z > 0) {
+        const std::optional<astro::PeriodicShares> shares = g.ElementSharesOf(target);
+        const double fraction = shares ? (*shares)[static_cast<std::size_t>(z - 1)] : 0.0;
+        if (fraction > 0.0) u.Label(x, y, 12.0f, kNeutral, Format("%s %% en masa   rinde %s por dron", ShortPercent(fraction).c_str(), MassRateText(g.ElementYieldRate(target, z)).c_str()));
+        else u.Label(x, y, 12.0f, kOrange, "No hay aquí: los drones minarán a granel.");
+    }
 }
 
 void AnalysisWindow(const Ui& u, const GameSession& g, const TargetRef& target, const AnalysisLayout& l) {
@@ -885,7 +1130,7 @@ void AnalysisWindow(const Ui& u, const GameSession& g, const TargetRef& target, 
             Row(u, x, line, width, "Cúmulos", Format("%zu", belt->families.size())); line += row + 8.0f * s;
             line = ElementGrid(u, BeltElements(belt->profile), x, line, width);
             const Deposit deposit = DepositOf(belt->profile);
-            Heading(u, x, line, width, "PARA UNA MINA");
+            Heading(u, x, line, width, "PARA LOS DRONES");
             line += 26.0f * s;
             Row(u, x, line, width, "Riqueza", Format("x%.2f", deposit.richness)); line += row;
             for (int r = 0; r < static_cast<int>(Resource::Count); ++r) {
@@ -896,6 +1141,7 @@ void AnalysisWindow(const Ui& u, const GameSession& g, const TargetRef& target, 
             }
         }
     }
+    if (target.kind == Kind::Planet || target.kind == Kind::Belt) ExtractionControl(u, g, target, x, l.y + l.h - 104.0f * s, width);
 }
 
 // Lo que va a recorrer: la orbita, la inercia o la ruta. Se dibuja sobre el espacio.
@@ -906,7 +1152,7 @@ void FlightPath(const Ui& u, const GameSession& g, const Camera& camera) {
     ScreenPoint last;
     for (const Vec3d& point : path) {
         const ScreenPoint p = camera.WorldToScreen(point);
-        if (p.visible && last.visible && std::abs(p.x - last.x) < width && std::abs(p.y - last.y) < height) u.d->AddLine(ImVec2(last.x, last.y), ImVec2(p.x, p.y), route ? Rgba(255, 215, 90, 0.75f) : Rgba(120, 220, 255, 0.55f), 1.4f * u.s);
+        if (p.visible && last.visible && std::abs(p.x - last.x) < width && std::abs(p.y - last.y) < height) u.d->AddLine(ImVec2(last.x, last.y), ImVec2(p.x, p.y), route ? Rgba(255, 215, 90, 0.75f) : Rgba(70, 232, 255, 0.70f), 1.4f * u.s);
         last = p;
     }
 }
@@ -991,6 +1237,248 @@ void TurnRing(const Ui& u, const GameSession& g, const Camera& camera, float wid
     }
 }
 
+// ---- Soles ------------------------------------------------------------------------------------
+// Donde queda cada estrella del sistema respecto a hacia donde mira la camara, sea cual sea.
+
+struct SunSight {
+    std::string name;
+    Vec3f view;        // direccion en la vista: x derecha, y abajo, z hacia delante
+    double distance;   // km
+    ImU32 color;       // el de su luz
+    ScreenPoint screen;
+};
+
+ImU32 StarTint(const astro::StarData& star, float alpha) {
+    const Vec3f c = astro::BlackbodyColor(star.temperature);
+    const float top = std::max({c.x, c.y, c.z, 1e-3f});  // a pleno brillo: el tono, no la luz
+    return Rgba(static_cast<int>(c.x / top * 255.0f), static_cast<int>(c.y / top * 255.0f), static_cast<int>(c.z / top * 255.0f), alpha);
+}
+
+std::vector<SunSight> SunSights(const GameSession& g, const Camera& camera) {
+    std::vector<SunSight> out;
+    const int index = g.NearestSystem();
+    const World& world = g.GetWorld();
+    if (index < 0 || static_cast<std::size_t>(index) >= world.systems.size()) return out;
+    const astro::StarSystemData& system = *world.systems[static_cast<std::size_t>(index)];
+    const Mat4f view = camera.ViewRotation();
+    for (int i = 0; i < system.StarCount(); ++i) {
+        const std::optional<TargetInfo> info = g.Resolve(TargetRef{Kind::Star, index, i});
+        if (!info) continue;
+        const Vec3d rel = info->position - g.Ship().position;
+        const double distance = Length(rel);
+        if (distance < 1.0) continue;
+        const Vec3f v = view.TransformDirection(Vec3f(rel * (1.0 / distance)));
+        const float len = std::max(std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z), 1e-6f);
+        out.push_back({info->name, Vec3f{v.x / len, v.y / len, v.z / len}, distance, StarTint(system.StarAt(i), 1.0f), camera.WorldToScreen(info->position)});
+    }
+    return out;
+}
+
+// Un sol pequeno: disco con su color, aro cian y rayos que giran.
+void SunGlyph(const Ui& u, ImVec2 at, float r, ImU32 color, bool behind, float spin) {
+    const float s = u.s;
+    for (int i = 0; i < 8; ++i) {
+        const float a = spin + kTau * static_cast<float>(i) / 8.0f;
+        const ImVec2 from(at.x + std::cos(a) * r * 1.35f, at.y + std::sin(a) * r * 1.35f), to(at.x + std::cos(a) * r * (i % 2 ? 1.75f : 2.05f), at.y + std::sin(a) * r * (i % 2 ? 1.75f : 2.05f));
+        u.d->AddLine(from, to, kInk, 3.0f * s);
+        u.d->AddLine(from, to, behind ? kSignalDim : kSignal, 1.3f * s);
+    }
+    u.d->AddCircleFilled(at, r + 1.5f * s, kInk);
+    if (behind) {
+        u.d->AddCircle(at, r, color, 0, 1.6f * s);
+    } else {
+        u.d->AddCircleFilled(at, r, color);
+        u.d->AddCircle(at, r, kSignal, 0, 1.2f * s);
+    }
+}
+
+std::string Bearing(const SunSight& sun) {
+    const float off = std::acos(std::clamp(sun.view.z, -1.0f, 1.0f)) * 360.0f / kTau;
+    if (off < 3.0f) return "a proa";
+    if (off > 177.0f) return "a popa";
+    return Format("%s %.0f°", sun.view.z >= 0.0f ? "delante" : "detrás", off);
+}
+
+// Sobre el espacio: un anillo holografico alrededor de cada estrella que se ve, y una flecha con su
+// sol junto al anillo de giro para la que queda fuera de la pantalla o detras.
+void SunPointers(const Ui& u, const GameSession& g, const Camera& camera, float width, float height) {
+    const float s = u.s, cx = width * 0.5f, cy = height * 0.5f, ring = 104.0f * s;
+    const float margin = 40.0f * s, spin = static_cast<float>(u.t * 0.6);
+    for (const SunSight& sun : SunSights(g, camera)) {
+        const bool onScreen = sun.screen.visible && sun.screen.x > margin && sun.screen.x < width - margin && sun.screen.y > margin && sun.screen.y < height - margin;
+        if (onScreen) {
+            const ImVec2 at(sun.screen.x, sun.screen.y);
+            const float r = 24.0f * s;
+            for (int i = 0; i < 4; ++i) {
+                const float a = spin + kTau * 0.25f * static_cast<float>(i);
+                u.Arc(at.x, at.y, r, a, a + 0.9f, kInk, 4.0f * s);
+                u.Arc(at.x, at.y, r, a, a + 0.9f, kSignal, 1.6f * s);
+            }
+            const float pulse = static_cast<float>(std::fmod(u.t * 0.8, 1.0));
+            u.d->AddCircle(at, r * (1.0f + pulse * 0.6f), Rgba(70, 232, 255, 0.5f * (1.0f - pulse)), 0, 1.2f * s);
+            u.Label(at.x + r + 8.0f * s, at.y - 16.0f * s, 12.5f, kSignal, sun.name);
+            u.Label(at.x + r + 8.0f * s, at.y, 11.0f, kSignalDim, Distance(sun.distance));
+            continue;
+        }
+        // Hacia donde hay que girar: en la pantalla, la direccion es la de su proyeccion; justo
+        // detras no hay una mejor que otra y se pone abajo.
+        float a = std::atan2(sun.view.y, sun.view.x);
+        if (sun.view.x * sun.view.x + sun.view.y * sun.view.y < 1e-6f) a = kTau * 0.25f;
+        const float tx = std::cos(a), ty = std::sin(a);
+        const ImVec2 at(cx + tx * ring, cy + ty * ring);
+        const bool behind = sun.view.z < 0.0f;
+        SunGlyph(u, at, 6.0f * s, sun.color, behind, spin);
+        const ImVec2 tip(cx + tx * (ring + 24.0f * s), cy + ty * (ring + 24.0f * s));
+        const ImVec2 l(cx + tx * (ring + 16.0f * s) - ty * 5.5f * s, cy + ty * (ring + 16.0f * s) + tx * 5.5f * s);
+        const ImVec2 r(cx + tx * (ring + 16.0f * s) + ty * 5.5f * s, cy + ty * (ring + 16.0f * s) - tx * 5.5f * s);
+        u.d->AddTriangleFilled(ImVec2(tip.x + tx * 1.5f * s, tip.y + ty * 1.5f * s), ImVec2(l.x - tx * 1.5f * s, l.y - ty * 1.5f * s), ImVec2(r.x - tx * 1.5f * s, r.y - ty * 1.5f * s), kInk);
+        u.d->AddTriangleFilled(tip, l, r, kSignal);
+        const std::string text = sun.name + "  " + Bearing(sun);
+        const float lx = tx >= 0.0f ? at.x + 34.0f * s : at.x - 34.0f * s - u.Width(11.5f, text);
+        u.Label(lx, at.y - 7.0f * s, 11.5f, kSignal, text);
+    }
+}
+
+// La pista del eco frio: donde la ve, un circulo de trazos violeta sobre la zona; si queda fuera o
+// detras, una flecha junto al anillo de giro, como las de los soles. Siempre con su distancia.
+void EchoPointer(const Ui& u, const GameSession& g, const Camera& camera, float width, float height) {
+    const std::optional<Vec3d> echo = g.EchoPosition();
+    if (!echo) return;
+    const EchoHint& hint = g.Echo();
+    const float s = u.s, cx = width * 0.5f, cy = height * 0.5f, ring = 104.0f * s, margin = 40.0f * s;
+    const Vec3d rel = *echo - g.Ship().position;
+    const double distance = Length(rel);
+    const std::string text = Format("ECO FRÍO  %s%s", hint.exact ? "" : "~", Distance(distance).c_str()) + (hint.exact ? std::string() : "  ±" + Distance(hint.error));
+    const ScreenPoint p = camera.WorldToScreen(*echo);
+    const bool onScreen = p.visible && p.x > margin && p.x < width - margin && p.y > margin && p.y < height - margin;
+    const float pulse = static_cast<float>(std::fmod(u.t * 0.7, 1.0));
+    if (onScreen) {
+        const float r = (hint.exact ? 12.0f : 22.0f) * s;
+        constexpr int kDashes = 12;
+        for (int i = 0; i < kDashes; ++i) {
+            const float a = static_cast<float>(u.t * 0.4) + kTau * static_cast<float>(i) / kDashes;
+            u.Arc(p.x, p.y, r, a, a + kTau / kDashes * 0.55f, kInk, 4.0f * s);
+            u.Arc(p.x, p.y, r, a, a + kTau / kDashes * 0.55f, kVoid, 1.6f * s);
+        }
+        u.d->AddCircle(ImVec2(p.x, p.y), r * (1.0f + pulse * 0.8f), Rgba(204, 132, 255, 0.5f * (1.0f - pulse)), 0, 1.2f * s);
+        u.Label(p.x + r + 8.0f * s, p.y - 8.0f * s, 12.5f, kVoid, text);
+        u.Mark(Highlight::EchoMarker, p.x - r - 4.0f * s, p.y - r - 4.0f * s, (r + 4.0f * s) * 2.0f, (r + 4.0f * s) * 2.0f);
+        return;
+    }
+    const Vec3f v = camera.ViewRotation().TransformDirection(Vec3f(rel * (1.0 / std::max(distance, 1.0))));
+    float a = std::atan2(v.y, v.x);
+    if (v.x * v.x + v.y * v.y < 1e-6f) a = kTau * 0.25f;
+    const float tx = std::cos(a), ty = std::sin(a);
+    const ImVec2 at(cx + tx * ring, cy + ty * ring);
+    u.d->AddCircle(at, 6.0f * s, kInk, 0, 4.0f * s);
+    u.d->AddCircle(at, 6.0f * s, kVoid, 0, 1.6f * s);
+    const ImVec2 tip(cx + tx * (ring + 24.0f * s), cy + ty * (ring + 24.0f * s));
+    const ImVec2 l(cx + tx * (ring + 16.0f * s) - ty * 5.5f * s, cy + ty * (ring + 16.0f * s) + tx * 5.5f * s);
+    const ImVec2 r(cx + tx * (ring + 16.0f * s) + ty * 5.5f * s, cy + ty * (ring + 16.0f * s) - tx * 5.5f * s);
+    u.d->AddTriangleFilled(ImVec2(tip.x + tx * 1.5f * s, tip.y + ty * 1.5f * s), ImVec2(l.x - tx * 1.5f * s, l.y - ty * 1.5f * s), ImVec2(r.x - tx * 1.5f * s, r.y - ty * 1.5f * s), kInk);
+    u.d->AddTriangleFilled(tip, l, r, kVoid);
+    const float lx = tx >= 0.0f ? at.x + 34.0f * s : at.x - 34.0f * s - u.Width(11.5f, text);
+    u.Label(lx, at.y - 7.0f * s, 11.5f, kVoid, text);
+    u.Mark(Highlight::EchoMarker, at.x - 10.0f * s, at.y - 10.0f * s, 20.0f * s, 20.0f * s);
+}
+
+// El holograma: una esfera vista desde la nave. El centro es hacia donde mira la camara; lo de
+// delante se pinta lleno y lo de detras hueco y apagado. La rejilla es la del plano del sistema,
+// asi que gira cuando gira la nave. Abajo, el proyector que lo emite.
+void SunHologram(const Ui& u, const GameSession& g, const Camera& camera, float x, float y, float w, float h) {
+    const std::vector<SunSight> suns = SunSights(g, camera);
+    if (suns.empty()) return;
+    const float s = u.s, t = static_cast<float>(u.t);
+    const int count = static_cast<int>(suns.size());
+    const std::string code = count == 1 ? "1 ESTRELLA" : Format("%d ESTRELLAS", count);
+    if (u.Folded(HudPanel::Suns)) {
+        u.Panel(x, y + h - kFoldedHeight * s, w, kFoldedHeight * s, "SOLES", code.c_str(), static_cast<int>(HudPanel::Suns));
+        return;
+    }
+    u.Panel(x, y, w, h, "SOLES", code.c_str(), static_cast<int>(HudPanel::Suns));
+
+    const bool list = w >= 250.0f * s;
+    const float radius = std::min((h - 62.0f * s) * 0.5f, (list ? w * 0.5f : w) * 0.5f - 18.0f * s);
+    const float cx = x + (list ? 18.0f * s + radius : w * 0.5f), cy = y + 34.0f * s + radius;
+    const float flicker = 0.88f + 0.12f * std::sin(t * 17.0f) * std::sin(t * 5.3f);
+    const auto holo = [&](float a) { return Rgba(70, 232, 255, a * flicker); };
+    const Mat4f view = camera.ViewRotation();
+    const auto project = [&](const Vec3f& v) { return ImVec2(cx + v.x * radius, cy + v.y * radius); };
+
+    // Proyector: un disco bajo la esfera y la luz que sube hasta ella.
+    const float py = cy + radius + 14.0f * s;
+    u.d->AddTriangleFilled(ImVec2(cx - radius * 0.35f, py), ImVec2(cx + radius * 0.35f, py), ImVec2(cx, cy), Rgba(70, 232, 255, 0.05f));
+    u.d->AddEllipseFilled(ImVec2(cx, py), ImVec2(radius * 0.38f, 4.0f * s), Rgba(70, 232, 255, 0.35f));
+    u.d->AddEllipse(ImVec2(cx, py), ImVec2(radius * 0.55f, 6.0f * s), holo(0.45f), 0.0f, 32, 1.0f * s);
+    u.d->AddCircleFilled(ImVec2(cx, cy), radius, Rgba(0, 20, 34, 0.55f), 64);
+
+    // Rejilla: paralelos y meridianos del plano del sistema (el arriba es +y).
+    const auto gridLine = [&](auto point, int steps, float alpha) {
+        ImVec2 last{};
+        bool lastFront = false;
+        for (int i = 0; i <= steps; ++i) {
+            const Vec3f v = view.TransformDirection(point(kTau * static_cast<float>(i) / static_cast<float>(steps)));
+            const ImVec2 p = project(v);
+            const bool front = v.z >= 0.0f;
+            if (i > 0) u.d->AddLine(last, p, holo(front && lastFront ? alpha : alpha * 0.28f), (front && lastFront ? 1.1f : 0.8f) * s);
+            last = p;
+            lastFront = front;
+        }
+    };
+    for (int k = -2; k <= 2; ++k) {
+        const float lat = static_cast<float>(k) * 0.52f, c = std::cos(lat), sn = std::sin(lat);
+        gridLine([&](float a) { return Vec3f{c * std::cos(a), sn, c * std::sin(a)}; }, 48, k == 0 ? 0.75f : 0.32f);
+    }
+    for (int m = 0; m < 6; ++m) {
+        const float lon = kTau * static_cast<float>(m) / 12.0f, c = std::cos(lon), sn = std::sin(lon);
+        gridLine([&](float a) { return Vec3f{c * std::cos(a), std::sin(a), sn * std::cos(a)}; }, 48, 0.30f);
+    }
+    u.d->AddCircle(ImVec2(cx, cy), radius, holo(0.8f), 64, 1.4f * s);
+    // Polo de arriba del sistema, para saber donde esta el techo.
+    const Vec3f pole = view.TransformDirection(Vec3f{0.0f, 1.0f, 0.0f});
+    if (pole.z >= 0.0f) u.Center(project(pole).x, project(pole).y - 7.0f * s, 10.0f, holo(0.7f), "N");
+
+    // La proa: el centro.
+    u.d->AddLine(ImVec2(cx - 7.0f * s, cy), ImVec2(cx - 3.0f * s, cy), holo(0.9f), 1.2f * s);
+    u.d->AddLine(ImVec2(cx + 3.0f * s, cy), ImVec2(cx + 7.0f * s, cy), holo(0.9f), 1.2f * s);
+    u.d->AddLine(ImVec2(cx, cy - 7.0f * s), ImVec2(cx, cy - 3.0f * s), holo(0.9f), 1.2f * s);
+    u.d->AddLine(ImVec2(cx, cy + 3.0f * s), ImVec2(cx, cy + 7.0f * s), holo(0.9f), 1.2f * s);
+
+    // Los soles, primero los de detras.
+    std::vector<const SunSight*> order;
+    for (const SunSight& sun : suns) order.push_back(&sun);
+    std::sort(order.begin(), order.end(), [](const SunSight* a, const SunSight* b) { return a->view.z < b->view.z; });
+    for (const SunSight* sun : order) {
+        const ImVec2 at = project(sun->view);
+        const bool behind = sun->view.z < 0.0f;
+        if (behind) {
+            for (float k = 0.0f; k < 1.0f; k += 0.16f) u.d->AddLine(ImVec2(cx + (at.x - cx) * k, cy + (at.y - cy) * k), ImVec2(cx + (at.x - cx) * (k + 0.08f), cy + (at.y - cy) * (k + 0.08f)), holo(0.45f), 1.0f * s);
+        } else {
+            u.d->AddLine(ImVec2(cx, cy), at, holo(0.7f), 1.2f * s);
+            u.d->AddCircleFilled(at, 11.0f * s, (sun->color & 0x00FFFFFFu) | (40u << 24));
+        }
+        SunGlyph(u, at, (behind ? 4.0f : 5.5f) * s, sun->color, behind, t * 0.6f);
+    }
+
+    // Lineas de barrido del holograma y una franja que sube.
+    for (float line = cy - radius; line < cy + radius; line += 3.0f * s) u.d->AddLine(ImVec2(cx - radius, line), ImVec2(cx + radius, line), Rgba(0, 12, 28, 0.18f));
+    const float band = cy + radius - std::fmod(t * 0.5f, 1.0f) * radius * 2.0f;
+    const float half = std::sqrt(std::max(radius * radius - (band - cy) * (band - cy), 0.0f));
+    u.d->AddLine(ImVec2(cx - half, band), ImVec2(cx + half, band), holo(0.35f), 2.0f * s);
+
+    if (!list) return;
+    float ly = y + 36.0f * s;
+    const float lx = cx + radius + 18.0f * s;
+    for (const SunSight& sun : suns) {
+        if (ly > y + h - 46.0f * s) break;
+        u.d->AddCircleFilled(ImVec2(lx + 5.0f * s, ly + 8.0f * s), 4.5f * s, sun.color);
+        u.Label(lx + 15.0f * s, ly, 12.5f, kText, sun.name);
+        u.Label(lx + 15.0f * s, ly + 16.0f * s, 11.5f, kSignal, Distance(sun.distance));
+        u.Label(lx + 15.0f * s, ly + 31.0f * s, 11.0f, kMuted, Bearing(sun));
+        ly += 52.0f * s;
+    }
+}
+
 // Ruta y orbita, en el lateral; la alarma, en el centro, por debajo del punto de mira.
 void FlightStatus(const Ui& u, const GameSession& g, float width, float x, float top) {
     const float s = u.s;
@@ -1045,11 +1533,16 @@ void Markers(const Ui& u, const GameSession& g, const Camera& camera, const Targ
             for (int sx = -1; sx <= 1; sx += 2)
                 for (int sy = -1; sy <= 1; sy += 2) {
                     const float cx = p.x + r * static_cast<float>(sx), cy = p.y + r * static_cast<float>(sy);
-                    u.d->AddLine(ImVec2(cx, cy), ImVec2(cx - arm * static_cast<float>(sx), cy), color, 1.6f * s);
-                    u.d->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - arm * static_cast<float>(sy)), color, 1.6f * s);
+                    for (int pass = 0; pass < 2; ++pass) {
+                        const ImU32 c = pass == 0 ? kInk : color;
+                        const float thick = (pass == 0 ? 3.6f : 1.6f) * s;
+                        u.d->AddLine(ImVec2(cx, cy), ImVec2(cx - arm * static_cast<float>(sx), cy), c, thick);
+                        u.d->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - arm * static_cast<float>(sy)), c, thick);
+                    }
                 }
         } else {
-            u.d->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), color, 1.2f);
+            u.d->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), kInk, 3.2f * s);
+            u.d->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), color, 1.4f * s);
         }
         if (selected || k.distance < 2.0e7) u.LabelIn(NameFont(u, k), p.x + r + 6.0f * s, p.y - 8.0f * s, 12.5f, color, Format("%s  %s", k.name.c_str(), Distance(k.distance).c_str()));
     }
@@ -1430,25 +1923,11 @@ void AtlasList(const Ui& u, const GameSession& g, const AtlasView& a, const Atla
 
 // Los 118 elementos de lo elegido en el mapa, o false si no hay datos.
 bool SelectedElements(const GameSession& g, const AtlasView& a, astro::PeriodicShares& out) {
-    const astro::StarSystemData& system = *g.GetWorld().systems[static_cast<std::size_t>(a.system)];
-    if (a.selected.system != a.system || !g.Scanned(a.selected)) return false;
-    const std::uint32_t base = static_cast<std::uint32_t>(a.system) * 1000u;
-    const std::uint32_t index = static_cast<std::uint32_t>(std::max(a.selected.index, 0));
-    if (a.selected.kind == Kind::Planet && static_cast<std::size_t>(a.selected.index) < system.bodies.size()) {
-        out = astro::AllElementsOf(astro::ElementsOf(system.bodies[index].materials), base + index + 1u);
-        return true;
-    }
-    if (a.selected.kind == Kind::Star && a.selected.index < system.StarCount()) {
-        const astro::StarData& star = system.StarAt(a.selected.index);
-        if (star.kind == astro::StarClass::BlackHole) return false;
-        out = astro::AllElementsOf(astro::ElementsOf(star), base + 900u + index);
-        return true;
-    }
-    if (a.selected.kind == Kind::Belt && static_cast<std::size_t>(a.selected.index) < system.belts.size()) {
-        out = astro::AllElementsOf(BeltElements(system.belts[index].profile), base + 800u + index);
-        return true;
-    }
-    return false;
+    if (a.selected.system != a.system) return false;
+    const std::optional<astro::PeriodicShares> shares = g.ElementSharesOf(a.selected);
+    if (!shares) return false;
+    out = *shares;
+    return true;
 }
 
 // Porcentaje en masa en poco sitio: 31.2, 0.45, 3e-5. Cero es que no existe en la naturaleza.
@@ -1577,8 +2056,9 @@ void OptionWheel(const Ui& u, const GameSession& g, const TargetRef* target, flo
         {attached ? "Soltar" : "Atracar", {attached ? HudActionType::Undock : HudActionType::Dock}, attached || kind == Kind::Station},
         {"A pie", {HudActionType::Disembark}, g.Docked()},
         {"Usar", {HudActionType::Use}, kind == Kind::Station || ruin},
-        {"Mina", {HudActionType::Mine}, kind == Kind::Planet || kind == Kind::Belt},
+        {g.DronesOut() > 0 || g.DroneSite() ? "Recoger drones" : "Drones", {HudActionType::Mine}, kind == Kind::Planet || kind == Kind::Belt || g.DronesOut() > 0 || g.DroneSite().has_value()},
         {"Central", {HudActionType::Power}, kind == Kind::Star},
+        {"Estación", {HudActionType::Shipyard}, g.CanDeployShipyard()},
         {"Mejorar", {HudActionType::Upgrade}, kind == Kind::Station},
         {"Análisis", {HudActionType::Analyze}, astroTarget},
         {"Mapa", {HudActionType::ToggleAtlas}, true},
@@ -1587,7 +2067,10 @@ void OptionWheel(const Ui& u, const GameSession& g, const TargetRef* target, flo
         {"Taller", {HudActionType::ToggleWorkshop}, g.CanRefit()},
     };
     constexpr int kCount = static_cast<int>(sizeof(options) / sizeof(options[0]));
+    static_assert(kCount == static_cast<int>(WheelOption::Count), "la rueda sigue el orden de WheelOption (Tutorial.h)");
     const float step = kTau / static_cast<float>(kCount);
+    const int wanted = static_cast<int>(u.WantedOption());  // la que senala el tutorial
+    const float beat = 0.5f + 0.5f * static_cast<float>(std::sin(u.t * 6.0));
 
     u.d->AddCircleFilled(ImVec2(cx, cy), outer + 8.0f * s, kPanel, 96);
     const float dx = u.in.mouseX - cx, dy = u.in.mouseY - cy, reach = std::sqrt(dx * dx + dy * dy);
@@ -1603,8 +2086,9 @@ void OptionWheel(const Ui& u, const GameSession& g, const TargetRef* target, flo
         const float a = -kTau * 0.25f + step * static_cast<float>(i);
         const float from = a - step * 0.5f + 0.012f, to = a + step * 0.5f - 0.012f;
         const bool lit = i == hovered && o.enabled;
+        const bool guided = i == wanted;
         // Un sector de corona no es convexo: se rellena a tiras.
-        const ImU32 fill = lit ? Rgba(255, 170, 40, 0.42f) : Rgba(255, 150, 40, o.enabled ? 0.12f : 0.04f);
+        const ImU32 fill = lit ? Rgba(255, 170, 40, 0.42f) : guided ? Rgba(70, 232, 255, 0.16f + 0.22f * beat) : Rgba(255, 150, 40, o.enabled ? 0.12f : 0.04f);
         constexpr int kStrips = 10;
         for (int k = 0; k < kStrips; ++k) {
             const float t0 = from + (to - from) * static_cast<float>(k) / kStrips, t1 = from + (to - from) * static_cast<float>(k + 1) / kStrips;
@@ -1614,9 +2098,16 @@ void OptionWheel(const Ui& u, const GameSession& g, const TargetRef* target, flo
         u.d->PathClear();
         u.d->PathArcTo(ImVec2(cx, cy), outer, from, to, 18);
         u.d->PathArcTo(ImVec2(cx, cy), inner, to, from, 12);
-        u.d->PathStroke(lit ? kYellow : kAmberDim, ImDrawFlags_Closed, 1.0f * s);
+        u.d->PathStroke(lit ? kYellow : guided ? kSignal : kAmberDim, ImDrawFlags_Closed, (guided ? 2.0f : 1.0f) * s);
         const float at = (outer + inner) * 0.5f;
-        u.Center(cx + std::cos(a) * at, cy + std::sin(a) * at - 8.0f * s, 14.0f, lit ? kYellow : o.enabled ? kText : kMuted, o.name);
+        const float lx = cx + std::cos(a) * at, ly = cy + std::sin(a) * at - 8.0f * s;
+        u.Center(lx, ly, 14.0f, lit ? kYellow : guided ? kSignal : o.enabled ? kText : kMuted, o.name);
+        // Cada opcion queda apuntada por si el tutorial la senala.
+        for (int k = static_cast<int>(Highlight::WheelScan); k <= static_cast<int>(Highlight::WheelAnalysis); ++k) {
+            if (Locate(static_cast<Highlight>(k)).option != static_cast<WheelOption>(i)) continue;
+            const float lw = u.Width(14.0f, o.name) + 16.0f * s;
+            u.Mark(static_cast<Highlight>(k), lx - lw * 0.5f, ly - 4.0f * s, lw, 26.0f * s);
+        }
     }
     u.d->AddCircle(ImVec2(cx, cy), inner - 6.0f * s, kAmberDim, 64);
     u.Center(cx, cy - 18.0f * s, 12.5f, kYellow, "OPCIONES");
@@ -1692,6 +2183,7 @@ void KeyBar(const Ui& u, const GameSession& g, const TargetRef* target, float wi
     if (Attackable(g, target)) {
         hints.push_back({"G", "Disparar"});
         hints.push_back({"B", g.Tracking() ? "Soltar rumbo" : "Alinear cañón"});
+        hints.push_back({"N", g.Cinematic() ? "Cinemática: sí" : "Cinemática"});
     }
     hints.push_back({"K", "Escudo"});
     hints.push_back({"Espacio", "Frenar"});
@@ -1711,13 +2203,20 @@ void KeyBar(const Ui& u, const GameSession& g, const TargetRef* target, float wi
     u.d->AddRectFilledMultiColor(ImVec2(width * 0.5f, y - 6.0f * s), ImVec2((width + total) * 0.5f + 60.0f * s, y + 26.0f * s), kPanel, Rgba(18, 10, 4, 0.0f), Rgba(18, 10, 4, 0.0f), kPanel);
     float x = (width - total) * 0.5f;
     for (const Hint& h : hints) {
+        // Las teclas que el tutorial puede senalar: "R F" vale para la R, "1 2 3" para el 3.
+        const float keyW = std::max(u.Width(12.5f, h.key) + 12.0f * s, 22.0f * s);
+        for (int k = static_cast<int>(Highlight::KeyThrottle); k <= static_cast<int>(Highlight::KeyHybrid); ++k) {
+            const std::string cap = Locate(static_cast<Highlight>(k)).key;
+            const std::string keys = std::string(" ") + h.key + " ";
+            if (keys.find(" " + cap + " ") != std::string::npos) u.Mark(static_cast<Highlight>(k), x, y, keyW, 20.0f * s);
+        }
         u.Key(x, y, h.key, h.text, &step);
         x += step;
     }
 }
 
-// bottom: hasta donde puede bajar (encima del radar).
-void DialogueBox(const Ui& u, const GameSession& g, float width, float bottom) {
+// bottom: hasta donde puede bajar (encima del radar). Devuelve donde acaba el objetivo, por arriba.
+float DialogueBox(const Ui& u, const GameSession& g, const Guidance& guide, float width, float bottom) {
     const Dialogue& talk = g.Conversation();
     const float s = u.s;
     const float w = std::clamp(width - (kLeftWidth + kRightWidth + 60.0f) * s, 520.0f * s, 820.0f * s);
@@ -1750,31 +2249,229 @@ void DialogueBox(const Ui& u, const GameSession& g, float width, float bottom) {
     }
 
     // Debajo del nombre del sistema, que acaba en y = 104, y con la etiqueta en su propia linea.
+    // Debajo del objetivo, lo que aun falta para cumplirlo; a la derecha, repetir el consejo.
+    float below = kObjectiveTop * s;
     if (!talk.Objective().empty()) {
         const std::string text = talk.Objective();
-        const float ow = std::max(u.Width(14.0f, text), u.Width(11.0f, "OBJETIVO")) + 40.0f * s, oh = 40.0f * s;
+        const float buttonW = 190.0f * s, rowH = 17.0f * s;
+        float textW = std::max(u.Width(14.0f, text), u.Width(11.0f, "OBJETIVO"));
+        for (const std::string& b : guide.blockers) textW = std::max(textW, u.Width(12.5f, b) + 14.0f * s);
+        const float ow = std::min(textW + 44.0f * s + buttonW, width - 24.0f * s);
+        const float oh = 40.0f * s + (guide.blockers.empty() ? 0.0f : rowH * static_cast<float>(guide.blockers.size()) + 4.0f * s);
         const float ox = (width - ow) * 0.5f, oy = kObjectiveTop * s;
         u.d->AddRectFilled(ImVec2(ox, oy), ImVec2(ox + ow, oy + oh), kPanel);
         u.d->AddRect(ImVec2(ox, oy), ImVec2(ox + ow, oy + oh), kAmberDim);
         u.d->AddRectFilled(ImVec2(ox, oy), ImVec2(ox + 4.0f * s, oy + oh), kYellow);
-        u.Spaced(ox + 16.0f * s, oy + 4.0f * s, 11.0f, kMuted, "OBJETIVO");
+        u.Spaced(ox + 16.0f * s, oy + 4.0f * s, 11.0f, kMuted, talk.Optional() ? "OBJETIVO OPCIONAL" : "OBJETIVO");
         u.Label(ox + 16.0f * s, oy + 19.0f * s, 14.0f, kYellow, text);
+        float line = oy + 40.0f * s;
+        for (const std::string& b : guide.blockers) {
+            u.d->AddCircleFilled(ImVec2(ox + 20.0f * s, line + 7.0f * s), 2.5f * s, kOrange);
+            u.Label(ox + 30.0f * s, line, 12.5f, kOrange, b);
+            line += rowH;
+        }
+        u.Button(ox + ow - buttonW - 10.0f * s, oy + 8.0f * s, buttonW, 24.0f * s, "REPETIR", "Retroceso", {HudActionType::ReplayTip});
+        below = oy + oh;
     }
+
+    // Objetivo cumplido: un destello en el borde de la pantalla y el aviso, que se apaga solo.
+    const double since = talk.SinceCompleted();
+    if (since < 2.6 && !talk.LastCompleted().empty()) {
+        const float flash = static_cast<float>(std::max(0.0, 1.0 - since / 0.7));
+        if (flash > 0.0f) {
+            const float edge = 14.0f * s;
+            u.d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(width, edge), Rgba(70, 232, 255, 0.45f * flash), Rgba(70, 232, 255, 0.45f * flash), Rgba(70, 232, 255, 0.0f), Rgba(70, 232, 255, 0.0f));
+            u.d->AddRect(ImVec2(2.0f, 2.0f), ImVec2(width - 2.0f, ImGui::GetIO().DisplaySize.y - 2.0f), Rgba(70, 232, 255, 0.55f * flash), 0.0f, 0, 3.0f * s);
+        }
+        const float fade = static_cast<float>(std::clamp((2.6 - since) / 0.6, 0.0, 1.0));
+        const std::string head = "OBJETIVO CUMPLIDO";
+        const float bw = std::max(u.Width(14.0f, talk.LastCompleted()), u.SpacedWidth(11.0f, head)) + 56.0f * s, bh = 40.0f * s;
+        const float bx = (width - bw) * 0.5f, by = talk.Objective().empty() ? kObjectiveTop * s : below + 8.0f * s;
+        u.d->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), Rgba(4, 22, 30, 0.88f * fade));
+        u.d->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh), Rgba(70, 232, 255, fade), 0.0f, 0, 1.5f * s);
+        // Una marca de visto bueno, dibujada: la letra no la tiene.
+        const float cx = bx + 20.0f * s, cy = by + bh * 0.5f;
+        u.d->AddLine(ImVec2(cx - 7.0f * s, cy), ImVec2(cx - 2.0f * s, cy + 6.0f * s), Rgba(70, 232, 255, fade), 3.0f * s);
+        u.d->AddLine(ImVec2(cx - 2.0f * s, cy + 6.0f * s), ImVec2(cx + 8.0f * s, cy - 7.0f * s), Rgba(70, 232, 255, fade), 3.0f * s);
+        u.Spaced(bx + 38.0f * s, by + 4.0f * s, 11.0f, Rgba(70, 232, 255, fade), head);
+        u.Label(bx + 38.0f * s, by + 19.0f * s, 14.0f, Rgba(255, 232, 188, fade), talk.LastCompleted());
+        if (talk.Objective().empty()) below = std::max(below, by + bh);
+    }
+    return below;
 }
 
-void ScanOverlay(const Ui& u, const GameSession& g, float width, float height) {
-    if (!g.Scanning()) return;
-    const float s = u.s, cx = width * 0.5f, cy = height * 0.5f, r = 120.0f * s;
-    const float progress = static_cast<float>(g.ScanProgress());
-    u.Arc(cx, cy, r, -1.5708f, -1.5708f + kTau, kAmberFaint, 6.0f * s);
-    u.Arc(cx, cy, r, -1.5708f, -1.5708f + kTau * progress, kYellow, 6.0f * s);
-    for (int i = 0; i < 60; ++i) {
-        const float a = kTau * static_cast<float>(i) / 60.0f + static_cast<float>(u.t * 0.3);
-        const float wave = 8.0f + 12.0f * std::abs(std::sin(a * 7.0f + static_cast<float>(u.t * 6.0)));
-        u.d->AddLine(ImVec2(cx + std::cos(a) * (r + 8.0f * s), cy + std::sin(a) * (r + 8.0f * s)), ImVec2(cx + std::cos(a) * (r + (8.0f + wave) * s), cy + std::sin(a) * (r + (8.0f + wave) * s)), i % 2 == 0 ? kAmberDim : Rgba(204, 132, 255, 0.45f));
+// La guia del tutorial: un marco que late alrededor de lo que hay que usar y una flecha hacia el.
+// Una opcion de la rueda con la rueda cerrada senala la T; una ventana plegada, su cabecera y como
+// desplegarla. Lo que no esta en pantalla (la barra de teclas oculta, el radar en el minimalista)
+// sale en una etiqueta bajo el objetivo. chipY: donde acaba el objetivo.
+void GuideOverlay(const Ui& u, const Spots& spots, const Guidance& guide, bool wheelOpen, float width, float height, float chipY) {
+    if (guide.highlight == Highlight::None) return;
+    const float s = u.s;
+    const HighlightTarget where = Locate(guide.highlight);
+    Highlight shown = guide.highlight;
+    std::string label = where.label;
+    if (where.where == HighlightTarget::Where::Wheel && !wheelOpen) {
+        shown = Highlight::KeyWheel;
+        label = std::string("T, y en la rueda: ") + where.label;
     }
-    u.Center(cx, cy + r + 34.0f * s, 14.0f, kYellow, Format("BARRIDO MICROONDAS / UV   %.0f %%", progress * 100.0f));
-    u.Center(cx, cy + r + 54.0f * s, 12.0f, kMuted, Format("Alcance %s   nivel %d", Distance(g.ScanRange()).c_str(), g.Ship().scannerTier));
+    if (shown == Highlight::PinnedContact && !spots[shown].seen) {
+        shown = Highlight::KeyTarget;
+        label = Locate(shown).label;
+    }
+    const Spots::Spot& spot = spots[shown];
+    const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(u.t * 6.0));
+    const ImU32 cyan = Rgba(70, 232, 255, 0.55f + 0.45f * pulse);
+
+    if (!spot.seen) {
+        const HighlightTarget there = Locate(shown);
+        const std::string text = there.where == HighlightTarget::Where::Panel ? label + ": no está a la vista" : label;
+        const float tw = u.Width(13.0f, text) + 28.0f * s, th = 26.0f * s;
+        const float tx = (width - tw) * 0.5f, ty = chipY + 8.0f * s;
+        u.d->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), Rgba(4, 22, 30, 0.88f), th * 0.5f);
+        u.d->AddRect(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), cyan, th * 0.5f, 0, 1.6f * s);
+        u.Center(width * 0.5f, ty + 5.0f * s, 13.0f, kSignal, text);
+        return;
+    }
+    if (spot.folded) label = (u.in.cursor ? "Pulse la cabecera para desplegar: " : "C y clic en la cabecera: ") + label;
+    // Dentro de la rueda abierta, el sector de la opcion ya late en cian (OptionWheel).
+    if (where.where == HighlightTarget::Where::Wheel && wheelOpen && shown == guide.highlight) return;
+
+    // El marco: tinta debajo, cian encima, y un eco que se expande. Sin redondear: una linea gruesa
+    // con esquinas de pocos pixeles deja picos que cruzan el interior y tapan lo senalado.
+    const float m = 5.0f * s;
+    const ImVec2 a(spot.x0 - m, spot.y0 - m), b(spot.x1 + m, spot.y1 + m);
+    u.d->AddRect(a, b, kInk, 0.0f, 0, 4.0f * s);
+    u.d->AddRect(a, b, cyan, 0.0f, 0, 2.0f * s);
+    const float ping = static_cast<float>(std::fmod(u.t * 1.2, 1.0)), grow = ping * 12.0f * s;
+    u.d->AddRect(ImVec2(a.x - grow, a.y - grow), ImVec2(b.x + grow, b.y + grow), Rgba(70, 232, 255, 0.6f * (1.0f - ping)), 6.0f * s, 0, 1.2f * s);
+
+    // La flecha llega desde el centro de la pantalla hasta el borde mas cercano del marco.
+    const float cx = width * 0.5f, cy = height * 0.5f;
+    const float tipX = std::clamp(cx, a.x - 4.0f * s, b.x + 4.0f * s), tipY = std::clamp(cy, a.y - 4.0f * s, b.y + 4.0f * s);
+    float dx = tipX - cx, dy = tipY - cy;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f) {
+        dx = 0.0f;
+        dy = 1.0f;
+    } else {
+        dx /= len;
+        dy /= len;
+    }
+    const float bob = (6.0f + 6.0f * pulse) * s, shaft = 34.0f * s;
+    const ImVec2 tip(tipX - dx * bob, tipY - dy * bob);
+    const ImVec2 base(tip.x - dx * shaft, tip.y - dy * shaft);
+    const ImVec2 head(tip.x - dx * 12.0f * s, tip.y - dy * 12.0f * s);
+    const ImVec2 l(head.x - dy * 8.0f * s, head.y + dx * 8.0f * s), r(head.x + dy * 8.0f * s, head.y - dx * 8.0f * s);
+    u.d->AddLine(base, head, kInk, 7.0f * s);
+    u.d->AddLine(base, head, kSignal, 3.0f * s);
+    u.d->AddTriangleFilled(ImVec2(tip.x + dx * 2.0f * s, tip.y + dy * 2.0f * s), ImVec2(l.x - dy * 2.0f * s, l.y + dx * 2.0f * s), ImVec2(r.x + dy * 2.0f * s, r.y - dx * 2.0f * s), kInk);
+    u.d->AddTriangleFilled(tip, l, r, kSignal);
+
+    // La etiqueta, detras de la flecha y dentro de la pantalla.
+    const float tw = u.Width(13.0f, label) + 20.0f * s, th = 24.0f * s;
+    float lx = base.x - dx * 8.0f * s - tw * 0.5f, ly = base.y - dy * 8.0f * s - th * 0.5f;
+    if (std::abs(dy) >= std::abs(dx)) ly = dy > 0.0f ? base.y - th - 6.0f * s : base.y + 6.0f * s;
+    else lx = dx > 0.0f ? base.x - tw - 6.0f * s : base.x + 6.0f * s;
+    lx = std::clamp(lx, 8.0f * s, width - tw - 8.0f * s);
+    ly = std::clamp(ly, 8.0f * s, height - th - 8.0f * s);
+    u.d->AddRectFilled(ImVec2(lx, ly), ImVec2(lx + tw, ly + th), Rgba(4, 22, 30, 0.88f), th * 0.5f);
+    u.d->AddRect(ImVec2(lx, ly), ImVec2(lx + tw, ly + th), kSignalDim, th * 0.5f, 0, 1.0f * s);
+    u.Label(lx + 10.0f * s, ly + 4.0f * s, 13.0f, kSignal, label);
+}
+
+constexpr float kScanWindowHeight = 124.0f;
+
+// El barrido, en una ventana a la izquierda: un ecualizador que suena con lo que encuentra y una
+// linea de progreso. Cada barra es un rumbo alrededor de la nave (de popa por babor a popa por
+// estribor); cuando la linea pasa por el rumbo de una senal, su barra da un golpe. Las barras se
+// agitan si la nave gira y crecen bajo el cursor. Devuelve la altura que ocupa.
+float ScanWindow(const Ui& u, const GameSession& g, float x, float y) {
+    if (!g.Scanning()) return 0.0f;
+    const float s = u.s, w = kLeftWidth * s, h = kScanWindowHeight * s;
+    const float progress = std::clamp(static_cast<float>(g.ScanProgress()), 0.0f, 1.0f);
+    const float t = static_cast<float>(u.t);
+    u.Panel(x, y, w, h, "SONDEO", "MICROONDAS / UV");
+
+    const float ix = x + 16.0f * s, iw = w - 32.0f * s;
+    const float base = y + 76.0f * s, tall = 40.0f * s;
+    const float head = ix + iw * progress;
+
+    // Golpes: el rumbo de cada senal al alcance, de 0 a 1 a lo ancho de la ventana.
+    constexpr int kBars = 46;
+    float hit[kBars] = {};
+    int found = 0;
+    const ShipState& ship = g.Ship();
+    const Mat4d toShip = ship.orientation.Conjugate().ToMatrix();
+    for (const Contact& c : g.Contacts()) {
+        if (c.distance > g.ScanRange()) continue;
+        const Vec3d rel = toShip.TransformDirection(c.position - ship.position);
+        const float at = static_cast<float>(std::atan2(rel.x, rel.z)) / kTau + 0.5f;
+        if (at > progress) continue;
+        ++found;
+        const float since = progress - at;  // cuanto hace que la linea paso por ahi
+        const int bar = std::clamp(static_cast<int>(at * kBars), 0, kBars - 1);
+        for (int k = -2; k <= 2; ++k) {
+            const int b = bar + k;
+            if (b < 0 || b >= kBars) continue;
+            const float strength = (0.35f + 0.65f * std::exp(-since * 9.0f)) * (k == 0 ? 1.0f : k == -1 || k == 1 ? 0.55f : 0.22f);
+            hit[b] = std::max(hit[b], strength);
+        }
+    }
+    const float turning = static_cast<float>(std::clamp(Length(ship.angularRate) / std::max(g.Rules().ship.turnRate, 1e-6), 0.0, 1.0));
+    const bool over = u.in.cursor && u.in.mouseX >= x && u.in.mouseX <= x + w && u.in.mouseY >= y && u.in.mouseY <= y + h;
+    const float beat = std::pow(0.5f + 0.5f * std::sin(t * kTau * 2.1f), 8.0f);  // un pulso, como un bombo
+
+    const float step = iw / static_cast<float>(kBars);
+    for (int i = 0; i < kBars; ++i) {
+        const float bx = ix + step * static_cast<float>(i);
+        const float f = static_cast<float>(i);
+        // Tres ondas que se cruzan: parece musica y nunca se repite igual.
+        float level = 0.20f + 0.42f * (0.5f + 0.5f * std::sin(t * 6.3f + f * 0.83f)) * (0.5f + 0.5f * std::sin(t * 2.7f - f * 0.31f));
+        level += 0.22f * beat * (0.5f + 0.5f * std::sin(f * 1.7f));
+        level += turning * 0.30f * (0.5f + 0.5f * std::sin(t * 23.0f + f * 2.9f));
+        if (over) level += 0.45f * std::exp(-std::pow((bx + step * 0.5f - u.in.mouseX) / (34.0f * s), 2.0f));
+        level += hit[i] * 0.75f;
+        const bool swept = bx + step * 0.5f <= head;
+        if (!swept) level *= 0.6f;  // lo que falta por barrer escucha, mas bajo
+        level = std::clamp(level, 0.05f, 1.0f);
+        const float top = base - tall * level, bw = std::max(step - 2.0f * s, 1.0f);
+        const ImU32 color = !swept ? Rgba(255, 150, 40, 0.30f) :hit[i] > 0.5f ? kSignal : hit[i] > 0.0f ? Rgba(70, 232, 255, 0.7f) : level > 0.55f ? kYellow : kAmber;
+        u.d->AddRectFilled(ImVec2(bx, top), ImVec2(bx + bw, base), color);
+        // Reflejo hacia abajo, mas corto y apagado.
+        u.d->AddRectFilled(ImVec2(bx, base + 2.0f * s), ImVec2(bx + bw, base + 2.0f * s + tall * level * 0.28f), swept ? Rgba(255, 150, 40, 0.22f) : Rgba(255, 150, 40, 0.06f));
+        if (swept && hit[i] > 0.5f) u.d->AddRectFilled(ImVec2(bx, top - 4.0f * s), ImVec2(bx + bw, top - 2.5f * s), kSignal);
+    }
+
+    // Osciloscopio sobre lo barrido: la senal en bruto, en violeta como el ultravioleta.
+    ImVec2 wave[96];
+    int points = 0;
+    for (int i = 0; i < 96 && points < 96; ++i) {
+        const float px = ix + iw * static_cast<float>(i) / 95.0f;
+        if (px > head) break;
+        const float bar = std::clamp((px - ix) / step, 0.0f, static_cast<float>(kBars - 1));
+        const float amp = (6.0f + 14.0f * hit[static_cast<int>(bar)] + 6.0f * turning) * s;
+        wave[points++] = ImVec2(px, base - tall * 0.5f + std::sin(px * 0.09f / s + t * 9.0f) * amp * (0.6f + 0.4f * std::sin(px * 0.013f / s - t * 3.0f)));
+    }
+    if (points > 1) u.d->AddPolyline(wave, points, Rgba(204, 132, 255, 0.55f), 0, 1.3f * s);
+
+    // La linea de progreso, con marcas cada diez por ciento y la cabeza encendida.
+    const float ly = y + 98.0f * s;
+    u.d->AddLine(ImVec2(ix, ly), ImVec2(ix + iw, ly), kAmberFaint, 2.0f * s);
+    for (int k = 0; k <= 10; ++k) {
+        const float tx = ix + iw * static_cast<float>(k) / 10.0f;
+        u.d->AddLine(ImVec2(tx, ly - (k % 5 == 0 ? 5.0f : 3.0f) * s), ImVec2(tx, ly + (k % 5 == 0 ? 5.0f : 3.0f) * s), tx <= head ? kAmber : kAmberDim, 1.0f);
+    }
+    u.d->AddLine(ImVec2(ix, ly), ImVec2(head, ly), Rgba(255, 228, 96, 0.25f), 7.0f * s);
+    u.d->AddLine(ImVec2(ix, ly), ImVec2(head, ly), kYellow, 2.0f * s);
+    u.d->AddLine(ImVec2(head, base - tall - 4.0f * s), ImVec2(head, ly), Rgba(255, 228, 96, 0.55f), 1.0f * s);
+    const float glow = 0.6f + 0.4f * std::sin(t * 14.0f);
+    u.d->AddCircleFilled(ImVec2(head, ly), 6.0f * s, Rgba(255, 228, 96, 0.25f * glow));
+    u.d->AddQuadFilled(ImVec2(head, ly - 4.5f * s), ImVec2(head + 4.5f * s, ly), ImVec2(head, ly + 4.5f * s), ImVec2(head - 4.5f * s, ly), kYellow);
+
+    const float ty = y + 105.0f * s;
+    u.Label(ix, ty, 11.5f, kMuted, Format("Alcance %s   nivel %d", Distance(g.ScanRange()).c_str(), ship.scannerTier));
+    u.Right(ix + iw, ty, 11.5f, found > 0 ? kSignal : kMuted, Format("%d %s   %.0f %%", found, found == 1 ? "eco" : "ecos", progress * 100.0f));
+    return h;
 }
 
 void Log(const Ui& u, const GameSession& g, float x, float y) {
@@ -2019,15 +2716,47 @@ void DataColumn(const Ui& u, float x, float y, int rows) {
     }
 }
 
+// Alto de la configuracion, sin escalar: la interfaz y la letra, la calidad, la pantalla y el volumen.
+constexpr float SettingsHeight() { return 540.0f; }
+
 // La configuracion: en el menu de inicio y en la pausa. Devuelve su alto.
 float SettingsPanel(const Ui& u, float x, float y, float w, bool fromPause) {
     const float s = u.s;
     const GameSettings& settings = u.in.settings;
     const QualityProfile& profile = Profile(settings.quality);
-    const float h = 336.0f * s;
+    const float h = SettingsHeight() * s;
     u.Panel(x, y, w, h, "AJUSTES DEL SISTEMA", "SE GUARDAN PARA TODAS LAS PARTIDAS");
     const float ix = x + 18.0f * s, iw = w - 36.0f * s;
     float line = y + 40.0f * s;
+
+    // Una fila de botones inclinados; el activo, encendido.
+    const auto choices = [&](int count, int active, float bh, auto caption, auto action) {
+        const float cgap = 8.0f * s, cw = (iw - cgap * static_cast<float>(count - 1)) / static_cast<float>(count);
+        for (int i = 0; i < count; ++i) {
+            const float bx = ix + (cw + cgap) * static_cast<float>(i);
+            const bool on = i == active;
+            const bool hover = u.Hover(bx, line, cw, bh);
+            Slanted(u, bx, line, cw, bh, on ? Rgba(255, 110, 24, 0.42f) : hover ? Rgba(255, 150, 40, 0.20f) : Rgba(40, 14, 4, 0.78f), on ? kYellow : hover ? kAmber : kAmberDim, (on ? 2.0f : 1.2f) * s);
+            u.Center(bx + cw * 0.5f, line + (bh / s - 15.0f) * 0.5f * s, 13.5f, on ? kYellow : hover ? kText : kMuted, caption(i));
+            if (hover && u.in.clicked && !on) u.actions.push_back(action(i));
+        }
+        line += bh + 10.0f * s;
+    };
+
+    // La interfaz: lo primero, porque es lo que mas cambia la partida.
+    u.Spaced(ix, line, 13.0f, kAmber, "INTERFAZ");
+    u.Right(ix + iw, line + 1.0f * s, 11.0f, kMuted, settings.Minimal() ? "Porcentajes y letra grande" : "Unidades reales y gráficas");
+    line += 22.0f * s;
+    choices(2, settings.Minimal() ? 0 : 1, 36.0f * s, [](int i) { return std::string(i == 0 ? "MINIMALISTA" : "EXPERTA"); },
+            [](int i) { return HudAction{HudActionType::SetUiStyle, i}; });
+    u.Spaced(ix, line, 13.0f, kAmber, "TAMAÑO DE LETRA");
+    u.Right(ix + iw, line + 1.0f * s, 11.0f, kMuted, "Toda la interfaz crece con ella");
+    line += 22.0f * s;
+    int scale = 0;
+    for (int i = 0; i < kUiScaleCount; ++i)
+        if (settings.uiScale >= kUiScales[i]) scale = i;
+    choices(kUiScaleCount, scale, 32.0f * s, [](int i) { return Format("%d %%", kUiScales[i]); }, [](int i) { return HudAction{HudActionType::UiScale, i}; });
+    line += 6.0f * s;
 
     u.Spaced(ix, line, 13.0f, kAmber, "CALIDAD GRÁFICA");
     line += 24.0f * s;
@@ -2036,16 +2765,17 @@ float SettingsPanel(const Ui& u, float x, float y, float w, bool fromPause) {
     for (int i = 0; i < count; ++i) {
         const GraphicsQuality q = static_cast<GraphicsQuality>(i);
         const float bx = ix + (bw + gap) * static_cast<float>(i);
-        const bool active = q == settings.quality;
+        const bool active = q == settings.quality && !settings.Custom();
         const bool hover = u.Hover(bx, line, bw, bh);
         Slanted(u, bx, line, bw, bh, active ? Rgba(255, 110, 24, 0.42f) : hover ? Rgba(255, 150, 40, 0.20f) : Rgba(40, 14, 4, 0.78f), active ? kYellow : hover ? kAmber : kAmberDim, (active ? 2.0f : 1.2f) * s);
         u.Center(bx + bw * 0.5f, line + 11.0f * s, 14.0f, active ? kYellow : hover ? kText : kMuted, Profile(q).name);
         if (hover && u.in.clicked) u.actions.push_back({HudActionType::Quality, i});
     }
     line += bh + 12.0f * s;
-    Wrapped(u, ix, line, 12.5f, iw, kText, profile.description);
+    const GraphicsOptions& g = settings.graphics;
+    Wrapped(u, ix, line, 12.5f, iw, kText, settings.Custom() ? "Personalizada: las opciones se han cambiado una a una en GRÁFICOS. Elegir una calidad las vuelve a poner todas." : profile.description);
     line += 38.0f * s;
-    u.Label(ix, line, 11.5f, kMuted, Format("Escena al %.0f %%   Bloom %s   Grano %s   Detalle %.0f", profile.renderScale * 100.0f, profile.bloom ? "sí" : "no", profile.film ? "sí" : "no", profile.maxOctaves));
+    u.Label(ix, line, 11.5f, kMuted, Format("Escena al %d %%   Bloom %s   Grano %s   Sombras %s", g.renderScale, g.bloom ? "sí" : "no", g.film ? "sí" : "no", g.shadows ? "sí" : "no"));
     line += 30.0f * s;
 
     const auto toggle = [&](const char* name, bool on, HudActionType action) {
@@ -2062,9 +2792,83 @@ float SettingsPanel(const Ui& u, float x, float y, float w, bool fromPause) {
     toggle("PANTALLA COMPLETA", settings.fullscreen, HudActionType::ToggleFullscreen);
     toggle("SINCRONIZACIÓN VERTICAL", settings.vsync, HudActionType::ToggleVsync);
 
+    // Volumen de los sonidos de la interfaz: cinco niveles.
+    u.Spaced(ix, line, 13.0f, kAmber, "VOLUMEN DE LA INTERFAZ");
+    line += 22.0f * s;
+    const int levels = 5;
+    const float vgap = 6.0f * s, vw = (iw - vgap * static_cast<float>(levels - 1)) / static_cast<float>(levels), vh = 30.0f * s;
+    for (int i = 0; i < levels; ++i) {
+        const int value = i * 25;
+        const float bx = ix + (vw + vgap) * static_cast<float>(i);
+        const bool active = settings.uiVolume == value;
+        const bool hover = u.Hover(bx, line, vw, vh);
+        Slanted(u, bx, line, vw, vh, active ? Rgba(255, 110, 24, 0.42f) : hover ? Rgba(255, 150, 40, 0.20f) : Rgba(40, 14, 4, 0.78f), active ? kYellow : hover ? kAmber : kAmberDim, (active ? 2.0f : 1.2f) * s);
+        u.Center(bx + vw * 0.5f, line + 8.0f * s, 12.5f, active ? kYellow : hover ? kText : kMuted, value == 0 ? std::string("NO") : Format("%d %%", value));
+        if (hover && u.in.clicked) u.actions.push_back({HudActionType::UiVolume, i});
+    }
+    line += vh + 8.0f * s;
+
     const float back = 220.0f * s;
     MenuButton(u, x + w - back - 18.0f * s, y + h - 52.0f * s, back, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
-    if (!fromPause) u.Label(ix, y + h - 40.0f * s, 11.0f, kMuted, "Si va lento, prueba Baja o Media.");
+    // La pestaña de graficos: cada opcion por separado.
+    (void)fromPause;
+    MenuButton(u, ix, y + h - 52.0f * s, w - back - 54.0f * s, 38.0f * s, "GRÁFICOS", "", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Graphics)}, 1);
+    return h;
+}
+
+// La pestaña de graficos: lo que cada calidad cambia de golpe, aqui opcion a opcion. Devuelve su alto.
+float GraphicsPanel(const Ui& u, float x, float y, float w) {
+    const float s = u.s;
+    const GameSettings& settings = u.in.settings;
+    const GraphicsOptions& g = settings.graphics;
+    const float h = 486.0f * s;
+    u.Panel(x, y, w, h, "GRÁFICOS", settings.Custom() ? "PERSONALIZADA" : Upper(Profile(settings.quality).name).c_str());
+    const float ix = x + 18.0f * s, iw = w - 36.0f * s;
+    float line = y + 40.0f * s;
+
+    // Una fila de botones: el nombre, para que sirve y sus valores.
+    const auto choice = [&](const char* name, const char* hint, GraphicsOption option, int current, const char* const labels[4], const int values[4]) {
+        u.Spaced(ix, line, 12.5f, kAmber, name);
+        u.Right(ix + iw, line + 1.0f * s, 10.5f, kMuted, hint);
+        line += 20.0f * s;
+        const float gap = 6.0f * s, bw = (iw - gap * 3.0f) / 4.0f, bh = 28.0f * s;
+        for (int i = 0; i < 4; ++i) {
+            const float bx = ix + (bw + gap) * static_cast<float>(i);
+            const bool active = current == values[i];
+            const bool hover = u.Hover(bx, line, bw, bh);
+            Slanted(u, bx, line, bw, bh, active ? Rgba(255, 110, 24, 0.42f) : hover ? Rgba(255, 150, 40, 0.20f) : Rgba(40, 14, 4, 0.78f), active ? kYellow : hover ? kAmber : kAmberDim, (active ? 2.0f : 1.2f) * s);
+            u.Center(bx + bw * 0.5f, line + 7.0f * s, 12.5f, active ? kYellow : hover ? kText : kMuted, labels[i]);
+            if (hover && u.in.clicked && !active) u.actions.push_back({HudActionType::Graphics, static_cast<int>(option), 0, values[i]});
+        }
+        line += bh + 12.0f * s;
+    };
+    static const char* const kScale[4] = {"50 %", "67 %", "75 %", "100 %"};
+    static const char* const kLevel[4] = {"BAJO", "MEDIO", "ALTO", "ULTRA"};
+    static const char* const kHull[4] = {"NADA", "QUEMADO", "GRIETAS", "AGUJEROS"};
+    static const int kSteps[4] = {0, 1, 2, 3};
+    choice("RESOLUCIÓN DE LA ESCENA", "lo que más alivia a la tarjeta", GraphicsOption::RenderScale, g.renderScale, kScale, kRenderScales);
+    choice("SUPERFICIES", "relieve de planetas y estrellas", GraphicsOption::Surfaces, g.surfaces, kLevel, kSteps);
+    choice("LUZ Y NEBULOSA", "pasos de la nube y luz fina", GraphicsOption::Lighting, g.lighting, kLevel, kSteps);
+    choice("DAÑO DEL CASCO", "solo lo que se ve; el daño es el mismo", GraphicsOption::HullDamage, g.hullDamage, kHull, kSteps);
+
+    const auto toggle = [&](const char* name, bool on, GraphicsOption option) {
+        const float th = 30.0f * s;
+        const bool hover = u.Hover(ix, line, iw, th);
+        u.d->AddRectFilled(ImVec2(ix, line), ImVec2(ix + iw, line + th), hover ? Rgba(255, 150, 40, 0.16f) : Rgba(255, 150, 40, 0.05f));
+        u.d->AddRect(ImVec2(ix, line), ImVec2(ix + iw, line + th), hover ? kAmber : kAmberFaint);
+        u.Spaced(ix + 12.0f * s, line + 8.0f * s, 12.5f, hover ? kYellow : kText, name);
+        const float sw = 60.0f * s, sx = ix + iw - sw - 10.0f * s;
+        Slanted(u, sx, line + 5.0f * s, sw, 20.0f * s, on ? Rgba(255, 110, 24, 0.55f) : Rgba(40, 14, 4, 0.9f), on ? kYellow : kAmberDim, 1.2f * s);
+        u.Center(sx + sw * 0.5f, line + 7.0f * s, 12.0f, on ? kYellow : kMuted, on ? "SÍ" : "NO");
+        if (hover && u.in.clicked) u.actions.push_back({HudActionType::Graphics, static_cast<int>(option)});
+        line += th + 6.0f * s;
+    };
+    toggle("BLOOM", g.bloom, GraphicsOption::Bloom);
+    toggle("GRANO Y ABERRACIÓN", g.film, GraphicsOption::Film);
+    toggle("SOMBRAS DE LA NAVE", g.shadows, GraphicsOption::Shadows);
+
+    const float back = 220.0f * s;
+    MenuButton(u, x + w - back - 18.0f * s, y + h - 52.0f * s, back, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)}, 0);
     return h;
 }
 
@@ -2086,9 +2890,120 @@ void CreditsPanel(const Ui& u, float x, float y, float w) {
     MenuButton(u, x + w - 238.0f * s, y + h - 52.0f * s, 220.0f * s, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
 }
 
+// Una muestra de cada interfaz dentro de su tarjeta: la minimalista con dos ventanas redondas y
+// barras gruesas; la experta con paneles, un reloj, un radar y columnas de cifras.
+void InterfacePreview(const Ui& u, float x, float y, float w, float h, bool minimal, bool lit) {
+    const float s = u.s;
+    u.d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), Rgba(6, 3, 2, 0.75f), 8.0f * s);
+    u.d->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), lit ? kAmberDim : kAmberFaint, 8.0f * s);
+    // La nave en el centro, como en la partida.
+    const float cx = x + w * 0.5f, cy = y + h * 0.55f;
+    u.d->AddCircle(ImVec2(cx, cy), 16.0f * s, Rgba(255, 220, 160, 0.35f), 24, 2.0f * s);
+    u.d->AddCircleFilled(ImVec2(cx, cy), 6.0f * s, Rgba(150, 220, 255, 0.6f), 12);
+    if (minimal) {
+        const float pw = w * 0.30f, r = 6.0f * s;
+        const auto card = [&](float px, float py, float ph, int bars) {
+            u.d->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + ph), Rgba(30, 16, 8, 0.95f), r);
+            u.d->AddRect(ImVec2(px, py), ImVec2(px + pw, py + ph), Rgba(255, 170, 60, 0.45f), r);
+            u.d->AddRectFilled(ImVec2(px + 8.0f * s, py + 8.0f * s), ImVec2(px + pw * 0.55f, py + 15.0f * s), kText, 3.0f * s);
+            for (int b = 0; b < bars; ++b) {
+                const float by = py + 26.0f * s + static_cast<float>(b) * 17.0f * s;
+                const float fill = 0.35f + 0.6f * Hash(b * 3 + bars);
+                u.d->AddRectFilled(ImVec2(px + 8.0f * s, by), ImVec2(px + pw - 8.0f * s, by + 7.0f * s), Rgba(255, 150, 40, 0.15f), 3.5f * s);
+                u.d->AddRectFilled(ImVec2(px + 8.0f * s, by), ImVec2(px + 8.0f * s + (pw - 16.0f * s) * fill, by + 7.0f * s), b == 1 ? kVoid : b == 2 ? kNeutral : kYellow, 3.5f * s);
+            }
+        };
+        card(x + 10.0f * s, y + 10.0f * s, 88.0f * s, 3);
+        card(x + w - pw - 10.0f * s, y + 10.0f * s, 60.0f * s, 2);
+        // Una ventana plegada: solo su cabecera.
+        u.d->AddRectFilled(ImVec2(x + 10.0f * s, y + 106.0f * s), ImVec2(x + 10.0f * s + pw, y + 122.0f * s), Rgba(30, 16, 8, 0.95f), r);
+        u.Chevron(x + pw, y + 114.0f * s, 3.5f * s, false, kAmber);
+        return;
+    }
+    // Experta: paneles cortados con cifras, un reloj de velocidad, el radar y la estructura.
+    const auto panel = [&](float px, float py, float pw, float ph, int rows) {
+        const float cut = 5.0f * s;
+        const ImVec2 p[6] = {{px + cut, py}, {px + pw, py}, {px + pw, py + ph - cut}, {px + pw - cut, py + ph}, {px, py + ph}, {px, py + cut}};
+        u.d->AddConvexPolyFilled(p, 6, Rgba(30, 16, 8, 0.95f));
+        u.d->AddPolyline(p, 6, kAmberDim, ImDrawFlags_Closed, 1.0f);
+        for (int k = 0; k < rows; ++k) {
+            const float ry = py + 10.0f * s + static_cast<float>(k) * 8.0f * s;
+            u.d->AddLine(ImVec2(px + 6.0f * s, ry), ImVec2(px + pw * (0.35f + 0.25f * Hash(k + rows)), ry), kMuted, 1.0f);
+            u.d->AddLine(ImVec2(px + pw * 0.72f, ry), ImVec2(px + pw - 6.0f * s, ry), kText, 1.0f);
+        }
+    };
+    const float pw = w * 0.28f;
+    panel(x + 8.0f * s, y + 8.0f * s, pw, 70.0f * s, 0);
+    u.Arc(x + 8.0f * s + 24.0f * s, y + 40.0f * s, 16.0f * s, kTau * 0.375f, kTau * 1.125f, kAmberFaint, 3.0f * s);
+    u.Arc(x + 8.0f * s + 24.0f * s, y + 40.0f * s, 16.0f * s, kTau * 0.375f, kTau * 0.7f, kAmber, 3.0f * s);
+    for (int k = 0; k < 3; ++k) u.Segments(x + 52.0f * s, y + 22.0f * s + static_cast<float>(k) * 16.0f * s, pw - 52.0f * s, 4.0f * s, 0.3 + 0.3 * k, k == 1 ? kVoid : kYellow, 10);
+    panel(x + 8.0f * s, y + 84.0f * s, pw, 44.0f * s, 4);
+    panel(x + w - pw - 8.0f * s, y + 8.0f * s, pw, 54.0f * s, 5);
+    panel(x + w - pw - 8.0f * s, y + 68.0f * s, pw, 60.0f * s, 6);
+    const float rx = x + w * 0.5f, ry = y + h - 22.0f * s;
+    panel(rx - 48.0f * s, ry - 20.0f * s, 96.0f * s, 34.0f * s, 0);
+    u.d->AddEllipse(ImVec2(rx, ry), ImVec2(36.0f * s, 8.0f * s), kAmberDim, 0.0f, 32, 1.0f);
+    u.d->AddEllipse(ImVec2(rx, ry - 6.0f * s), ImVec2(36.0f * s, 8.0f * s), kAmberFaint, 0.0f, 32, 1.0f);
+}
+
+// La primera vez: elegir entre la interfaz minimalista y la experta. Se puede cambiar despues en
+// la configuracion, y cada ventana se pliega en las dos.
+void InterfaceChoice(const Ui& u, float width, float height) {
+    const float s = u.s;
+    const float cardW = std::min(560.0f * s, (width - 140.0f * s) * 0.5f), gap = 40.0f * s;
+    const float cardH = std::min(470.0f * s, height - 300.0f * s);
+    const float top = std::max(200.0f * s, (height - cardH) * 0.5f + 40.0f * s);
+    const std::string title = "ELIGE TU INTERFAZ";
+    u.Title((width - u.TitleWidth(34.0f, title)) * 0.5f, top - 104.0f * s, 34.0f, kAmber, title);
+    u.Center(width * 0.5f, top - 52.0f * s, 16.0f, kText, "Dos formas de llevar la nave. Puedes cambiarla cuando quieras en CONFIGURACIÓN.");
+
+    struct Card { const char* name; const char* tagline; const char* points[4]; };
+    static const Card cards[2] = {
+        {"MINIMALISTA", "Para jugar tranquilo",
+         {"Letra grande y poco detalle", "Porcentajes y unidades sencillas", "Las cifras reales, en DETALLES", "Ventanas que se pliegan"}},
+        {"EXPERTA", "Para quien quiere cada dato",
+         {"Unidades reales: EJ, kt, km, c", "Radar 3D, reloj y gráficas", "Estructura de la nave por zonas", "Ventanas que se pliegan"}},
+    };
+    const float left = (width - cardW * 2.0f - gap) * 0.5f;
+    for (int i = 0; i < 2; ++i) {
+        const Card& c = cards[i];
+        const float arrive = std::clamp(static_cast<float>((u.in.pageClock - 0.08 * i) / 0.32), 0.0f, 1.0f);
+        if (arrive <= 0.0f) continue;
+        const float ease = 1.0f - (1.0f - arrive) * (1.0f - arrive);
+        const float x = left + static_cast<float>(i) * (cardW + gap), y = top + (1.0f - ease) * 60.0f * s;
+        const bool chosen = (i == 0 && u.in.settings.uiStyle == UiStyle::Minimal) || (i == 1 && u.in.settings.uiStyle == UiStyle::Expert);
+        const bool hover = u.Hover(x, y, cardW, cardH);
+        const float r = 14.0f * s;
+        if (hover) u.d->AddRect(ImVec2(x - 5.0f * s, y - 5.0f * s), ImVec2(x + cardW + 5.0f * s, y + cardH + 5.0f * s), Rgba(255, 170, 40, 0.25f), r + 4.0f * s, 0, 6.0f * s);
+        u.d->AddRectFilled(ImVec2(x, y), ImVec2(x + cardW, y + cardH), hover ? Rgba(40, 18, 6, 0.92f) : Rgba(18, 9, 4, 0.88f), r);
+        u.d->AddRect(ImVec2(x, y), ImVec2(x + cardW, y + cardH), hover || chosen ? kYellow : kAmberDim, r, 0, (hover ? 2.2f : 1.4f) * s);
+
+        const float ix = x + 28.0f * s, iw = cardW - 56.0f * s;
+        u.Title(ix, y + 24.0f * s, 30.0f, hover ? kYellow : kAmber, c.name);
+        u.Label(ix, y + 66.0f * s, 16.0f, kMuted, c.tagline);
+        const float previewH = std::min(150.0f * s, cardH - 290.0f * s);
+        if (previewH > 60.0f * s) InterfacePreview(u, ix, y + 96.0f * s, iw, previewH, i == 0, hover);
+        float line = y + 96.0f * s + std::max(previewH, 0.0f) + 20.0f * s;
+        for (const char* point : c.points) {
+            u.d->AddCircleFilled(ImVec2(ix + 5.0f * s, line + 10.0f * s), 3.5f * s, i == 0 ? kNeutral : kSignal);
+            u.Label(ix + 20.0f * s, line, 16.0f, kText, point);
+            line += 28.0f * s;
+        }
+        const float bh = 46.0f * s;
+        u.Pill(ix, y + cardH - bh - 22.0f * s, iw, bh, chosen ? "ELEGIDA" : "ELEGIR " + std::string(c.name), {HudActionType::SetUiStyle, i}, true, chosen || hover);
+        if (hover && u.in.clicked && !(u.in.mouseY >= y + cardH - bh - 22.0f * s)) u.actions.push_back({HudActionType::SetUiStyle, i});
+    }
+    u.Center(width * 0.5f, std::min(top + cardH + 30.0f * s, height - 70.0f * s), 13.0f, kMuted, "La letra se puede agrandar en CONFIGURACIÓN  ·  ESC: la experta");
+}
+
 void Menu(const Ui& u, float width, float height) {
     const float s = u.s;
     MenuBackdrop(u, width, height);
+    if (u.in.page == MenuPage::Interface) {
+        Logo(u, 70.0f * s, 44.0f * s, 48.0f, false);
+        InterfaceChoice(u, width, height);
+        return;
+    }
 
     // Cabecera, como en Epsilon 0: el nombre arriba a la izquierda y una linea de estado.
     const float left = 70.0f * s;
@@ -2122,11 +3037,18 @@ void Menu(const Ui& u, float width, float height) {
             }
             MenuButton(u, bx, by, bw, bh, "NUEVA MISIÓN", "Cinco modos, de Pacífico a Realista", "1-5", {HudActionType::MenuPage, static_cast<int>(MenuPage::NewGame)}, order++);
             by += step;
-            MenuButton(u, bx, by, bw, bh, "CONFIGURACIÓN", std::string("Calidad gráfica: ") + Profile(u.in.settings.quality).name, nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)}, order++);
+            MenuButton(u, bx, by, bw, bh, "CONFIGURACIÓN", std::string(u.in.settings.Minimal() ? "Interfaz minimalista" : "Interfaz experta") + "   Gráficos: " + (u.in.settings.Custom() ? "Personalizada" : Profile(u.in.settings.quality).name), nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)}, order++);
             by += step;
             MenuButton(u, bx, by, bw, bh, "CRÉDITOS", "Quién hizo Epsilon-Z", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Credits)}, order++);
             by += step;
             MenuButton(u, bx, by, bw, bh, "ABORTAR", "Salir del juego", "ESC", {HudActionType::Quit}, order++);
+            by += step;
+            // Una partida que no se pudo cargar: se dice por que, y que la nueva la sustituira.
+            if (u.in.savedGame.empty() && !u.in.saveProblem.empty()) {
+                const ImVec4 clip(bx, by, bx + bw, by + 80.0f * s);
+                const std::string text = "PARTIDA GUARDADA NO VÁLIDA: " + u.in.saveProblem;
+                u.d->AddText(u.text, 12.0f * s, ImVec2(bx, by), kHot, text.c_str(), nullptr, bw, &clip);
+            }
             break;
         }
         case MenuPage::NewGame: {
@@ -2143,7 +3065,12 @@ void Menu(const Ui& u, float width, float height) {
             break;
         }
         case MenuPage::Settings:
-            SettingsPanel(u, bx - 40.0f * s, by - 30.0f * s, bw + 50.0f * s, false);
+            SettingsPanel(u, bx - 40.0f * s, std::max(std::min(by - 30.0f * s, height - (SettingsHeight() + 60.0f) * s), 20.0f * s), bw + 50.0f * s, false);
+            break;
+        case MenuPage::Interface:
+            break;  // la dibuja InterfaceChoice, a pantalla completa
+        case MenuPage::Graphics:
+            GraphicsPanel(u, bx - 40.0f * s, std::min(by - 30.0f * s, height - 500.0f * s), bw + 50.0f * s);
             break;
         case MenuPage::Credits:
             CreditsPanel(u, bx - 40.0f * s, by - 30.0f * s, bw + 50.0f * s);
@@ -2157,9 +3084,14 @@ void Menu(const Ui& u, float width, float height) {
 void Paused(const Ui& u, float width, float height) {
     const float s = u.s, cx = width * 0.5f, cy = height * 0.5f;
     u.d->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), Rgba(8, 4, 2, 0.6f));
+    if (u.in.page == MenuPage::Graphics) {
+        const float w = 560.0f * s;
+        GraphicsPanel(u, cx - w * 0.5f, cy - 243.0f * s, w);
+        return;
+    }
     if (u.in.page == MenuPage::Settings) {
         const float w = 560.0f * s;
-        SettingsPanel(u, cx - w * 0.5f, cy - 190.0f * s, w, true);
+        SettingsPanel(u, cx - w * 0.5f, std::max(cy - SettingsHeight() * 0.5f * s, 10.0f * s), w, true);
         return;
     }
     u.Title(cx - u.TitleWidth(44.0f, "PAUSA") * 0.5f, cy - 130.0f * s, 44.0f, kAmber, "PAUSA");
@@ -2237,6 +3169,7 @@ void Workshop(const Ui& u, const GameSession& g, float width, float height) {
         const ShipModuleKind kind = static_cast<ShipModuleKind>(k);
         const ShipModuleSpec& spec = ModuleSpec(kind);
         if (spec.slot != slot.kind) continue;
+        if (IsHumanWeapon(kind)) continue;  // las armas humanas se montan por consola («modulo»); su panel llega con la fase E
         const bool active = kind == current;
         u.Button(px, py, pw, 52.0f * s, "", nullptr, {HudActionType::InstallModule, k, 0, chosen}, !active, active);
         u.Label(px + 10.0f * s, py + 5.0f * s, 13.0f, active ? kYellow : kText, spec.name);
@@ -2268,8 +3201,14 @@ ImU32 IntegrityColor(double integrity, float alpha = 1.0f) {
 // gris perdida. Las zonas rojas (apagan o hacen estallar la nave) llevan borde rojo.
 void StructurePanel(const Ui& u, const GameSession& g, float x, float y) {
     const float s = u.s, w = kStructureWidth * s, h = kStructureHeight * s;
-    u.Panel(x, y, w, h, "ESTRUCTURA", "ZONAS");
     const HullZones& z = g.Ship().zones;
+    if (u.Folded(HudPanel::Structure)) {
+        double worst = 1.0;
+        for (int i = 0; i < kHullZoneCount; ++i) worst = std::min(worst, z[static_cast<std::size_t>(i)]);
+        u.Panel(x, y + h - kFoldedHeight * s, w, kFoldedHeight * s, "ESTRUCTURA", Format("PEOR %.0f %%", std::max(worst, 0.0) * 100.0).c_str(), static_cast<int>(HudPanel::Structure));
+        return;
+    }
+    u.Panel(x, y, w, h, "ESTRUCTURA", "ZONAS", static_cast<int>(HudPanel::Structure));
     const HullZones& heat = g.ZoneHeat();
     const float cx = x + w * 0.36f, cy = y + 30.0f * s + 76.0f * s;
     // px por metro: la maqueta cabe con 0,128; una nave cargada se ajusta al mismo alto.
@@ -2387,9 +3326,285 @@ void GameOver(const Ui& u, const GameSession& g, float width, float height) {
     const std::string title = g.ShutDown() ? "NAVE APAGADA" : "NAVE PERDIDA";
     u.Title(cx - u.TitleWidth(52.0f, title) * 0.5f, cy - 130.0f * s, 52.0f, kHostile, title);
     if (!g.LossReason().empty()) u.Center(cx, cy - 80.0f * s, 15.0f, kOrange, g.LossReason());
-    u.Center(cx, cy - 56.0f * s, 16.0f, kText, mode.permadeath ? "No queda nada. Una nueva tripulación empezará de cero." : mode.cargoLoss > 0.0 ? Format("Vuelves al último punto de control y pierdes el %.0f %% de la bodega.", mode.cargoLoss * 100.0) : std::string("Vuelves al último punto de control sin perder la carga."));
+    u.Center(cx, cy - 56.0f * s, 16.0f, kText, mode.permadeath ? "No queda nada. Una nueva tripulación empezará de cero." : mode.cargoLoss > 0.0 ? Format("Reapareces en tu última estación y pierdes el %.0f %% de la bodega.", mode.cargoLoss * 100.0) : std::string("Reapareces en tu última estación sin perder la carga."));
     u.Button(cx - 150.0f * s, cy, 300.0f * s, 42.0f * s, mode.permadeath ? "EMPEZAR DE NUEVO" : "CONTINUAR", nullptr, {HudActionType::Continue});
     u.Center(cx, cy + 52.0f * s, 12.5f, kMuted, "Pulsa ENTER");
+}
+
+// Avisos en el centro de la pantalla: calor, ariete, atraque y fuego entrante. Los dos modos.
+void Alerts(const Ui& u, const GameSession& g, float w) {
+    const float s = u.s;
+    if (g.InHeatZone()) u.Center(w * 0.5f, 190.0f * s, 15.0f, kHostile, "CALOR: EL BLINDAJE NO AGUANTA ESTA ÓRBITA");
+    if (g.Overheated()) {
+        const float blink = 0.55f + 0.45f * static_cast<float>(std::sin(u.t * 6.0));
+        u.Center(w * 0.5f, 284.0f * s, 15.0f, Rgba(255, 90, 40, blink), "SOBRECALENTAMIENTO: ESCUDOS Y ARMAS FUERA DE SERVICIO");
+    } else if (g.Ramming() && g.Ship().defense.charge[static_cast<std::size_t>(ShieldKind::Ablative)] <= 0.0) {
+        u.Center(w * 0.5f, 284.0f * s, 14.0f, kOrange, "PRESIÓN DE ARIETE: SIN CONOS, EL CASCO SUFRE");
+    }
+    if (g.Docking() == DockPhase::Approaching) u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "HAZ DE ATRAQUE");
+    else if (g.Docked()) {
+        const Station* station = g.DockedStation();
+        u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "ATRACADA EN " + (station ? station->name : std::string()));
+        u.Center(w * 0.5f, 258.0f * s, 13.5f, kText, "R o F sueltan las amarras.  En la rueda: A pie");
+    } else if (const auto& near = g.Approach()) {
+        // Cerca de una estacion la velocidad esta limitada: se dice cuanto, y como atracar.
+        const std::string limit = near->top < 1.0 ? Format("%.0f m/s", near->top * 1000.0) : Format("%.1f km/s", near->top);
+        if (near->zone) {
+            u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "ZONA DE ATRAQUE   máx " + limit);
+            u.Center(w * 0.5f, 258.0f * s, 13.5f, kText, "Atracar, en la rueda (T).  Sin mando, la nave se queda a su lado");
+        } else {
+            u.Center(w * 0.5f, 236.0f * s, 12.5f, kMuted, Format("Aproximación a %s   %s   máx %s", near->station.c_str(), Distance(near->distance).c_str(), limit.c_str()));
+        }
+    }
+    int incoming = 0;
+    double nearest = 1.0e300;
+    for (const Projectile& p : g.Projectiles()) {
+        const double away = Length(p.position - g.Ship().position);
+        if (p.team == 0 || away >= 1.0e6) continue;
+        ++incoming;
+        nearest = std::min(nearest, away);
+    }
+    if (incoming > 0) {
+        const std::string fire = Format("FUEGO ENTRANTE: %d  A %s", incoming, Distance(nearest).c_str());
+        u.LabelIn(u.alien, w * 0.5f - u.WidthIn(u.alien, 16.0f, fire) * 0.5f, 212.0f * s, 16.0f, kHostile, fire);
+    }
+}
+
+// --- Modo minimalista ------------------------------------------------------------------------
+// Pocas ventanas, redondas y quietas, con letra grande. Todo se mide en porcentajes y en unidades
+// de andar por casa (km, km/s, veces la luz); las cifras reales estan en DETALLES.
+
+constexpr float kMiniWidth = 380.0f;
+constexpr float kMiniHeader = 40.0f;
+
+std::string SimpleSpeed(double v) {
+    if (v >= kLightSpeed * 1.0001) return Format("%.0f x luz", v / kLightSpeed);
+    if (v >= kLightSpeed * 0.01) return Format("%.0f %% luz", v / kLightSpeed * 100.0);
+    if (v >= 1.0) return Format("%.0f km/s", v);
+    return Format("%.0f m/s", v * 1000.0);
+}
+
+const char* FieldName(const DefenseState& d) {
+    return d.field == ShieldKind::Dust ? "Escudo de arena" : d.field == ShieldKind::Plasma ? "Escudo de plasma" : d.field == ShieldKind::EM ? "Escudo EM" : "Escudo de amor";
+}
+
+float MiniShip(const Ui& u, const GameSession& g, float x, float y) {
+    const ShipState& ship = g.Ship();
+    const Balance& rules = g.Rules();
+    const float s = u.s, w = kMiniWidth * s;
+    if (u.Folded(HudPanel::MiniShip)) {
+        u.Soft(x, y, w, kMiniHeader * s, "NAVE", SimpleSpeed(ship.speed), HudPanel::MiniShip);
+        for (const Highlight inside : {Highlight::ShipPanel, Highlight::ScanButton, Highlight::HybridButton}) u.Mark(inside, x, y, w, kMiniHeader * s, true);
+        return kMiniHeader * s;
+    }
+    const float h = 446.0f * s;
+    u.Soft(x, y, w, h, "NAVE", Name(ship.mode), HudPanel::MiniShip);
+    u.Mark(Highlight::ShipPanel, x, y, w, h);
+    const float ix = x + 20.0f * s, iw = w - 40.0f * s;
+    float line = y + (kMiniHeader + 12.0f) * s;
+
+    // La velocidad, en grande; el mando, al lado.
+    u.Label(ix, line, 30.0f, ship.speed >= kLightSpeed ? kVoid : kYellow, SimpleSpeed(ship.speed));
+    u.Right(ix + iw, line + 2.0f * s, 14.0f, kMuted, "MANDO");
+    u.Right(ix + iw, line + 20.0f * s, 18.0f, kText, Format("%.0f %%", ship.throttle * 100.0));
+    line += 50.0f * s;
+
+    const DefenseState& d = ship.defense;
+    const std::size_t f = static_cast<std::size_t>(d.field);
+    const double fieldCap = ShieldCapacity(rules.defense, d.field, d.shieldTier[f]);
+    const double heat = d.heat / rules.thermal.limit;
+    const double cargo = ship.cargo.Total() / std::max(CargoCapacity(ship, rules.ship), 1e-9);
+    u.Bar(ix, line, iw, "Energía", ship.energy / rules.ship.energy, ship.energy < rules.ship.energy * 0.2 ? kHostile : kYellow);
+    line += 42.0f * s;
+    u.Bar(ix, line, iw, "Antimateria", ship.antimatter / rules.ship.antimatterTank, kVoid);
+    line += 42.0f * s;
+    u.Bar(ix, line, iw, "Casco", ship.hull / rules.ship.hull, ship.hull < rules.ship.hull * 0.3 ? kHostile : kNeutral);
+    line += 42.0f * s;
+    const bool active = g.FieldActive();
+    u.Bar(ix, line, iw, d.fieldOn ? FieldName(d) : "Escudo", d.fieldOn && fieldCap > 0.0 ? d.charge[f] / fieldCap : 0.0, active ? kSignal : kHostile,
+          !d.fieldOn ? std::string("Apagado") : !active ? std::string("Sin carga") : d.field == ShieldKind::Love ? std::string("Total") : std::string());
+    line += 42.0f * s;
+    u.Bar(ix, line, iw, "Calor", heat, heat > 1.0 ? kHostile : heat > rules.thermal.coolStart ? kOrange : kNeutral);
+    line += 42.0f * s;
+    u.Bar(ix, line, iw, "Bodega", cargo, cargo > 0.95 ? kOrange : kAmber);
+    line += 48.0f * s;
+
+    // Motores: solo los que ya se tienen.
+    const bool curves = HybridUnlocked(ship), hyper = HyperUnlocked(ship, rules.drive);
+    const int count = hyper ? 4 : curves ? 3 : 2;
+    static const char* const kDrives[] = {"IMPULSO", "CRUCERO", "HÍBRIDA", "HIPER"};
+    static const DriveMode kModes[] = {DriveMode::Impulse, DriveMode::Cruise, DriveMode::Warp, DriveMode::Hyper};
+    const float gap = 6.0f * s, bw = (iw - gap * static_cast<float>(count - 1)) / static_cast<float>(count), bh = 36.0f * s;
+    for (int i = 0; i < count; ++i) {
+        const bool enabled = i < 2 || CanCurve(ship, kModes[i], rules.drive) || i == 3;
+        if (i == 2) u.Mark(Highlight::HybridButton, ix + (bw + gap) * static_cast<float>(i), line, bw, bh);
+        u.Pill(ix + (bw + gap) * static_cast<float>(i), line, bw, bh, count == 4 && i >= 2 ? (i == 2 ? "HÍBR." : "HIPER") : kDrives[i], {HudActionType::Drive, i}, enabled, ship.mode == kModes[i]);
+    }
+    line += bh + 10.0f * s;
+    const std::string scan = g.Scanning() ? Format("ESCANEANDO  %.0f %%", g.ScanProgress() * 100.0) : std::string("ESCANEAR");
+    u.Mark(Highlight::ScanButton, ix, line, iw, bh);
+    u.Pill(ix, line, iw, bh, scan, {HudActionType::Scan}, g.CanScan() && !g.Scanning(), g.Scanning());
+    return h;
+}
+
+float MiniSignals(const Ui& u, const GameSession& g, const TargetRef* target, float x, float y) {
+    const float s = u.s, w = kMiniWidth * s;
+    const std::size_t total = g.Contacts().size();
+    const std::string note = total == 1 ? "1" : Format("%zu", total);
+    if (u.Folded(HudPanel::MiniSignals)) {
+        u.Soft(x, y, w, kMiniHeader * s, "SEÑALES", note, HudPanel::MiniSignals);
+        u.Mark(Highlight::SensorsPanel, x, y, w, kMiniHeader * s, true);
+        if (target) u.Mark(Highlight::PinnedContact, x, y, w, kMiniHeader * s, true);
+        return kMiniHeader * s;
+    }
+    const std::size_t rows = std::min<std::size_t>(total, 6);
+    const float rowH = 30.0f * s;
+    const float h = (kMiniHeader + 12.0f) * s + rowH * static_cast<float>(std::max<std::size_t>(rows, 1)) + 8.0f * s;
+    u.Soft(x, y, w, h, "SEÑALES", note, HudPanel::MiniSignals);
+    u.Mark(Highlight::SensorsPanel, x, y, w, h);
+    const float ix = x + 18.0f * s, iw = w - 36.0f * s;
+    float line = y + (kMiniHeader + 10.0f) * s;
+    if (rows == 0) u.Label(ix, line + 4.0f * s, 15.0f, kMuted, "Nada al alcance");
+    for (std::size_t i = 0; i < rows; ++i) {
+        const Contact& k = g.Contacts()[i];
+        const bool selected = target && k.target == *target;
+        const bool hover = u.Hover(x + 6.0f * s, line, w - 12.0f * s, rowH);
+        if (selected || hover) u.d->AddRectFilled(ImVec2(x + 6.0f * s, line), ImVec2(x + w - 6.0f * s, line + rowH - 2.0f * s), Rgba(255, 170, 40, selected ? 0.22f : 0.12f), 6.0f * s);
+        if (selected) u.Mark(Highlight::PinnedContact, x + 6.0f * s, line, w - 12.0f * s, rowH - 2.0f * s);
+        if (hover && u.in.clicked) u.actions.push_back({HudActionType::SelectContact, static_cast<int>(i)});
+        u.d->AddCircleFilled(ImVec2(ix + 5.0f * s, line + rowH * 0.5f - 1.0f * s), 5.0f * s, ContactColor(k), 16);
+        const std::string name = k.name.size() > 22 ? FirstLetters(k.name, 20) + "..." : k.name;
+        u.LabelIn(NameFont(u, k), ix + 18.0f * s, line + 5.0f * s, 16.0f, selected ? kYellow : kText, name);
+        u.Right(ix + iw, line + 6.0f * s, 15.0f, kMuted, Distance(k.distance));
+        line += rowH;
+    }
+    return h;
+}
+
+float MiniTarget(const Ui& u, const GameSession& g, const TargetRef& target, float x, float y) {
+    const std::optional<TargetInfo> info = g.Resolve(target);
+    if (!info) return 0.0f;
+    const float s = u.s, w = kMiniWidth * s;
+    const double distance = Length(info->position - g.Ship().position);
+    if (u.Folded(HudPanel::MiniTarget)) {
+        u.Soft(x, y, w, kMiniHeader * s, "OBJETIVO", Distance(distance), HudPanel::MiniTarget);
+        u.Mark(Highlight::TargetPanel, x, y, w, kMiniHeader * s, true);
+        return kMiniHeader * s;
+    }
+    const Anomaly* enemy = Attackable(g, &target);
+    const Station* station = target.kind == Kind::Station ? g.Stations().Find(target.index) : nullptr;
+    const bool astro = target.kind == Kind::Star || target.kind == Kind::Planet || target.kind == Kind::Belt;
+    const bool known = g.Scanned(target) || target.kind == Kind::Star;
+    const float bh = 38.0f * s;
+    float h = (kMiniHeader + 100.0f) * s + bh + 16.0f * s;
+    if (station) h += 42.0f * s;
+    if (enemy) h += (enemy->shieldMax > 0.0 ? 84.0f : 42.0f) * s + bh + 8.0f * s;
+    if (astro) h += bh + 8.0f * s;
+    u.Soft(x, y, w, h, "OBJETIVO", "", HudPanel::MiniTarget);
+    u.Mark(Highlight::TargetPanel, x, y, w, h);
+    const float ix = x + 20.0f * s, iw = w - 40.0f * s;
+    float line = y + (kMiniHeader + 10.0f) * s;
+    const std::string name = known ? info->name : std::string("Señal desconocida");
+    u.LabelIn(target.kind == Kind::Anomaly ? u.alien : u.text, ix, line, 21.0f, kYellow, name.size() > 26 ? FirstLetters(name, 24) + "..." : name);
+    line += 30.0f * s;
+    u.Label(ix, line, 14.0f, known ? kMuted : kOrange, known ? (info->detail.size() > 40 ? FirstLetters(info->detail, 38) + "..." : info->detail) : std::string("Sin datos: pulsa ESCANEAR"));
+    line += 24.0f * s;
+    u.Label(ix, line, 14.0f, kMuted, "A");
+    u.Label(ix + 20.0f * s, line - 6.0f * s, 24.0f, kText, Distance(distance));
+    line += 36.0f * s;
+    if (station) {
+        if (station->kind == StationKind::Shipyard) {
+            u.Bar(ix, line, iw, "Origami: " + MassText(station->stored.Total()) + " de material", std::min(station->stored.Total() / g.Rules().stations.shipyardGoal, 1.0), kAmber);
+        } else {
+            u.Bar(ix, line, iw, "Central: almacén", station->storedAntimatter / g.Stations().AntimatterCapacity(*station), kYellow);
+        }
+        line += 42.0f * s;
+    }
+    if (enemy) {
+        if (enemy->shieldMax > 0.0) {
+            u.Bar(ix, line, iw, "Su escudo", enemy->shieldCharge / enemy->shieldMax, kSignal);
+            line += 42.0f * s;
+        }
+        u.Bar(ix, line, iw, "Su casco", enemy->hull / enemy->maxHull, enemy->stance == Stance::Hostile ? kHostile : kNeutral);
+        line += 42.0f * s;
+        const bool tracking = g.Tracking() && *g.Tracking() == target;
+        const float half = (iw - 8.0f * s) * 0.5f;
+        u.Pill(ix, line, half, bh, "DISPARAR", {HudActionType::Fire, -1});
+        u.Pill(ix + half + 8.0f * s, line, half, bh, tracking ? "SOLTAR" : "APUNTAR", {HudActionType::Track}, true, tracking);
+        line += bh + 8.0f * s;
+    }
+    if (astro) {
+        u.Pill(ix, line, iw, bh, "ANÁLISIS", {HudActionType::Analyze});
+        line += bh + 8.0f * s;
+    }
+    const float half = (iw - 8.0f * s) * 0.5f;
+    u.Pill(ix, line, half, bh, g.Autopilot() ? "PARAR" : "IR", {g.Autopilot() ? HudActionType::Stop : HudActionType::Go}, true, g.Autopilot().has_value());
+    const float bx = ix + half + 8.0f * s;
+    if (target.kind == Kind::Planet || target.kind == Kind::Belt) {
+        const bool here = g.DroneSite() && *g.DroneSite() == target;
+        u.Pill(bx, line, half, bh, here ? "RECOGER" : "DRONES", {HudActionType::Mine}, true, here);
+    } else if (target.kind == Kind::Star) u.Pill(bx, line, half, bh, "CENTRAL", {HudActionType::Power});
+    else if (station && station->kind == StationKind::Shipyard) u.Pill(bx, line, half, bh, "ENTREGAR", {HudActionType::Use});
+    else if (station) {
+        u.Pill(bx, line, half * 0.5f - 3.0f * s, bh, "COGER", {HudActionType::Use});
+        u.Pill(bx + half * 0.5f + 3.0f * s, line, half * 0.5f - 3.0f * s, bh, "MEJORA", {HudActionType::Upgrade});
+    } else if (target.kind == Kind::Anomaly && !enemy) u.Pill(bx, line, half, bh, "EXPLORAR", {HudActionType::Use});
+    return h;
+}
+
+// Las cifras reales, plegada de serie: lo mismo que ve el modo experto, en tres columnas.
+float MiniDetails(const Ui& u, const GameSession& g, float x, float bottom, float w) {
+    const float s = u.s;
+    if (u.Folded(HudPanel::MiniDetails)) {
+        u.Soft(x, bottom - kMiniHeader * s, w, kMiniHeader * s, "DETALLES", "unidades reales", HudPanel::MiniDetails);
+        return kMiniHeader * s;
+    }
+    const ShipState& ship = g.Ship();
+    const Balance& rules = g.Rules();
+    const DefenseState& d = ship.defense;
+    const std::size_t f = static_cast<std::size_t>(d.field);
+    std::vector<std::pair<std::string, std::string>> items = {
+        {"Velocidad", Speed(ship.speed)},
+        {"Energía", EnergyText(ship.energy) + " / " + EnergyText(rules.ship.energy)},
+        {"Antimateria", MassText(ship.antimatter)},
+        {"Casco", Format("%.0f / %.0f", ship.hull, rules.ship.hull)},
+        {"Escudo", d.fieldOn ? Format("%.0f / %.0f", d.charge[f], ShieldCapacity(rules.defense, d.field, d.shieldTier[f])) : std::string("apagado")},
+        {"Conos de proa", Format("%.0f", d.charge[static_cast<std::size_t>(ShieldKind::Ablative)])},
+        {"Calor", Format("%.0f %%  agua %.0f  N2 %.0f", d.heat / rules.thermal.limit * 100.0, d.water, d.nitrogen)},
+        {"Bodega", MassText(ship.cargo.Total()) + " / " + MassText(CargoCapacity(ship, rules.ship))},
+    };
+    for (int r = 0; r < static_cast<int>(Resource::Count); ++r) items.push_back({Name(static_cast<Resource>(r)), MassText(ship.cargo.Get(static_cast<Resource>(r)))});
+    items.push_back({"Emisores E<0", Format("%d", ship.emitters)});
+    items.push_back({"Estaciones", Format("%d", static_cast<int>(g.Stations().All().size()))});
+    items.push_back({"Vista", Distance(g.Visibility())});
+    items.push_back({"Día", Format("%.2f   nave %.2f", g.SimTime() / 86400.0, ship.shipHours / 24.0)});
+    const HullZones& z = ship.zones;
+    items.push_back({"Empuje / Maniobra", Format("%.0f %% / %.0f %%", EngineOutput(z) * 100.0, std::clamp((SteeringOutput(z) - 0.4) / 0.6, 0.0, 1.0) * 100.0)});
+    items.push_back({"Niveles", Format("Blindaje %d  Escáner %d", ship.heatShieldTier, ship.scannerTier)});
+
+    const int columns = 3;
+    const int rows = (static_cast<int>(items.size()) + columns - 1) / columns;
+    const float rowH = 40.0f * s;
+    const float h = (kMiniHeader + 12.0f) * s + rowH * static_cast<float>(rows) + 8.0f * s;
+    const float y = bottom - h;
+    u.Soft(x, y, w, h, "DETALLES", "unidades reales", HudPanel::MiniDetails);
+    const float ix = x + 20.0f * s, cw = (w - 40.0f * s) / static_cast<float>(columns);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const int c = static_cast<int>(i) / rows, r = static_cast<int>(i) % rows;
+        const float cx = ix + cw * static_cast<float>(c), cy = y + (kMiniHeader + 10.0f) * s + rowH * static_cast<float>(r);
+        u.Label(cx, cy, 12.5f, kMuted, items[i].first);
+        u.Label(cx, cy + 16.0f * s, 15.0f, kText, items[i].second);
+    }
+    return h;
+}
+
+// Arriba, solo el sistema en el que esta la nave.
+void MiniHeader(const Ui& u, const GameSession& g, float width) {
+    const float s = u.s;
+    const astro::StarSystemData& system = *g.GetWorld().systems[static_cast<std::size_t>(g.NearestSystem())];
+    const std::string title = Format("SYS-%d", g.NearestSystem());
+    u.Title(width * 0.5f - u.TitleWidth(28.0f, title) * 0.5f, 18.0f * s, 28.0f, kAmber, title);
+    u.Center(width * 0.5f, 56.0f * s, 15.0f, kMuted, astro::LayoutName(system));
 }
 
 }  // namespace
@@ -2497,7 +3712,17 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui::NewFrame();
 
-    const float s = std::clamp(static_cast<float>(height) / 900.0f, 0.7f, 2.0f);
+    // base: la escala de la pantalla, que siguen el mapa y el analisis (main.cpp coloca sus esferas
+    // con ella). s: la de los paneles, que ademas crece con el tamaño de letra elegido; sin pasarse
+    // de lo que cabe a lo ancho (1600 px de diseño).
+    const float base = std::clamp(static_cast<float>(height) / 900.0f, 0.7f, 2.0f);
+    const float chosen = static_cast<float>(std::clamp(input_.settings.uiScale, kUiScales[0], kUiScales[kUiScaleCount - 1])) / 100.0f;
+    // Tope: lo que ocupa cada modo en unidades de diseño. El experto necesita a lo ancho la columna
+    // izquierda, el radar, los soles y la estructura; el minimalista, sus dos columnas y los detalles.
+    const bool minimal = input_.settings.Minimal() && input_.screen != HudScreen::Menu;
+    const float fit = minimal ? std::min(static_cast<float>(width) / 1250.0f, static_cast<float>(height) / 560.0f)
+                              : std::min(static_cast<float>(width) / 1310.0f, static_cast<float>(height) / 700.0f);
+    const float s = std::max(std::min({base * chosen, static_cast<float>(width) / 1600.0f * chosen, std::max(fit, base)}), 0.6f);
     const float w = static_cast<float>(width), h = static_cast<float>(height);
     // Con la rueda o el mapa abiertos, los paneles de debajo no responden al raton.
     HudInput panels = input_;
@@ -2509,9 +3734,22 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
     ImFont* const titleFont = static_cast<ImFont*>(titleFont_);
     ImFont* const alienFont = static_cast<ImFont*>(alienFont_);
     ImFont* const logoFont = static_cast<ImFont*>(logoFont_);
-    const Ui u{ImGui::GetBackgroundDrawList(), s, input_.clock, textFont, titleFont, alienFont, logoFont, panels, actions_};
-    const Ui top{ImGui::GetBackgroundDrawList(), s, input_.clock, textFont, titleFont, alienFont, logoFont, input_, actions_};
+    std::uint64_t hovered = 0;
+    Spots spots;
+    const Ui u{ImGui::GetBackgroundDrawList(), s, input_.clock, textFont, titleFont, alienFont, logoFont, panels, actions_, hovered, &spots};
+    const Ui top{ImGui::GetBackgroundDrawList(), s, input_.clock, textFont, titleFont, alienFont, logoFont, input_, actions_, hovered, &spots};
+    const Ui fixed{ImGui::GetBackgroundDrawList(), base, input_.clock, textFont, titleFont, alienFont, logoFont, panels, actions_, hovered};
+    const Ui fixedTop{ImGui::GetBackgroundDrawList(), base, input_.clock, textFont, titleFont, alienFont, logoFont, input_, actions_, hovered};
+    // El taller es grande (1100 x 640): crece con la letra solo mientras quepa.
+    const float shopScale = std::max(std::min({s, w / 1140.0f, h / 680.0f}), 0.6f);
+    const Ui shop{ImGui::GetBackgroundDrawList(), shopScale, input_.clock, textFont, titleFont, alienFont, logoFont, input_, actions_, hovered};
     const GameSession& g = *session_;
+
+    // Lo que senala el tutorial: solo en vuelo y sin una ventana grande encima.
+    const TargetRef noTarget;
+    const bool guiding = input_.screen == HudScreen::Playing && g.Phase() == GamePhase::Flying && !g.OnFoot() && !input_.atlas.open && !input_.analysis && !input_.workshop;
+    const Guidance guide = guiding ? g.Conversation().Guide(g, target_ ? *target_ : noTarget) : Guidance{};
+    spots.want = guide.highlight;
 
     if (input_.screen == HudScreen::Menu) {
         Menu(u, w, h);
@@ -2526,74 +3764,91 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
     } else if (g.OnFoot()) {
         FootHud(u, g, *camera_, w, h);
         Log(u, g, 16.0f * s, h - 44.0f * s - 16.0f * s * static_cast<float>(g.Log().size()));
-        if (input_.atlas.open) AtlasWindow(top, g, input_.atlas, ComputeAtlas(width, height, input_.atlas.zoom));
+        if (input_.atlas.open) AtlasWindow(fixedTop, g, input_.atlas, ComputeAtlas(width, height, input_.atlas.zoom));
+        if (input_.screen == HudScreen::Paused) Paused(u, w, h);
+    } else if (input_.settings.Minimal()) {
+        // Modo minimalista: lo del espacio (marcas y punto de mira) es igual; los paneles, no.
+        FlightPath(u, g, *camera_);
+        if (input_.trajectory) Trajectory(u, g, *camera_);
+        Markers(u, g, *camera_, target_);
+        TurnRing(u, g, *camera_, w, h);
+        SunPointers(u, g, *camera_, w, h);
+        EchoPointer(u, g, *camera_, w, h);
+        MiniHeader(u, g, w);
+
+        const float margin = 16.0f * s;
+        const float left = MiniShip(u, g, margin, margin);
+        FlightStatus(u, g, w, margin + 4.0f * s, margin + left + 14.0f * s);
+        const float rightX = w - margin - kMiniWidth * s;
+        const float signals = MiniSignals(u, g, target_, rightX, margin);
+        if (target_ && target_->kind != Kind::None) MiniTarget(u, g, *target_, rightX, margin + signals + 12.0f * s);
+
+        // Abajo en el centro, encima de las teclas, los detalles; el dialogo, encima de ellos.
+        const float bottom = h - (input_.showKeys ? 48.0f : 34.0f) * s;
+        const float detailsW = std::min(680.0f * s, w - 2.0f * (kMiniWidth * s + margin * 2.0f));
+        float detailsTop = bottom;
+        if (detailsW > 300.0f * s) detailsTop = bottom - MiniDetails(u, g, (w - detailsW) * 0.5f, bottom, detailsW);
+        const float objectiveBottom = DialogueBox(u, g, guide, w, detailsTop - 6.0f * s);
+        Alerts(u, g, w);
+        // El registro, abajo a la izquierda, con letra algo mayor.
+        float line = h - (input_.showKeys ? 50.0f : 36.0f) * s - 19.0f * s * static_cast<float>(g.Log().size());
+        for (const std::string& text : g.Log()) {
+            u.Label(margin + 4.0f * s, line, 14.0f, kText, text);
+            line += 19.0f * s;
+        }
+        if (input_.showKeys) KeyBar(u, g, target_, w, h);
+        else u.Label(16.0f * s, h - 24.0f * s, 13.0f, kMuted, "H  mostrar teclas");
+        if (panels.cursor) u.Center(w * 0.5f, 86.0f * s, 14.0f, kYellow, "CURSOR ACTIVO  ·  pulsa una cabecera para plegarla");
+        else u.Center(w * 0.5f, 86.0f * s, 12.5f, kMuted, "C: cursor para usar las ventanas");
+        if (input_.analysis && target_) AnalysisWindow(fixed, g, *target_, ComputeAnalysis(width, height));
+        if (input_.atlas.open) AtlasWindow(fixedTop, g, input_.atlas, ComputeAtlas(width, height, input_.atlas.zoom));
+        if (input_.workshop && g.CanRefit()) Workshop(shop, g, w, h);
+        if (input_.wheel) OptionWheel(top, g, target_, w, h);
+        GuideOverlay(top, spots, guide, input_.wheel, w, h, objectiveBottom);
         if (input_.screen == HudScreen::Paused) Paused(u, w, h);
     } else {
         FlightPath(u, g, *camera_);
         if (input_.trajectory) Trajectory(u, g, *camera_);
         Markers(u, g, *camera_, target_);
         TurnRing(u, g, *camera_, w, h);
+        SunPointers(u, g, *camera_, w, h);
+        EchoPointer(u, g, *camera_, w, h);
 
-        ScanOverlay(u, g, w, h);
         Compass(u, g, target_, w);
-        ShipPanel(u, g, 14.0f * s, 14.0f * s);
-        CargoPanel(u, g, 14.0f * s, (kShipPanelHeight + 24.0f) * s);
-        FlightStatus(u, g, w, 18.0f * s, (kShipPanelHeight + 24.0f + 146.0f + 14.0f + 18.0f * static_cast<float>(std::min(static_cast<int>(g.Stations().All().size()), 5))) * s);
-        ContactList(u, g, target_, w - (kRightWidth + 14.0f) * s, 14.0f * s);
-        const float listH = (40.0f + 18.0f * static_cast<float>(std::min<std::size_t>(g.Contacts().size(), 9))) * s;
+        // A la izquierda, una ventana bajo otra segun lo que ocupe cada una (plegada, solo la cabecera).
+        float leftTop = 14.0f * s;
+        leftTop += ShipPanel(u, g, 14.0f * s, leftTop) + 10.0f * s;
+        leftTop += CargoPanel(u, g, 14.0f * s, leftTop) + 10.0f * s;
+        // Bajo la bodega, la ventana del sondeo mientras dura; la ruta y la orbita, debajo.
+        const float scanHeight = ScanWindow(u, g, 14.0f * s, leftTop);
+        if (scanHeight > 0.0f) leftTop += scanHeight + 8.0f * s;
+        FlightStatus(u, g, w, 18.0f * s, leftTop + 4.0f * s);
+        const float listH = ContactList(u, g, target_, w - (kRightWidth + 14.0f) * s, 14.0f * s);
         if (target_ && target_->kind != Kind::None) TargetPanel(u, g, *target_, w - (kRightWidth + 14.0f) * s, 24.0f * s + listH);
         Log(u, g, 16.0f * s, h - 44.0f * s - 16.0f * s * static_cast<float>(g.Log().size()));
-        // El radar, siempre abajo en el centro, encima de las teclas.
-        const float radarY = h - (input_.showKeys ? 44.0f : 30.0f) * s - kRadarHeight * s;
+        // El radar, siempre abajo en el centro, encima de las teclas; plegado, baja hasta el fondo.
+        const float bottom = h - (input_.showKeys ? 44.0f : 30.0f) * s;
+        const float radarY = bottom - (u.Folded(HudPanel::Radar) ? kFoldedHeight : kRadarHeight) * s;
         Radar3D(u, g, target_, (w - kRadarWidth * s) * 0.5f, radarY);
-        StructurePanel(u, g, w - (kStructureWidth + 14.0f) * s, radarY + (kRadarHeight - kStructureHeight) * s);
-        DialogueBox(u, g, w, radarY);
-        if (g.InHeatZone()) {
-            const std::string text = "CALOR: EL BLINDAJE NO AGUANTA ESTA ÓRBITA";
-            u.Center(w * 0.5f, 190.0f * s, 15.0f, kHostile, text);
+        StructurePanel(u, g, w - (kStructureWidth + 14.0f) * s, bottom - kStructureHeight * s);
+        {
+            // El holograma de los soles, en el hueco entre el radar y la estructura.
+            const float from = (w + kRadarWidth * s) * 0.5f + 14.0f * s, to = w - (kStructureWidth + 28.0f) * s;
+            const float holoW = std::min(to - from, 330.0f * s);
+            if (holoW >= 150.0f * s) SunHologram(u, g, *camera_, from + (to - from - holoW) * 0.5f, bottom - kRadarHeight * s, holoW, kRadarHeight * s);
         }
-        if (g.Overheated()) {
-            const float blink = 0.55f + 0.45f * static_cast<float>(std::sin(input_.clock * 6.0));
-            u.Center(w * 0.5f, 284.0f * s, 15.0f, Rgba(255, 90, 40, blink), "SOBRECALENTAMIENTO: ESCUDOS Y ARMAS FUERA DE SERVICIO");
-        } else if (g.Ramming() && g.Ship().defense.charge[static_cast<std::size_t>(ShieldKind::Ablative)] <= 0.0) {
-            u.Center(w * 0.5f, 284.0f * s, 14.0f, kOrange, "PRESIÓN DE ARIETE: SIN CONOS, EL CASCO SUFRE");
-        }
-        if (g.Docking() == DockPhase::Approaching) u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "HAZ DE ATRAQUE");
-        else if (g.Docked()) {
-            const Station* station = g.DockedStation();
-            u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "ATRACADA EN " + (station ? station->name : std::string()));
-            u.Center(w * 0.5f, 258.0f * s, 13.5f, kText, "R o F sueltan las amarras.  En la rueda: A pie");
-        } else if (const auto& near = g.Approach()) {
-            // Cerca de una estacion la velocidad esta limitada: se dice cuanto, y como atracar.
-            const std::string limit = near->top < 1.0 ? Format("%.0f m/s", near->top * 1000.0) : Format("%.1f km/s", near->top);
-            if (near->zone) {
-                u.Center(w * 0.5f, 236.0f * s, 14.0f, kNeutral, "ZONA DE ATRAQUE   máx " + limit);
-                u.Center(w * 0.5f, 258.0f * s, 13.5f, kText, "Atracar, en la rueda (T).  Sin mando, la nave se queda a su lado");
-            } else {
-                u.Center(w * 0.5f, 236.0f * s, 12.5f, kMuted, Format("Aproximación a %s   %s   máx %s", near->station.c_str(), Distance(near->distance).c_str(), limit.c_str()));
-            }
-        }
-        int incoming = 0;
-        double nearest = 1.0e300;
-        for (const Projectile& p : g.Projectiles()) {
-            const double away = Length(p.position - g.Ship().position);
-            if (p.team == 0 || away >= 1.0e6) continue;
-            ++incoming;
-            nearest = std::min(nearest, away);
-        }
-        if (incoming > 0) {
-            const std::string fire = Format("FUEGO ENTRANTE: %d  A %s", incoming, Distance(nearest).c_str());
-            u.LabelIn(u.alien, w * 0.5f - u.WidthIn(u.alien, 16.0f, fire) * 0.5f, 212.0f * s, 16.0f, kHostile, fire);
-        }
+        const float objectiveBottom = DialogueBox(u, g, guide, w, radarY);
+        Alerts(u, g, w);
         if (input_.showKeys) KeyBar(u, g, target_, w, h);
         else u.Label(16.0f * s, h - 24.0f * s, 12.0f, kMuted, "H  mostrar teclas");
         if (panels.cursor) {
-            u.Center(w * 0.5f, kCursorNotice * s, 12.5f, kYellow, "CURSOR ACTIVO");
+            u.Center(w * 0.5f, std::max(kCursorNotice * s, objectiveBottom + 8.0f * s), 12.5f, kYellow, "CURSOR ACTIVO  ·  una cabecera pliega su ventana");
         }
-        if (input_.analysis && target_) AnalysisWindow(u, g, *target_, ComputeAnalysis(width, height));
-        if (input_.atlas.open) AtlasWindow(top, g, input_.atlas, ComputeAtlas(width, height, input_.atlas.zoom));
-        if (input_.workshop && g.CanRefit()) Workshop(top, g, w, h);
+        if (input_.analysis && target_) AnalysisWindow(fixed, g, *target_, ComputeAnalysis(width, height));
+        if (input_.atlas.open) AtlasWindow(fixedTop, g, input_.atlas, ComputeAtlas(width, height, input_.atlas.zoom));
+        if (input_.workshop && g.CanRefit()) Workshop(shop, g, w, h);
         if (input_.wheel) OptionWheel(top, g, target_, w, h);
+        GuideOverlay(top, spots, guide, input_.wheel, w, h, panels.cursor ? std::max(kCursorNotice * s, objectiveBottom + 8.0f * s) + 18.0f * s : objectiveBottom);
         if (input_.screen == HudScreen::Paused) Paused(u, w, h);
     }
 
@@ -2602,6 +3857,10 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
         u.d->AddRect(ImVec2(14.0f * s, h - 74.0f * s), ImVec2(600.0f * s, h - 46.0f * s), kAmber);
         u.Label(24.0f * s, h - 68.0f * s, 14.0f, kYellow, "> " + *input_.console + "_");
     }
+
+    // Un elemento distinto bajo el cursor suena una vez: el sonido de pasar el raton.
+    if (hovered != 0 && hovered != lastHover_) hoverPending_ = true;
+    lastHover_ = hovered;
 
     ImGui::Render();
     ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);

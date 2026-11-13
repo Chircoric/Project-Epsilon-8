@@ -63,6 +63,13 @@ public:
         input_.fogOrigin = origin;
     }
 
+    // Niebla hecha nube alrededor de la camara: origin (de 0 a 1) es donde esta la camara dentro de
+    // una baldosa de ruido de scale km. Llamar despues de SetFog. scale 0 vuelve a la niebla lisa.
+    void SetFogCloud(const Vec3f& origin, float scale) {
+        input_.fogOrigin = origin;
+        input_.fogScale = scale;
+    }
+
     // La niebla recorre esta paleta; tone es el punto que le toca a esta zona, de 0 a 1.
     void SetFogRamp(const std::array<Color, 4>& ramp, float tone) {
         input_.fogRampOn = true;

@@ -25,6 +25,7 @@ struct VsOut {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
+    float2 soft : TEXCOORD1;  // sprites: profundidad del centro y radio en el mundo, en km
 };
 
 // Cuadro orientado a la camara: el centro pasa por P y la esquina se suma en pixeles.
@@ -48,6 +49,9 @@ VsOut VSSprite(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID) {
     o.position = clip;
     o.uv = c * 0.5 + 0.5;
     o.color = asfloat(gSprites.Load4(offset + 16));
+    // Lo que mide el cuadro en el mundo a su distancia: un pixel de radio son w / (P00 * ancho / 2).
+    const float p00 = mul(uProjection, float4(1, 0, 0, 0)).x;
+    o.soft = float2(data.z, pixelRadius * 2.0 / uViewport.x * clip.w / max(abs(p00), 1e-6));
     return o;
 }
 
@@ -78,6 +82,7 @@ VsOut VSLine(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID) {
     o.position = clip;
     o.uv = float2(p.x, p.y);
     o.color = asfloat(gLines.Load4(offset + 32));
+    o.soft = float2(0, 0);
     return o;
 }
 
@@ -88,6 +93,7 @@ VsOut VSFullscreen(uint vertexId : SV_VertexID) {
     o.position = float4(pos, 0.0, 1.0);
     o.uv = pos * 0.5 + 0.5;
     o.color = float4(1, 1, 1, 1);
+    o.soft = float2(0, 0);
     return o;
 }
 
@@ -104,6 +110,31 @@ cbuffer SkyCB : register(b0, space3) {
 
 float4 PSTextured(VsOut i) : SV_Target0 {
     return gTexture.Sample(gSampler, i.uv) * i.color;
+}
+
+// Sprite suave: cada destello es una bola de luz, no un cartel plano. Se mira cuanto de su grueso
+// queda delante de lo opaco y se apaga en proporcion. Asi una estela o una explosion se funden con
+// el casco que atraviesan en vez de cortarse en una linea recta.
+Texture2D<float> gSceneDepth : register(t1, space2);
+cbuffer SoftCB : register(b0, space3) {
+    float uSoftNear;  // plano cercano: la profundidad es cerca / z (Z invertida)
+    float uSoftVeil;  // la niebla de pantalla que ya se pinto debajo: lo que se suma despues, se vela igual
+    float2 uSoftPad;
+};
+
+float4 PSSoftSprite(VsOut i) : SV_Target0 {
+    float4 c = gTexture.Sample(gSampler, i.uv) * i.color;
+    const float depth = gSceneDepth.Load(int3(i.position.xy, 0));
+    const float sceneZ = depth > 0.0 ? uSoftNear / depth : 1.0e30;
+    const float2 d = i.uv * 2.0 - 1.0;
+    // El grosor nunca pasa de una decima de su distancia: el halo de un sol mide en pantalla mas que
+    // un planeta cercano, pero esta muchisimo mas lejos y el planeta debe taparlo entero.
+    const float radius = clamp(i.soft.y, 1e-9, max(i.soft.x, 1e-9) * 0.1);
+    const float half_ = radius * sqrt(saturate(1.0 - dot(d, d)));
+    const float visible = saturate((sceneZ - (i.soft.x - half_)) / max(2.0 * half_, radius * 0.08));
+    c *= visible;
+    c.rgb *= 1.0 - uSoftVeil;
+    return c;
 }
 
 float4 PSLine(VsOut i) : SV_Target0 {

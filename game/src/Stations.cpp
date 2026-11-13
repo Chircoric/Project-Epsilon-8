@@ -9,12 +9,6 @@ namespace {
 
 constexpr double kOrePerHull = 1.0;
 
-double OreStored(const Inventory& stored) {
-    double total = 0;
-    for (const Resource r : {Resource::Metal, Resource::Silicate, Resource::Ice, Resource::Gas}) total += stored.Get(r);
-    return total;
-}
-
 bool SameSite(const StationSite& a, const StationSite& b) {
     return a.system == b.system && a.body == b.body && a.belt == b.belt && a.family == b.family && a.star == b.star;
 }
@@ -22,13 +16,12 @@ bool SameSite(const StationSite& a, const StationSite& b) {
 }  // namespace
 
 const char* Name(ModuleKind kind) {
-    static const char* const names[] = {"Taladro", "Tolva", "Colector", "Condensador", "Cuchara"};
-    return names[static_cast<int>(kind)];
+    static const char* const names[] = {"Colector", "Condensador", "Cuchara"};
+    return names[static_cast<int>(kind) - static_cast<int>(ModuleKind::Collector)];
 }
 
 bool Fits(ModuleKind module, StationKind station) {
-    const bool mining = module == ModuleKind::Drill || module == ModuleKind::Hopper;
-    return mining == (station == StationKind::Mining);
+    return station == StationKind::Power && module >= ModuleKind::Collector && module < ModuleKind::Count;  // la origami no es modular todavia
 }
 
 int StationNetwork::Count(StationKind kind) const {
@@ -38,20 +31,22 @@ int StationNetwork::Count(StationKind kind) const {
 }
 
 bool StationNetwork::NextIsFree(StationKind kind) const {
-    return Count(kind) < (kind == StationKind::Mining ? rules_.freeMining : rules_.freePower);
+    if (kind == StationKind::Shipyard) return true;  // va a bordo desde el principio
+    return Count(kind) < rules_.freePower;
 }
 
 Inventory StationNetwork::DeployCost(StationKind kind) const {
     Inventory cost;
     if (NextIsFree(kind)) return cost;
-    cost.Add(Resource::Metal, kind == StationKind::Mining ? rules_.miningMetal : rules_.powerMetal);
-    cost.Add(Resource::Silicate, kind == StationKind::Mining ? rules_.miningSilicate : rules_.powerSilicate);
+    cost.Add(Resource::Metal, rules_.powerMetal);
+    cost.Add(Resource::Silicate, rules_.powerSilicate);
     return cost;
 }
 
-int StationNetwork::Deploy(StationKind kind, const StationSite& site, const std::string& name, const Deposit& deposit, const StarYield& yield, Inventory& cargo, std::string* error) {
+int StationNetwork::Deploy(StationKind kind, const StationSite& site, const std::string& name, const StarYield& yield, Inventory& cargo, std::string* error) {
     for (const Station& s : stations_) {
-        if (SameSite(s.site, site)) {
+        // La origami se queda donde se suelta, sin ocupar el sitio de una central.
+        if (kind != StationKind::Shipyard && s.kind != StationKind::Shipyard && SameSite(s.site, site)) {
             if (error) *error = "Ya hay una estacion aqui";
             return -1;
         }
@@ -66,7 +61,6 @@ int StationNetwork::Deploy(StationKind kind, const StationSite& site, const std:
     s.kind = kind;
     s.site = site;
     s.name = name;
-    s.deposit = deposit;
     s.yield = yield;
     s.angle = static_cast<double>(s.id) * 2.399963;  // angulo aureo: no se amontonan
     s.deployAge = 0.0;
@@ -85,28 +79,32 @@ double StationNetwork::ModuleBonus(const Station& s, ModuleKind kind, double per
     return bonus;
 }
 
-double StationNetwork::MiningPerHour(const Station& s) const { return rules_.miningRate * s.deposit.richness * ModuleBonus(s, ModuleKind::Drill, rules_.drillBonus); }
 double StationNetwork::EnergyPerHour(const Station& s) const { return s.yield.energyPerHour * ModuleBonus(s, ModuleKind::Collector, rules_.collectorBonus); }
 // La antimateria vale su masa por c^2, la mitad de lo que da al aniquilarse con materia corriente.
 double StationNetwork::AntimatterFrom(double energyPerHour) const { return energyPerHour * rules_.acceleratorEfficiency / (kAnnihilationEnergy * 0.5); }
 double StationNetwork::AntimatterPerHour(const Station& s) const { return AntimatterFrom(EnergyPerHour(s)); }
 double StationNetwork::MatterPerHour(const Station& s) const { return s.yield.matterPerHour * ModuleBonus(s, ModuleKind::Scoop, rules_.scoopBonus); }
-double StationNetwork::OreCapacity(const Station& s) const { return rules_.miningStorage * ModuleBonus(s, ModuleKind::Hopper, rules_.hopperBonus); }
 double StationNetwork::AntimatterCapacity(const Station& s) const { return rules_.antimatterStorage * ModuleBonus(s, ModuleKind::Capacitor, rules_.capacitorBonus); }
 double StationNetwork::MatterCapacity(const Station& s) const { return rules_.matterStorage * ModuleBonus(s, ModuleKind::Capacitor, rules_.capacitorBonus); }
 
+void StationNetwork::ProduceOne(Station& s, double hours) {
+    if (s.kind == StationKind::Shipyard) return;  // no produce: guarda el material que se le entrega
+    s.angle += hours * rules_.orbitRate;
+    s.storedAntimatter = std::min(s.storedAntimatter + AntimatterPerHour(s) * hours, AntimatterCapacity(s));
+    const double room = std::max(MatterCapacity(s) - s.stored.Get(Resource::StellarMatter), 0.0);
+    s.stored.Add(Resource::StellarMatter, std::min(MatterPerHour(s) * hours, room));
+}
+
 void StationNetwork::Produce(double hours) {
+    for (Station& s : stations_) ProduceOne(s, hours);
+}
+
+void StationNetwork::ProduceUntil(double time, double from) {
     for (Station& s : stations_) {
-        s.angle += hours * rules_.orbitRate;
-        if (s.kind == StationKind::Mining) {
-            const double room = std::max(OreCapacity(s) - OreStored(s.stored), 0.0);
-            const double mined = std::min(MiningPerHour(s) * hours, room);
-            for (std::size_t r = 0; r < s.deposit.share.size(); ++r) s.stored.Add(static_cast<Resource>(r), mined * s.deposit.share[r]);
-        } else {
-            s.storedAntimatter = std::min(s.storedAntimatter + AntimatterPerHour(s) * hours, AntimatterCapacity(s));
-            const double room = std::max(MatterCapacity(s) - s.stored.Get(Resource::StellarMatter), 0.0);
-            s.stored.Add(Resource::StellarMatter, std::min(MatterPerHour(s) * hours, room));
-        }
+        if (s.producedUntil < 0.0) s.producedUntil = std::min(from, time);
+        if (time <= s.producedUntil) continue;
+        ProduceOne(s, (time - s.producedUntil) / 3600.0);
+        s.producedUntil = time;
     }
 }
 

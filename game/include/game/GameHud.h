@@ -4,6 +4,7 @@
 // el cursor activo, cada panel responde al raton y lo que se pulsa llega como una HudAction.
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,9 @@ namespace game {
 
 enum class HudActionType : int {
     Drive,          // value: DriveMode
-    Go, Mine, Power, Use, Scan, Upgrade, Stop,
+    Go,
+    Mine,           // drones mineros al objetivo, o de vuelta si ya estan fuera (la mina esta retirada)
+    Power, Use, Scan, Upgrade, Stop,
     SelectContact,  // value: indice en los sensores
     NextDialogue,
     ToggleCursor, ToggleKeys,
@@ -48,13 +51,23 @@ enum class HudActionType : int {
     InstallModule,     // value: ShipModuleKind; index: ranura
     ImpulseEngine,     // value: motor de impulso, 1..kImpulseEngineCount
     MenuPage,       // value: MenuPage
-    Quality,        // value: GraphicsQuality
+    Quality,        // value: GraphicsQuality; rellena todas las opciones de graficos
+    Graphics,       // value: GraphicsOption; index: su nuevo valor (las de si o no solo cambian)
     ToggleFullscreen,
     ToggleVsync,
+    UiVolume,       // value: nivel 0..4 = 0, 25, 50, 75 o 100 % del volumen de la interfaz
+    SetUiStyle,     // value: UiStyle (0 minimalista, 1 experto)
+    UiScale,        // value: indice en kUiScales
+    TogglePanel,    // value: HudPanel; pliega o despliega esa ventana
+    Shipyard,       // suelta la estacion origami donde esta la nave
+    ExtractElement, // value: numero atomico que extraen los drones; 0 = a granel
+    ReplayTip,      // el tutorial vuelve a decir las lineas del paso actual
 };
 
 // Paginas del menu de inicio. La configuracion tambien se abre desde la pausa.
-enum class MenuPage : int { Main, NewGame, Settings, Credits };
+// Graphics es la pestaña de graficos de la configuracion: se entra desde Settings y se vuelve a ella.
+// Interface es la eleccion entre modo minimalista y experto: sale sola la primera vez.
+enum class MenuPage : int { Main, NewGame, Settings, Credits, Graphics, Interface };
 
 // Alcances del radar, en km: de la escotilla de una estacion a otro sistema.
 inline constexpr double kRadarRanges[] = {10.0, 100.0, 1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9, 1.0e11, 1.0e13};
@@ -98,6 +111,7 @@ struct HudInput {
     bool consoleOpen = false;
     const std::string* console = nullptr;
     std::string savedGame;    // resumen de la partida guardada; vacio = no hay
+    std::string saveProblem;  // por que no se pudo cargar la que habia (p. ej., de una version anterior)
     bool analysis = false;    // ventana de analisis del objetivo
     bool wheel = false;       // rueda de opciones abierta
     AtlasView atlas;
@@ -139,6 +153,13 @@ public:
     // Lo pulsado desde la ultima llamada.
     std::vector<HudAction> TakeActions();
 
+    // true una vez por cada elemento nuevo sobre el que entra el cursor (para el sonido de hover).
+    bool TakeHoverSound() {
+        const bool pending = hoverPending_;
+        hoverPending_ = false;
+        return pending;
+    }
+
     void Prepare(SDL_GPUCommandBuffer* cmd) override;
     void Draw(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass) override;
 
@@ -148,6 +169,8 @@ private:
     const TargetRef* target_ = nullptr;
     HudInput input_;
     std::vector<HudAction> actions_;
+    std::uint64_t lastHover_ = 0;
+    bool hoverPending_ = false;
     void* textFont_ = nullptr;
     void* titleFont_ = nullptr;
     void* alienFont_ = nullptr;  // lo que viene de fuera: anomalias y alienigenas

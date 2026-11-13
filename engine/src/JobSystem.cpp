@@ -45,7 +45,12 @@ void JobSystem::ParallelFor(std::size_t count, std::size_t grain, const RangeFn&
         return;
     }
 
+    // Se invita solo a los hilos que hacen falta (uno por tramo, menos el que llama) y no se espera
+    // a que despierten: despertar a todos y aguardar su confirmacion costaba mas que el trabajo
+    // cuando este era pequeno, y un fotograma hace decenas de repartos. El que llama empieza ya; el
+    // hilo que llega a tiempo ayuda, y el que llega tarde encuentra las invitaciones retiradas.
     std::lock_guard dispatch(dispatchMutex_);
+    const std::size_t invited = std::min(chunks - 1, workers_.size());
     {
         std::lock_guard lock(mutex_);
         fn_ = &fn;
@@ -54,16 +59,17 @@ void JobSystem::ParallelFor(std::size_t count, std::size_t grain, const RangeFn&
         chunks_ = chunks;
         nextChunk_.store(0, std::memory_order_relaxed);
         error_ = nullptr;
-        pendingWorkers_ = workers_.size();
-        ++generation_;
+        invitations_ = invited;
     }
-    wakeWorkers_.notify_all();
+    if (invited >= workers_.size()) wakeWorkers_.notify_all();
+    else for (std::size_t i = 0; i < invited; ++i) wakeWorkers_.notify_one();
 
     RunChunks();
 
-    // Cada hilo confirma cada generacion, asi ninguno sigue leyendo fn_ al volver.
+    // Solo se espera a los hilos que llegaron a entrar: asi ninguno sigue leyendo fn_ al volver.
     std::unique_lock lock(mutex_);
-    workersDone_.wait(lock, [this] { return pendingWorkers_ == 0; });
+    invitations_ = 0;
+    workersDone_.wait(lock, [this] { return activeWorkers_ == 0; });
     fn_ = nullptr;
     if (error_) std::rethrow_exception(error_);
 }
@@ -86,18 +92,19 @@ void JobSystem::RunChunks() {
 }
 
 void JobSystem::WorkerLoop() {
-    std::size_t seen = 0;
     for (;;) {
         {
+            // Entrar es coger una invitacion, con el cerrojo: solo las hay mientras dura un reparto.
             std::unique_lock lock(mutex_);
-            wakeWorkers_.wait(lock, [&] { return stop_ || generation_ != seen; });
+            wakeWorkers_.wait(lock, [&] { return stop_ || invitations_ > 0; });
             if (stop_) return;
-            seen = generation_;
+            --invitations_;
+            ++activeWorkers_;
         }
         RunChunks();
         {
             std::lock_guard lock(mutex_);
-            if (--pendingWorkers_ == 0) workersDone_.notify_one();
+            if (--activeWorkers_ == 0) workersDone_.notify_one();
         }
     }
 }

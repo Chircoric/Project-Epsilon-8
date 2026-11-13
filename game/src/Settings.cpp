@@ -1,5 +1,6 @@
 #include "game/Settings.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -18,11 +19,38 @@ const QualityProfile& Profile(GraphicsQuality quality) {
     return profiles[i >= 0 && i < static_cast<int>(GraphicsQuality::Count) ? i : static_cast<int>(GraphicsQuality::High)];
 }
 
+GraphicsOptions OptionsOf(GraphicsQuality quality) {
+    const QualityProfile& p = Profile(quality);
+    const int level = std::clamp(static_cast<int>(quality), 0, static_cast<int>(GraphicsQuality::Count) - 1);
+    GraphicsOptions o;
+    o.renderScale = static_cast<int>(p.renderScale * 100.0f + 0.5f);
+    o.bloom = p.bloom;
+    o.film = p.film;
+    o.surfaces = level;
+    o.lighting = level;
+    o.hullDamage = p.hullDamage;
+    o.shadows = true;
+    return o;
+}
+
 std::string WriteSettings(const GameSettings& s) {
     std::ostringstream out;
+    // La calidad va primero: al leer, rellena todas las opciones y las lineas siguientes las afinan.
     out << "calidad " << static_cast<int>(s.quality) << '\n';
+    out << "escena " << s.graphics.renderScale << '\n';
+    out << "bloom " << (s.graphics.bloom ? 1 : 0) << '\n';
+    out << "pelicula " << (s.graphics.film ? 1 : 0) << '\n';
+    out << "superficies " << s.graphics.surfaces << '\n';
+    out << "luz " << s.graphics.lighting << '\n';
+    out << "casco " << s.graphics.hullDamage << '\n';
+    out << "sombras " << (s.graphics.shadows ? 1 : 0) << '\n';
     out << "pantalla-completa " << (s.fullscreen ? 1 : 0) << '\n';
     out << "sincronizacion " << (s.vsync ? 1 : 0) << '\n';
+    out << "volumen-interfaz " << s.uiVolume << '\n';
+    out << "interfaz " << static_cast<int>(s.uiStyle) << '\n';
+    out << "tamano-interfaz " << s.uiScale << '\n';
+    out << "plegados " << s.folded << '\n';
+    if (!s.playerId.empty()) out << "jugador " << s.playerId << '\n';
     return out.str();
 }
 
@@ -34,10 +62,31 @@ GameSettings ReadSettings(const std::string& text) {
         std::istringstream in(line);
         std::string key;
         int value = 0;
-        if (!(in >> key >> value)) continue;
-        if (key == "calidad" && value >= 0 && value < static_cast<int>(GraphicsQuality::Count)) s.quality = static_cast<GraphicsQuality>(value);
+        if (!(in >> key)) continue;
+        if (key == "jugador") {  // el unico dato que no es un numero
+            std::string id;
+            if (in >> id) s.playerId = SafePlayerId(id);
+            continue;
+        }
+        if (!(in >> value)) continue;
+        if (key == "calidad") {
+            if (value < 0 || value >= static_cast<int>(GraphicsQuality::Count)) continue;
+            s.quality = static_cast<GraphicsQuality>(value);
+            s.graphics = OptionsOf(s.quality);  // un archivo antiguo solo trae esta linea
+        }
+        else if (key == "escena") s.graphics.renderScale = std::clamp(value, 25, 100);
+        else if (key == "bloom") s.graphics.bloom = value != 0;
+        else if (key == "pelicula") s.graphics.film = value != 0;
+        else if (key == "superficies") s.graphics.surfaces = std::clamp(value, 0, 3);
+        else if (key == "luz") s.graphics.lighting = std::clamp(value, 0, 3);
+        else if (key == "casco") s.graphics.hullDamage = std::clamp(value, 0, 3);
+        else if (key == "sombras") s.graphics.shadows = value != 0;
         else if (key == "pantalla-completa") s.fullscreen = value != 0;
         else if (key == "sincronizacion") s.vsync = value != 0;
+        else if (key == "volumen-interfaz") s.uiVolume = std::clamp(value, 0, 100);
+        else if (key == "interfaz") s.uiStyle = value == 0 ? UiStyle::Minimal : value == 1 ? UiStyle::Expert : UiStyle::Unset;
+        else if (key == "tamano-interfaz") s.uiScale = std::clamp(value, kUiScales[0], kUiScales[kUiScaleCount - 1]);
+        else if (key == "plegados") s.folded = static_cast<unsigned>(value) & ((1u << static_cast<int>(HudPanel::Count)) - 1u);
     }
     return s;
 }

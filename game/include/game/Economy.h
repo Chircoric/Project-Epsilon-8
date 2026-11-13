@@ -5,6 +5,7 @@
 // por planeta y cada sistema es distinto.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 
@@ -38,6 +39,35 @@ public:
 private:
     std::array<double, static_cast<std::size_t>(Resource::Count)> amounts_{};
 };
+
+// Los elementos de la tabla periodica que se tienen, aparte de la bodega: en kg, por numero atomico
+// (1 a 118). No cuentan para la capacidad de la bodega.
+class ElementStock {
+public:
+    static constexpr int kCount = eps::astro::kPeriodicCount;
+    static bool Valid(int z) { return z >= 1 && z <= kCount; }
+    double Get(int z) const { return Valid(z) ? amounts_[static_cast<std::size_t>(z - 1)] : 0.0; }
+    void Add(int z, double kilograms) {
+        if (!Valid(z)) return;
+        double& a = amounts_[static_cast<std::size_t>(z - 1)];
+        a = std::max(a + kilograms, 0.0);
+    }
+    double Total() const {
+        double sum = 0;
+        for (const double a : amounts_) sum += a;
+        return sum;
+    }
+    bool Empty() const { return Total() <= 0.0; }
+
+private:
+    std::array<double, static_cast<std::size_t>(kCount)> amounts_{};
+};
+
+// La composicion de un campo de asteroides, deducida de lo que daria un dron.
+eps::astro::Composition BeltElements(eps::astro::BeltProfile profile);
+
+// kt de un elemento por hora y por dron: ritmo x riqueza x fraccion x recuperacion.
+inline double ElementYieldPerHour(const DroneRules& r, double richness, double fraction) { return r.rate * richness * fraction * r.recovery; }
 
 // Reparto de lo que se extrae de un sitio, en fracciones que suman 1.
 struct Deposit {
