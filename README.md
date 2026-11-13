@@ -468,6 +468,7 @@ estacion.SetPartVisible(id, "panel_nuevo", true);
 | Modelo | Cómo se crea |
 |---|---|
 | 3D desde archivo | `LoadObj` o `LoadGltf`, y `BuildModel`. Admite `.obj`, `.gltf` y `.glb`, con su jerarquía de nodos y color |
+| Animación glTF | `LoadGltfAnimation` muestrea una animación (traslación, giro, escala; lineal, escalón o spline) y da, por cada parte de `LoadGltf`, cuánto se mueve respecto a su reposo (`PartMotion`). `ModelAnimation::Pose(t)` interpola entre muestras. La usa la estación origami del juego para desplegarse |
 | 3D por código | `MakeBox`, `MakeCylinder`, `MakeTorus`, `MakeSphere` y `AppendMesh` |
 | 2D | `MakeSpritePart`: un cuadro en metros que siempre mira a la cámara, con silueta recortada por el alfa de la imagen |
 | Asteroide | `MakeAsteroid(semilla)`: una roca con cráteres, distinta en cada semilla |

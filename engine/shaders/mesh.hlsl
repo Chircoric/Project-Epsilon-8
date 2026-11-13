@@ -228,16 +228,114 @@ void CraterShade(float3 m, float4 c, float4 info, bool front, inout float3 albed
 
 Texture2D<float4> gTexture : register(t0, space2);
 SamplerState gSampler : register(s0, space2);
+Texture2D<float4> gNormalMap : register(t1, space2);  // relieve, de tipo OpenGL
+SamplerState gNormalSampler : register(s1, space2);
+Texture2D<float4> gOrmMap : register(t2, space2);     // R oclusion, G rugosidad, B metal
+SamplerState gOrmSampler : register(s2, space2);
+Texture2D<float> gShadowMap : register(t3, space2);   // profundidad vista desde la estrella
+SamplerState gShadowSampler : register(s3, space2);
+
+static const uint kMaxPointLights = 64;  // RenderTypes.h
+
+cbuffer MeshCB : register(b0, space3) {
+    float4x4 uShadow;    // de vista al mapa de sombras: xy de -1 a 1, z mas alto cuanto mas cerca de la luz
+    float4 uShadowInfo;  // x = hay sombras, y = un texel (uv), z = margen de profundidad, w = desplazamiento por la normal (km)
+    float4 uLampInfo;    // x = cuantas lamparas hay
+    float4 uLampPosition[kMaxPointLights];  // xyz en vista (km), w = alcance (km)
+    float4 uLampColor[kMaxPointLights];     // rgb = color por intensidad
+};
+
+// Sombra de la nave sobre si misma: el mapa guarda lo que ve la estrella. Doce muestras en disco,
+// giradas al azar en cada pixel, dan un borde de penumbra suave en lugar de escalones.
+float ShadowAt(float3 viewPosition, float3 geometricNormal, float2 pixel) {
+    if (uShadowInfo.x < 0.5) return 1.0;
+    const float4 s = mul(uShadow, float4(viewPosition + geometricNormal * uShadowInfo.w, 1.0));
+    const float2 uv = float2(s.x * 0.5 + 0.5, 0.5 - s.y * 0.5);
+    if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0 || s.z <= 0.0 || s.z >= 1.0) return 1.0;
+    static const float2 kDisk[12] = {
+        float2(-0.326, -0.406), float2(-0.840, -0.074), float2(-0.696, 0.457), float2(-0.203, 0.621),
+        float2(0.962, -0.195), float2(0.473, -0.480), float2(0.519, 0.767), float2(0.185, -0.893),
+        float2(0.507, 0.064), float2(0.896, 0.412), float2(-0.322, -0.933), float2(-0.792, -0.598)};
+    const float angle = frac(sin(dot(pixel, float2(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+    const float c = cos(angle), sn = sin(angle);
+    float lit = 0.0;
+    [unroll] for (int k = 0; k < 12; ++k) {
+        const float2 d = float2(kDisk[k].x * c - kDisk[k].y * sn, kDisk[k].x * sn + kDisk[k].y * c);
+        const float depth = gShadowMap.SampleLevel(gShadowSampler, uv + d * uShadowInfo.y * 2.2, 0);
+        lit += depth <= s.z + uShadowInfo.z ? 1.0 : 0.0;
+    }
+    return lit / 12.0;
+}
+
+// Oren-Nayar: un material mate y rugoso (la pintura ceramica blanca de las naves de la NASA) no
+// se apaga hacia el borde como dice Lambert y devuelve algo de luz hacia el sol. Es el factor que
+// multiplica al coseno.
+float OrenNayar(float3 n, float3 l, float3 v, float sigma) {
+    const float cosI = saturate(dot(n, l)), cosR = saturate(dot(n, v));
+    const float s2 = sigma * sigma;
+    const float A = 1.0 - 0.5 * s2 / (s2 + 0.33);
+    const float B = 0.45 * s2 / (s2 + 0.09);
+    const float3 li = l - n * cosI, vr = v - n * cosR;
+    const float cosPhi = dot(li, vr) * rsqrt(max(dot(li, li) * dot(vr, vr), 1e-8));
+    const float thetaI = acos(cosI), thetaR = acos(cosR);
+    return A + B * max(cosPhi, 0.0) * sin(max(thetaI, thetaR)) * tan(min(min(thetaI, thetaR), 1.4));
+}
+
+void PSShadow() {}
+
+// Tuerce la normal con el mapa de relieve. La malla no trae tangentes: salen de como cambian la
+// posicion y las UV de un pixel al vecino, asi que vale para cualquier modelo.
+float3 BumpNormal(float3 n, float3 dp1, float3 dp2, float2 duv1, float2 duv2, float3 bump) {
+    const float3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);
+    const float3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+    const float3 b = dp2perp * duv1.y + dp1perp * duv2.y;
+    const float longest = max(dot(t, t), dot(b, b));
+    if (!(longest > 0.0)) return n;  // sin UV (tapas, mallas sin textura): no hay hacia donde torcer
+    const float inv = rsqrt(longest);
+    // En glTF la V crece hacia abajo y el verde del mapa apunta hacia arriba: por eso el signo.
+    return normalize(t * (bump.x * inv) - b * (bump.y * inv) + n * bump.z);
+}
+
+// Luz de una estrella sobre un material: difusa de Lambert y brillo de microfacetas (GGX), con el
+// reflejo del color del metal. Sin dividir por pi: la luz ya llega en esa escala.
+float3 Shine(float3 n, float3 l, float3 toEye, float3 albedo, float rough, float metal, float3 lightColor) {
+    const float nl = saturate(dot(n, l));
+    if (nl <= 0.0) return 0.0;
+    const float3 h = normalize(l + toEye);
+    const float nh = saturate(dot(n, h)), nv = max(dot(n, toEye), 0.02), vh = saturate(dot(toEye, h));
+    const float a = rough * rough, a2 = a * a;
+    const float d = nh * nh * (a2 - 1.0) + 1.0;
+    const float distribution = a2 / (d * d);
+    const float k = (rough + 1.0) * (rough + 1.0) * 0.125;
+    const float visible = 1.0 / ((nl * (1.0 - k) + k) * (nv * (1.0 - k) + k));
+    const float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metal);
+    const float3 fresnel = f0 + (1.0 - f0) * pow(1.0 - vh, 5.0);
+    const float3 specular = min(fresnel * (distribution * visible * 0.25), 4.0);
+    // Lo rugoso (rugosidad > 0,4) se reparte como un mate de verdad.
+    const float matte = OrenNayar(n, l, toEye, saturate((rough - 0.35) / 0.5) * 0.65);
+    return (albedo * (1.0 - metal) * (1.0 - fresnel) * matte + specular) * nl * lightColor;
+}
 
 float4 PSMesh(VsOut i, bool front : SV_IsFrontFace) : SV_Target0 {
     const float4 texel = gTexture.Sample(gSampler, i.uv);
+    const float3 bump = gNormalMap.Sample(gNormalSampler, i.uv).xyz * 2.0 - 1.0;
+    const float3 orm = gOrmMap.Sample(gOrmSampler, i.uv).rgb;
+    const float3 dp1 = ddx(i.viewPosition), dp2 = ddy(i.viewPosition);
+    const float2 duv1 = ddx(i.uv), duv2 = ddy(i.uv);
     if (texel.a < 0.5) discard;  // recorte: permite modelos 2D con silueta
 
-    float3 n = normalize(i.normal);
-    const float3 l = i.light;
+    float3 n = BumpNormal(normalize(i.normal), dp1, dp2, duv1, duv2, bump);
     const float3 toEye = normalize(-i.viewPosition);
-    const float3 halfway = normalize(l + toEye);
     float3 albedo = texel.rgb * i.color.rgb;
+    // Ninguna chapa envejece igual que la de al lado: manchas anchas, en metros de la pieza, que
+    // rompen la repeticion de la textura vista desde lejos.
+    const float wear = Fbm(i.metres * 0.011 + 3.7);
+    const float streaks = ValueNoise(i.metres * float3(0.21, 0.21, 0.018) + 9.1);
+    albedo *= 0.84 + 0.24 * wear + 0.08 * (streaks - 0.5);
+    float rough = clamp(orm.g + (wear - 0.5) * 0.22, 0.10, 1.0);
+    const float metal = orm.b;
+    float occlusion = orm.r;
+    const float3 pure = texel.rgb * i.color.rgb;  // lo que brilla por si mismo no se ensucia
     float3 damageGlow = 0.0;
     if (i.damage.z >= 1.0 && i.damage.x > 0.0) damageGlow = HullDamage(i.metres, i.damage, albedo);
     float inside = 0.0;
@@ -252,16 +350,50 @@ float4 PSMesh(VsOut i, bool front : SV_IsFrontFace) : SV_Target0 {
         damageGlow += float3(1.8, 0.6, 0.12) * inside * 0.5;
     }
 
-    // En el vacio no hay luz difusa ambiente: el lado en sombra casi no se ve.
-    const float diffuse = saturate(dot(n, l));
-    const float specular = pow(saturate(dot(n, halfway)), 32.0) * step(0.0, dot(n, l)) * 0.35;
-    float3 lit = albedo * (i.ambientColor * i.shading.x + i.lightColor * diffuse * 1.1) + i.lightColor * specular;
+    // En el vacio no hay luz difusa ambiente: el lado en sombra casi no se ve. Lo poco que llega
+    // (la nebulosa, el resto del cielo) se cuela peor en juntas y rincones, y un metal pulido la
+    // devuelve como reflejo, mas fuerte cuanto mas de refilon se mira.
+    const float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metal);
+    const float grazing = pow(1.0 - saturate(dot(n, toEye)), 5.0);
+    const float3 mirror = f0 + (max(1.0 - rough, f0) - f0) * grazing;
+    // Sombra arrojada: lo que la estrella no ve, no recibe su luz directa.
+    const float shadow = front ? ShadowAt(i.viewPosition, normalize(i.normal), i.position.xy) : 0.0;
+    const float towardSun = dot(n, i.light);
+    // El cielo de la nebulosa no es igual por todos lados: la niebla brilla mas hacia la estrella
+    // (dispersa su luz hacia delante), asi que la cara que la mira recibe mas luz de ambiente.
+    const float3 sky = i.ambientColor * i.shading.x * occlusion * (0.72 + 0.38 * towardSun);
+    float3 lit = sky * (albedo * (1.0 - metal) + mirror * (1.0 - 0.5 * rough));
+    // La oclusion tambien apaga algo la luz directa en las juntas.
+    const float crevice = 0.55 + 0.45 * occlusion;
+    lit += Shine(n, i.light, toEye, albedo, rough, metal, i.lightColor) * crevice * shadow;
 
-    // Segunda luz: otra estrella o el reflejo de un planeta.
+    // Rebote: las chapas blancas iluminadas devuelven parte de la luz (su albedo ronda 0,8) a lo
+    // que tienen alrededor. Llega sobre todo a las caras de espaldas al sol y a lo que queda a la
+    // sombra de otra pieza; por eso la sombra no es negra, sino del color de la luz, mas tenue.
+    const float bounceIn = 0.13 * saturate(0.55 - 0.45 * towardSun) + 0.12 * (1.0 - shadow) * saturate(towardSun + 0.2);
+    lit += albedo * (1.0 - metal) * i.lightColor * bounceIn * occlusion;
+
+    // Segunda luz: otra estrella o el reflejo de un planeta. Un planeta cercano es una lampara
+    // enorme: ademas de su brillo directo, baña de luz suave todo el lado que lo mira.
     if (dot(i.light2Color, i.light2Color) > 0.0) {
-        const float diffuse2 = saturate(dot(n, i.light2));
-        const float specular2 = pow(saturate(dot(n, normalize(i.light2 + toEye))), 32.0) * step(0.0, dot(n, i.light2)) * 0.35;
-        lit += albedo * i.light2Color * diffuse2 * 1.1 + i.light2Color * specular2;
+        lit += Shine(n, i.light2, toEye, albedo, rough, metal, i.light2Color) * crevice;
+        lit += albedo * (1.0 - metal) * i.light2Color * saturate(0.5 + 0.5 * dot(n, i.light2)) * 0.18 * occlusion;
     }
-    return float4(lit + albedo * i.shading.y + damageGlow, 1.0);
+
+    // Lamparas de la nave (balizas, luces de navegacion, focos): iluminan lo que tienen cerca y se
+    // notan sobre todo en lo que esta a la sombra. Se apagan suaves hasta su alcance.
+    const uint lamps = (uint)uLampInfo.x;
+    for (uint k = 0; k < lamps && k < kMaxPointLights; ++k) {
+        const float3 toLamp = uLampPosition[k].xyz - i.viewPosition;
+        const float d = length(toLamp);
+        const float reach = uLampPosition[k].w;
+        if (d >= reach || d <= 1e-6) continue;
+        const float edge = 1.0 - d / reach;
+        const float closeness = d / (reach * 0.18);
+        const float fall = edge * edge / (1.0 + closeness * closeness);
+        const float3 l = toLamp / d;
+        lit += Shine(n, l, toEye, albedo, rough, metal, uLampColor[k].rgb * fall) * crevice;
+        lit += albedo * (1.0 - metal) * uLampColor[k].rgb * fall * 0.06 * occlusion;  // lo que rebota alrededor
+    }
+    return float4(lit + pure * i.shading.y + damageGlow, 1.0);
 }

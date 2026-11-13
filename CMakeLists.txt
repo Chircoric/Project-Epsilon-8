@@ -100,6 +100,7 @@ if(EPSILON_BUILD_DEMOS AND TARGET epsilon_engine)
         game/src/Ship.cpp
         game/src/HullZones.cpp
         game/src/ShipModules.cpp
+        game/src/Armament.cpp
         game/src/Stations.cpp
         game/src/Anomalies.cpp
         game/src/Combat.cpp
@@ -133,6 +134,8 @@ if(EPSILON_BUILD_DEMOS AND EPSILON_MODULE_ASTRO)
 
         add_executable(epsilon_game_tests tests/game_tests.cpp)
         target_link_libraries(epsilon_game_tests PRIVATE epsilon_game_logic)
+        # Donde esta la partida dorada (tests/data/partida_dorada.txt).
+        target_compile_definitions(epsilon_game_tests PRIVATE EPSILON_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME epsilon_game_tests COMMAND epsilon_game_tests)
     endif()
 endif()
@@ -155,6 +158,7 @@ if(EPSILON_WITH_SDL)
             "epsilon.hlsl|vs_6_0|VSLine|gVsLine|vs_line"
             "epsilon.hlsl|vs_6_0|VSFullscreen|gVsFullscreen|vs_fullscreen"
             "epsilon.hlsl|ps_6_0|PSTextured|gPsTextured|ps_textured"
+            "epsilon.hlsl|ps_6_0|PSSoftSprite|gPsSoftSprite|ps_soft_sprite"
             "epsilon.hlsl|ps_6_0|PSLine|gPsLine|ps_line"
             "epsilon.hlsl|ps_6_0|PSSky|gPsSky|ps_sky"
             "sphere.hlsl|vs_6_0|VSSphere|gVsSphere|vs_sphere"
@@ -166,6 +170,8 @@ if(EPSILON_WITH_SDL)
             "post.hlsl|ps_6_0|PSBloomUp|gPsBloomUp|ps_bloom_up"
             "post.hlsl|ps_6_0|PSComposite|gPsComposite|ps_composite"
             "post.hlsl|ps_6_0|PSCopy|gPsCopy|ps_copy"
+            "post.hlsl|ps_6_0|PSNebulaUpsample|gPsNebulaUpsample|ps_nebula_upsample"
+            "mesh.hlsl|ps_6_0|PSShadow|gPsShadow|ps_shadow"
             "nebula.hlsl|ps_6_0|PSNebula|gPsNebula|ps_nebula"
             "nebula.hlsl|ps_6_0|PSStarCorona|gPsStarCorona|ps_star_corona"
             "blackhole.hlsl|ps_6_0|PSBlackHole|gPsBlackHole|ps_blackhole"
@@ -203,13 +209,16 @@ if(EPSILON_WITH_SDL)
 
             epsilon_add_shader(${CMAKE_CURRENT_SOURCE_DIR}/game/shaders/warp.hlsl ps_6_0 PSEffect gPsWarp ${SHADER_OUT}/ps_warp.h)
             epsilon_add_shader(${CMAKE_CURRENT_SOURCE_DIR}/game/shaders/reticle.hlsl ps_6_0 PSEffect gPsReticle ${SHADER_OUT}/ps_reticle.h)
-            add_executable(epsilon_game game/src/main.cpp game/src/GameHud.cpp ${SHADER_OUT}/ps_warp.h ${SHADER_OUT}/ps_reticle.h)
+            add_executable(epsilon_game game/src/main.cpp game/src/GameHud.cpp game/src/UiSounds.cpp ${SHADER_OUT}/ps_warp.h ${SHADER_OUT}/ps_reticle.h)
             target_include_directories(epsilon_game PRIVATE ${SHADER_OUT})
+            # main.cpp incrusta los shaders: sin esto, Ninja no lo recompila al cambiar un .hlsl.
+            set_source_files_properties(game/src/main.cpp PROPERTIES OBJECT_DEPENDS "${SHADER_OUT}/ps_warp.h;${SHADER_OUT}/ps_reticle.h")
             target_link_libraries(epsilon_game PRIVATE epsilon_game_logic epsilon_sdl imgui::imgui)
-            # Las fuentes y la nave (modelos/nave.gltf, con sus texturas) viajan junto al ejecutable.
+            # Las fuentes, la nave (modelos/nave.gltf, con sus texturas) y los sonidos viajan junto al ejecutable.
             add_custom_command(TARGET epsilon_game POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/fonts $<TARGET_FILE_DIR:epsilon_game>/fonts
-                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/modelos $<TARGET_FILE_DIR:epsilon_game>/modelos)
+                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/modelos $<TARGET_FILE_DIR:epsilon_game>/modelos
+                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/audio/ui $<TARGET_FILE_DIR:epsilon_game>/audio/ui)
         endif()
     endif()
 endif()

@@ -68,6 +68,11 @@ struct ZoneLayout {
     std::array<std::vector<ZoneRect>, kHullZoneCount> plan;
     eps::Vec3d extent{250, 250, 560};  // m: media caja de la nave, desde el origen
     double ringRadius = 230.0;          // m: del eje al anillo de curvatura
+    double touch = 0.5;                 // m: a esta distancia de una pieza, la trayectoria ya la toca
+    // Nombres propios de las zonas en este modelo (una nave alienigena no tiene "proa" ni "bodegas");
+    // vacio = el de ZoneInfo. masculine, para el articulo.
+    std::array<std::string, kHullZoneCount> names{};
+    std::array<bool, kHullZoneCount> masculine{};
 };
 // nullptr vuelve a la maqueta.
 void SetZoneLayout(std::shared_ptr<const ZoneLayout> layout);
@@ -76,6 +81,22 @@ const ZoneLayout* CustomZoneLayout();
 // Zona de una pieza del modelo de la nave. Primero por el nombre (el de la maqueta o el de la zona,
 // tambien en un .glb: "proa", "gondola_babor", "bodega_3"...); si no, la zona mas cercana a su centro.
 int ZoneOfPart(const std::string& name, const eps::Vec3f& position);
+
+// Zona de una pieza de una maqueta alienigena (BuildAlienShip, BuildAlienStation), por su nombre:
+// "cuerpo" y "disco" son la espina; "ojo", "centro" y "nucleo", el nucleo; "corazon", el puente;
+// "cuchilla" y "filo", las gondolas de su lado; "aro", "luz" y "anillo", el anillo; los brazos de
+// un bastion ("radio", "pincho", "punta"), las bodegas, por sectores de 60 grados en el plano XZ.
+int AlienZoneOfPart(const std::string& name, const eps::Vec3f& position);
+
+// Lo mismo que las de abajo, con la forma de otro modelo (una nave alienigena) en vez de la nave.
+int NearestZone(const ZoneLayout& layout, const eps::Vec3d& point);
+bool TraceZones(const ZoneLayout& layout, const eps::Vec3d& origin, const eps::Vec3d& direction, double length, int& zone, eps::Vec3d& point);
+struct ZoneImpact;
+ZoneImpact ProjectileImpact(const ZoneLayout& layout, const eps::Vec3d& start, const eps::Vec3d& end);
+// La zona tiene piezas en ese modelo: si no, los golpes que le lleguen pasan a su zona de dentro.
+bool ZonePresent(const ZoneLayout& layout, int zone);
+// Nombre de la zona en ese modelo (layout nulo = la nave), con su articulo si se pide.
+std::string ZoneLabel(const ZoneLayout* layout, int zone, bool article = false);
 
 // Zona que recibe un golpe que llega desde esa direccion (unitaria, en el modelo). roll, de 0 a 1,
 // reparte los golpes entre las zonas de ese lado: no siempre cae en la misma.

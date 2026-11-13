@@ -150,6 +150,16 @@ struct MeshCrater {
 };
 inline constexpr int kMaxMeshCraters = 4;
 
+// Una lampara pequena (una baliza, un foco de la bahia): ilumina las mallas de su alrededor y se
+// apaga con la distancia hasta range. Si hay mas de kMaxPointLights, el shader de mallas usa las
+// que quedan mas cerca de la camara.
+struct PointLight {
+    Vec3f viewPosition;   // km
+    float range = 0.05f;  // km: mas lejos ya no ilumina
+    Color color;          // color por intensidad (puede pasar de 1)
+};
+inline constexpr int kMaxPointLights = 64;
+
 struct MeshInstance {
     Vec3f viewPosition;          // km
     float scale = 1;             // unidad de la malla > km; una malla en metros usa 0.001
@@ -240,8 +250,11 @@ struct PostSettings {
     float exposure = 1.0f;
     float vignette = 0.22f;
     float aberration = 0.0012f;  // fraccion de la pantalla en las esquinas
-    float grain = 0.012f;
+    float grain = 0.004f;        // apenas: mas fuerte se veia como polvo sobre la nebulosa
     float starBoost = 1.8f;      // brillo de la superficie de las estrellas
+    // Calidad de la luz en los shaders: 0 baja ... 3 ultra. Con 3, los planetas llevan dispersion
+    // atmosferica, suelo rugoso y mar con Fresnel; la nebulosa da mas pasos.
+    int detail = 2;
 };
 
 // Sprites contiguos que comparten estado: un backend de GPU emite un dibujado instanciado por lote.
@@ -276,11 +289,17 @@ struct FramePacket {
     float fogDistance = 0;         // km en que queda un 37 % de lo que hay detras; 0 = sin niebla
     Color fogColor;
     Vec3f fogOrigin;               // desplaza su textura para que no parezca pegada a la camara
+    // Con fogScale > 0 la niebla es una nube de verdad alrededor: fogOrigin es la camara dentro de
+    // una baldosa de ruido (de 0 a 1) y fogScale los km que mide esa baldosa.
+    float fogScale = 0;
     bool fogRampOn = false;        // la niebla recorre esta paleta en lugar de un solo color
     std::array<Color, 4> fogRamp{};
     float fogTone = 0;             // punto de la paleta en esta zona, de 0 a 1
     std::vector<StarLight> starLights;
     std::vector<AtmosphereLight> atmospheres;
+    // Planetas y lunas grandes en pantalla, de mayor a menor (xyz = centro en vista, km; w = radio):
+    // tapan la luz de la estrella y dejan su sombra en la nebulosa.
+    std::vector<Vec4f> lightBlockers;
 
     TextureId skyTexture = kNoTexture;  // panorama equirectangular (2:1)
     Color skyTint;
@@ -294,6 +313,7 @@ struct FramePacket {
     std::vector<MeshInstance> meshes;       // agrupadas por malla y textura
     std::vector<MeshBatch> meshBatches;
     std::vector<MeshCrater> craters;        // los de cada malla: MeshInstance::craterFirst
+    std::vector<PointLight> pointLights;    // lamparas; de mas de kMaxPointLights, cuentan las mas cercanas
     std::vector<NebulaInstance> nebulae;    // de atras hacia adelante
     std::vector<BlackHoleInstance> blackHoles;  // de atras hacia adelante
     PostSettings post;

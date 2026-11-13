@@ -122,4 +122,17 @@ StarYield YieldOf(const StarData& star) {
     return y;
 }
 
+// Un campo de asteroides: su composicion sale de lo que daria un dron.
+Composition BeltElements(BeltProfile profile) {
+    const Deposit deposit = DepositOf(profile);
+    const auto share = [&](Resource r) { return deposit.share[static_cast<std::size_t>(r)]; };
+    Materials m;
+    m.iron = share(Resource::Metal);
+    m.silicate = share(Resource::Silicate);
+    m.water = share(Resource::Ice) * 0.7;
+    m.ices = share(Resource::Ice) * 0.3 + share(Resource::Gas);
+    m.carbon = 0.3;
+    return ElementsOf(m);
+}
+
 }  // namespace game

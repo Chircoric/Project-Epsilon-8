@@ -44,10 +44,41 @@ cbuffer NebulaCB : register(b0, space3) {
     float4 uCenter[kMaxVolumes];  // km en vista, radio en km
     float4 uInner[kMaxVolumes];   // a = densidad
     float4 uOuter[kMaxVolumes];   // a = semilla
+    float4 uCloud;                // km de la baldosa de la nube (0 = niebla lisa), pasos, calidad, planetas
+    float4 uBlocker[2];           // planetas que tapan el sol: centro en vista (km), radio
 };
 
+// Cuanta luz del sol llega a un punto (en vista, km) sin que un planeta se interponga: 1 libre,
+// 0 en plena sombra. El borde es una penumbra del ancho aparente del sol visto desde alli.
+float SunVisible(float3 p, float3 sunCenter, float sunRadius) {
+    float lit = 1.0;
+    const float3 toSun = sunCenter - p;
+    const float sunDistance = length(toSun);
+    const float3 l = toSun / sunDistance;
+    const float sunAngle = max(sunRadius / sunDistance, 1e-4);
+    [unroll] for (int k = 0; k < 2; ++k) {
+        if (float(k) < uCloud.w) {
+            const float3 c = uBlocker[k].xyz - p;
+            const float along = dot(c, l);
+            if (along > 0.0 && along < sunDistance) {
+                const float planetAngle = asin(min(uBlocker[k].w / length(c), 1.0));
+                const float gap = acos(clamp(dot(normalize(c), l), -1.0, 1.0));
+                lit *= smoothstep(planetAngle - sunAngle, planetAngle + sunAngle, gap);
+            }
+        }
+    }
+    return lit;
+}
+
+// Ruido blanco por pixel. El de Jimenez (gradiente entrelazado) deja rayas en diagonal que, a media
+// resolucion y ampliadas, parecian el tejido de una sabana.
+// El ruido al azar dejaba grano. Ahora es una matriz de Bayer de 4 x 4: cada bloque de 4 x 4 pixeles
+// usa los 16 desfases una vez, y la mezcla al ampliar (PSNebulaUpsample) los promedia. Equivale a 16
+// veces mas pasos, sin grano ni rayas.
 float Hash(float2 p) {
-    return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));  // ruido de Jimenez
+    static const float kBayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+    const uint2 q = uint2(p) & 3u;
+    return (kBayer[q.y * 4u + q.x] + 0.5) / 16.0;
 }
 
 float Cloud(float3 p, float3 worldP, float seed) {
@@ -70,6 +101,52 @@ float3 Ramp(float t) {
 }
 
 float NoiseAt(float3 p) { return gNoise.SampleLevel(gRepeat, p, 0); }
+
+// --- La nube de la nebulosa, alrededor de la camara ----------------------------------------
+// El ruido de la textura vale 0,5 de media y se aparta poco (unas 0,09): los umbrales van cerca.
+// Todas las frecuencias son multiplos enteros de la baldosa, asi la nube no salta al cruzar su
+// borde (la camara vuelve a 0 al pasar de 1).
+struct Gas {
+    float glow;  // gas ionizado que brilla
+    float dust;  // polvo frio: tapa lo de detras y apenas devuelve luz
+    float tone;  // por donde va de la paleta: rojo, naranja, ocre o gris
+    float mass;  // la forma grande, para el borde iluminado
+};
+
+// detail (0 a 1) apaga el ruido fino: a lo lejos sus manchas miden menos que un pixel y, muestreadas
+// a saltos, solo dejan grano. Alli quedan las formas grandes, suaves.
+Gas GasAt(float3 q, bool fine, float detail) {
+    Gas g;
+    const float a = NoiseAt(q);
+    const float3 w = q * 2.0 + (a - 0.5) * 0.45;  // torcido por la capa grande: nada de bolas
+    const float b = NoiseAt(w);
+    const float c = NoiseAt(w * 3.0 + 0.37);
+    // Masas grandes con huecos entre ellas, de borde blando.
+    g.mass = smoothstep(0.45, 0.62, a * 0.6 + b * 0.4);
+    // Filamentos: las crestas de la capa media, donde cruza su valor medio. Anchos: de lejos un
+    // filamento fino parpadea de un pixel al siguiente.
+    const float ridge = saturate(1.0 - abs(b - 0.5) / 0.06);
+    float filament = ridge * ridge * smoothstep(0.40, 0.56, a);
+    float grain = lerp(0.5, c, detail);
+    if (fine && detail > 0.0) {
+        const float d = NoiseAt(w * 6.0 + 0.71);
+        grain = lerp(grain, c * 0.7 + d * 0.3, detail);
+        filament *= lerp(1.0, 0.75 + 0.5 * d, detail);
+    }
+    g.glow = saturate(g.mass * (0.35 + 1.3 * (grain - 0.35)) + filament * 0.85);
+    // Las calles de polvo van por su cuenta y cortan el gas en siluetas oscuras.
+    const float lane = NoiseAt(q * 2.0 + float3(0.31, 0.77, 0.53));
+    g.dust = smoothstep(0.56, 0.70, lane * 0.85 + lerp(0.5, c, detail) * 0.15);
+    g.tone = NoiseAt(q + float3(0.61, 0.13, 0.89));
+    return g;
+}
+
+// Cuanta luz de una estrella llega a un punto: cae con el cuadrado de la distancia medida en
+// radios de la estrella. A 1 UA de un sol es casi plena; a 5 UA, un cuarto; a 20, casi nada.
+float StarReach(float distanceKm, float radiusKm) {
+    const float x = distanceKm / max(radiusKm * 600.0, 1.0);
+    return 1.0 / (1.0 + x * x);
+}
 
 // Corona: lo que se ve junto al disco de una estrella. Depende de la direccion desde la estrella,
 // asi que se ven lineas que salen del disco; las protuberancias son lazos pegados al borde.
@@ -126,12 +203,18 @@ float3 Atmosphere(float3 ray, float3 center, float radius, float4 color, float4 
     const float t = uTime;
     const float wide = NoiseAt(world * 0.23 + sun.w + float3(t * 0.002, 0, -t * 0.0015));
     const float fine = NoiseAt(world * 0.71 - sun.w + float3(0, t * 0.004, t * 0.002));
-    const float thick = 0.035 + 0.05 * wide + 0.022 * fine;
+    // Una capa fina: en la Tierra el aire visible es un filo de un 1 % del radio, no un aro ancho.
+    const float thick = 0.014 + 0.012 * wide + 0.006 * fine;
 
     const float h = (b - 1.0) / thick;
-    const float glow = h > 0.0 ? exp(-h * 1.5) : exp(h * 0.42);
-    const float day = smoothstep(-0.30, 0.55, dot(outward, sun.xyz));
-    return color.rgb * color.a * glow * (0.06 + day * 2.1);
+    const float glow = h > 0.0 ? exp(-h * 1.8) : exp(h * 0.9);
+    // Solo brilla donde le da el sol; junto a la linea de sombra la luz llega tras cruzar mucho aire
+    // y sale rojiza (como un atardecer visto desde fuera), y en la noche no queda nada.
+    const float facing = dot(outward, sun.xyz);
+    const float day = smoothstep(-0.18, 0.45, facing);
+    const float dusk = smoothstep(-0.18, 0.05, facing) * (1.0 - smoothstep(0.05, 0.35, facing));
+    const float3 tint = lerp(color.rgb, float3(1.0, 0.45, 0.18) * max(color.r, max(color.g, color.b)), dusk * 0.7);
+    return tint * color.a * glow * (0.015 + day * 0.42);
 }
 
 // La corona sola, alrededor de la miniatura del mapa: la misma que se ve junto a una estrella real.
@@ -211,11 +294,11 @@ float4 PSNebula(VsOut i) : SV_Target0 {
         for (int s = 0; s < lights; ++s) {
             if (uStarShape[s].y > 0.5) cleared = max(cleared, smoothstep(0.05, 0.40, uStarCenter[s].w / length(uStarCenter[s].xyz)));
         }
-        const float kept = exp(-min(limitKm / uFog.w, 40.0) * (1.0 - cleared * 0.985));
+        float kept = exp(-min(limitKm / uFog.w, 40.0) * (1.0 - cleared * 0.985));
         const float3 world = mul((float3x3)uViewToWorld, ray);
         const float swirl = gNoise.SampleLevel(gRepeat, world * 1.3 + uFogOrigin.xyz, 0) * 0.6 + gNoise.SampleLevel(gRepeat, world * 3.1 - uFogOrigin.zxy, 0) * 0.4;
         // El color cambia por zonas, entre cuadros del cielo y entre un lado y el otro de la bóveda.
-        const float broad = NoiseAt(world * 0.17 + uFogOrigin.xyz * 0.1) * 0.65 + NoiseAt(world * 0.46 - uFogOrigin.zxy * 0.1) * 0.35;
+        const float broad = NoiseAt(world * 0.17 + uFogOrigin.xyz) * 0.65 + NoiseAt(world * 0.46 - uFogOrigin.zxy) * 0.35;
         const float3 tint = uFogRampOn > 0.5 ? Ramp(uFogTone + (broad - 0.5) * 2.0 + (swirl - 0.5) * 0.25 + dot(world, float3(0.48, 0.20, 0.85)) * 0.34) : uFog.rgb;
         float3 fog = tint * (uFogRampOn > 0.5 ? 0.62 + swirl * 0.75 : 0.45 + swirl * 1.1);
 
@@ -232,23 +315,125 @@ float4 PSNebula(VsOut i) : SV_Target0 {
             // da igual si la estrella cae dentro o fuera de la pantalla.
             const float g = 0.82;
             const float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
-            fog += tint * color * power * 0.9;
-            fog += color * power * phase * 0.10 * (1.0 - cleared * 0.9);
+            // Detras de un planeta el sol esta tapado: ni su resplandor en la niebla ni su brillo
+            // alrededor (la corona, pegada al disco, si asoma por el borde, como en un eclipse).
+            const float camLit = uCloud.w > 0.0 ? SunVisible(float3(0, 0, 0), center, radius) : 1.0;
+            fog += tint * color * power * 0.9 * (0.35 + 0.65 * camLit);
+            fog += color * power * phase * 0.10 * (1.0 - cleared * 0.9) * camLit;
 
             // A lo lejos el disco no llega entero: la niebla lo convierte en un nucleo borroso.
             const float size = max(asin(min(radius / distance, 0.999)), 0.012);
             const float angle = acos(clamp(cosine, -1.0, 1.0));
             const float veil = 1.0 - exp(-distance / uFog.w);
             const float open = limitKm > dot(center, ray) - radius * 1.2 ? 1.0 : 0.0;
-            shine += color * 1.8 * exp(-angle * angle / (size * size) * 0.45) * veil * open * uStarShape[s].y * (1.0 - cleared);
+            shine += color * 1.8 * exp(-angle * angle / (size * size) * 0.45) * veil * open * uStarShape[s].y * (1.0 - cleared) * camLit;
 
             if (uStarShape[s].y > 0.5) {
                 const float near = saturate((radius / distance - 0.012) / 0.05);
                 if (near > 0.0) shine += Corona(ray, center, radius, color, uStarShape[s].x, limitKm) * near;
             }
         }
-        light = light * kept + fog * (1.0 - kept) + shine;
-        transmittance *= kept;
+        if (uCloud.x > 0.0) {
+            // La nube de verdad: se recorre el rayo con pasos que se alargan con la distancia. Cada
+            // trozo de gas brilla con su color, mas cuanto mas cerca esta de una estrella, y su
+            // borde vuelto hacia ella se enciende. El polvo frio se queda oscuro y tapa lo de detras.
+            const int steps = int(uCloud.y);
+            const bool fine = uCloud.z >= 3.0;
+            const float far = uFog.w * 12.0;
+            const float reach = min(limitKm, far);
+            const float3 origin = uFogOrigin.xyz;
+            const float perKm = 1.0 / uCloud.x;
+            const float sigmaScale = (1.0 - cleared * 0.985) * 1.5 / uFog.w;
+
+            // Hacia donde queda la estrella principal, en el mundo: para el borde iluminado.
+            float3 toStar = float3(0, 0, 0);
+            float g0 = 0.0;
+            if (stars > 0) {
+                toStar = mul((float3x3)uViewToWorld, normalize(uStarCenter[0].xyz));
+                const float cosine = dot(ray, normalize(uStarCenter[0].xyz));
+                const float g = 0.6;
+                g0 = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);  // brillo hacia la estrella
+            }
+
+            float3 cloudLight = float3(0, 0, 0);
+            float cloudT = 1.0;
+            float prev = 0.0;
+            [loop] for (int s = 0; s < steps; ++s) {
+                const float u = (float(s) + jitter) / float(steps);
+                const float t = reach * u * u;  // denso cerca, largo lejos
+                const float dt = t - prev;
+                prev = t;
+                const float3 q = origin + world * (t * perKm);
+                const Gas gas = GasAt(q, fine, saturate(1.0 - t / (far * 0.3)));
+
+                // Luz que llega a este punto: un fondo tenue de toda la nebulosa y las estrellas.
+                float3 lightIn = float3(0.85, 0.80, 0.76);
+                float rim = 0.0, sun0 = 0.0;
+                [unroll] for (int k = 0; k < kMaxStars; ++k) {
+                    if (k < stars) {
+                        // En la sombra de un planeta el gas no recibe la luz de ese sol: queda un cono
+                        // oscuro detras del planeta, como en la nebulosa de verdad.
+                        float reachK = StarReach(length(uStarCenter[k].xyz - ray * t), uStarCenter[k].w);
+                        if (uCloud.w > 0.0) reachK *= SunVisible(ray * t, uStarCenter[k].xyz, uStarCenter[k].w);
+                        lightIn += uStarColor[k].rgb * min(reachK * 1.0, 0.55);
+                        if (k == 0) rim = sun0 = reachK;
+                    }
+                }
+                // Borde iluminado: donde el gas se acaba mirando a la estrella, la luz no tiene
+                // nada delante y lo enciende; el lado de detras queda en sombra.
+                if (stars > 0) {
+                    const float ahead = NoiseAt(q + toStar * 0.035);
+                    rim *= saturate((gas.mass - smoothstep(0.45, 0.63, ahead)) * 2.5 + 0.15);
+                }
+
+                // La paleta del juego es oscura y sus tonos parecidos: se lleva cada color a un
+                // brillo parecido para que rojo, naranja, ocre y gris se distingan de verdad.
+                const float3 raw = Ramp(uFogTone + (gas.tone - 0.5) * 7.0 + (gas.glow - 0.5) * 0.45);
+                float3 hue = lerp(raw * 1.3, raw / max(max(raw.r, max(raw.g, raw.b)), 0.05) * 0.40, 0.6);
+                // Junto a un sol el gas toma su color: se vuelve amarillo y ocre, mas calido.
+                if (stars > 0) hue = lerp(hue, hue * 0.55 + uStarColor[0].rgb * 0.22, saturate(sun0 * 1.4));
+                // Y se ve mas brillante mirando hacia el sol: el gas dispersa la luz sobre todo hacia
+                // delante (g0), asi que el cielo se ordena alrededor de la estrella.
+                const float forward = stars > 0 ? 1.0 + min(g0, 6.0) * 0.18 * saturate(sun0 * 3.0) : 1.0;
+                const float3 emit = (hue * lightIn * (0.15 + 2.5 * gas.glow) + uStarColor[0].rgb * rim * gas.glow * 0.35 * (stars > 0 ? 1.0 : 0.0)) * forward
+                                  + uStarColor[0].rgb * rim * g0 * 0.05;
+                // Polvo: gris pardo, devuelve algo de la luz que le llega; tapa, pero no es un muro.
+                const float3 dustColor = float3(0.20, 0.175, 0.16) * lightIn * 0.55;
+                // La radiacion del sol ha barrido el gas a su alrededor: una burbuja mas limpia.
+                const float cavity = 1.0 - 0.75 * saturate(sun0 * 1.6) * saturate(sun0 * 1.6);
+                const float wGas = (0.05 + gas.glow * 2.4) * cavity, wDust = gas.dust * 2.2 * cavity;
+                // El gas de alrededor es tenue: si no, cuando la camara cae dentro de una masa, esa masa
+                // tapa todo el cielo con un solo color. Asi se ven las formas a distancia.
+                const float nearFade = 0.12 + 0.88 * smoothstep(0.0, uFog.w * 0.9, t);
+                const float sigma = (wGas + wDust) * sigmaScale * nearFade;
+                const float3 source = (emit * wGas + dustColor * wDust) / max(wGas + wDust, 1e-5);
+                const float absorbed = 1.0 - exp(-sigma * dt);
+                cloudLight += cloudT * absorbed * source;
+                cloudT *= 1.0 - absorbed;
+                if (cloudT < 0.004) break;
+            }
+            // Mas alla de lo recorrido, la nebulosa lejana: dos muestras gruesas muy lejos para que por
+            // los huecos se vean masas de color, y debajo el brillo general de la nube.
+            if (limitKm > far) {
+                float3 distant = fog * 0.30;
+                [unroll] for (int k = 0; k < 2; ++k) {
+                    const float t = far * (k == 0 ? 2.8 : 1.6);  // de atras hacia delante
+                    const Gas gas = GasAt(origin + world * (t * perKm), false, 0.0);
+                    const float3 raw = Ramp(uFogTone + (gas.tone - 0.5) * 7.0);
+                    const float3 hue = lerp(raw * 1.3, raw / max(max(raw.r, max(raw.g, raw.b)), 0.05) * 0.40, 0.6);
+                    const float cover = saturate(gas.glow * 1.4 + gas.dust * 0.8);
+                    const float3 c = lerp(hue * (0.35 + 2.2 * gas.glow), float3(0.05, 0.04, 0.035), gas.dust * 0.8) * (0.85 + uStarColor[0].a * 0.4);
+                    distant = lerp(distant, c, cover);  // la de delante tapa a la de detras
+                }
+                cloudLight += cloudT * distant;
+                cloudT = 0.0;
+            }
+            light = light * cloudT + cloudLight + shine;
+            transmittance *= cloudT;
+        } else {
+            light = light * kept + fog * (1.0 - kept) + shine;
+            transmittance *= kept;
+        }
 
         const int airs = int(uAirCount.x);
         for (int s = 0; s < airs; ++s) {

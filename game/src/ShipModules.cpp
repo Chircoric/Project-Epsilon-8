@@ -1,6 +1,9 @@
 #include "game/ShipModules.h"
 
 #include <algorithm>
+#include <array>
+
+#include "game/Balance.h"
 
 namespace game {
 
@@ -16,9 +19,19 @@ const ShipModuleSpec& ModuleSpec(ShipModuleKind kind) {
         {"Almacén", "1 Mt más de bodega.", SlotKind::Internal, 200, 20},
         {"Tanque de antimateria", "40 kt más de antimateria: unas siete burbujas.", SlotKind::Internal, 240, 120},
         {"Refuerzo estructural", "Cuadernas extra: su zona aguanta un 30 % más.", SlotKind::Internal, 280, 30},
+        {"Bahía de drones", "Dos drones mineros: van a un planeta o un campo, minan y descargan en la bodega.", SlotKind::External, 300, 120},
+        {"Plataforma de defensa puntual", "Derriba misiles y drones que se acercan. Va en un hueco de torreta clásica.", SlotKind::External, 0.15, 0},
     };
+    // Las armas humanas salen de ArmamentRules: cuestan su masa real en metal (los elementos y el plano, aparte).
+    static const std::array<ShipModuleSpec, kHumanWeaponCount> weaponSpecs = [] {
+        const ArmamentRules rules;
+        std::array<ShipModuleSpec, kHumanWeaponCount> out{};
+        for (int w = 0; w < kHumanWeaponCount; ++w) out[static_cast<std::size_t>(w)] = {rules.weapons[w].name, rules.weapons[w].description, SlotKind::External, rules.weapons[w].mass, 0.0};
+        return out;
+    }();
+    if (IsHumanWeapon(kind)) return weaponSpecs[static_cast<std::size_t>(static_cast<int>(kind) - static_cast<int>(kFirstHumanWeapon))];
     const int i = static_cast<int>(kind);
-    return specs[std::clamp(i, 0, static_cast<int>(ShipModuleKind::Count) - 1)];
+    return specs[std::clamp(i, 0, static_cast<int>(ShipModuleKind::PointDefensePlatform))];
 }
 
 const ImpulseEngineSpec& ImpulseEngine(int tier) {
@@ -106,6 +119,18 @@ double PieceDistance(const DesignPiece& piece, const Vec3d& point) {
     double nearest = 1e300;
     for (const Vec3d& s : piece.samples) nearest = std::min(nearest, Length(s - point));
     return nearest;
+}
+
+std::vector<int> StarterSlots(const ShipDesign& design) {
+    std::vector<int> out;
+    for (const char* wanted : {"hp_torreta_5", "hp_torreta_6"})
+        for (std::size_t i = 0; i < design.slots.size(); ++i)
+            if (design.slots[i].kind == SlotKind::External && design.slots[i].name == wanted) out.push_back(static_cast<int>(i));
+    if (out.size() == 2) return out;
+    out.clear();
+    for (int i = static_cast<int>(design.slots.size()) - 1; i >= 0 && out.size() < 2; --i)
+        if (design.slots[static_cast<std::size_t>(i)].kind == SlotKind::External) out.insert(out.begin(), i);
+    return out;
 }
 
 std::string PrettyName(const std::string& name) {

@@ -13,6 +13,7 @@
 // funcionar si su zona se pierde o, en las exteriores, si se suelta la pieza en la que va montado.
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,8 +36,22 @@ enum class ShipModuleKind : int {
     Storage,         // almacen: mas bodega
     AntimatterTank,  // mas antimateria
     Reinforcement,   // cuadernas de refuerzo: su zona aguanta mas
+    // Exterior, tras los interiores para no cambiar los numeros de las partidas guardadas
+    DroneBay,        // bahia con drones mineros (GameSession::DeployDrones)
+    // Armamento humano (Armament.h, fase B). Exteriores; el orden es el de ArmamentRules::weapons.
+    PointDefensePlatform,  // plataforma de defensa puntual: va en un hueco de torreta clasica
+    CoilgunLight, CoilgunHeavy,
+    RailSpinalLight, RailSpinalHeavy,
+    Rail360Light, Rail360Heavy,
+    BayLight10, BayLight25, BayLight50,
+    BayHeavy10, BayHeavy25, BayHeavy50,
+    NuclearLight, NuclearHeavy,
     Count
 };
+
+// El primer arma humana de la lista, y cuantas hay (ArmamentRules::weapons).
+inline constexpr ShipModuleKind kFirstHumanWeapon = ShipModuleKind::CoilgunLight;
+inline constexpr bool IsHumanWeapon(ShipModuleKind kind) { return kind >= kFirstHumanWeapon && kind < ShipModuleKind::Count; }
 
 struct ShipModuleSpec {
     const char* name;
@@ -94,9 +109,11 @@ double PieceDistance(const DesignPiece& piece, const eps::Vec3d& point);
 struct ShipDesign {
     std::vector<ModuleSlot> slots;
     std::vector<DesignPiece> pieces;  // en el orden de las piezas del modelo
-    // Compuerta de atraque, en un costado (estribor, +X): de ahi sale el ducto que se acopla a la
-    // estacion. Un nodo vacio "atraque" en el .glb la fija; si no, el punto mas a estribor del puente.
+    // Compuerta de atraque: de ahi sale el ducto que se acopla a la estacion. Un nodo vacio "atraque"
+    // en el .glb la fija, con su +Y local hacia fuera (dockNormal); si no, el punto mas a estribor
+    // del puente, mirando a estribor (+X). Atracada, la nave gira hasta que dockNormal mira a la estacion.
     eps::Vec3d dockPort{45, -80, 340};  // m, en el modelo
+    eps::Vec3d dockNormal{1, 0, 0};     // unitaria, en el modelo
 };
 void SetShipDesign(std::shared_ptr<const ShipDesign> design);
 const ShipDesign& CurrentShipDesign();
@@ -110,7 +127,21 @@ std::vector<ModuleSlot> MaquetteHardpoints();
 struct ShipLoadout {
     int engine = 1;
     std::vector<ShipModuleKind> modules;
+    // Armamento humano. ammo y cooldown van en el orden de modules: misiles que le quedan a cada bahia y
+    // segundos simulados hasta que recarga (este no se guarda).
+    std::vector<int> ammo;
+    std::vector<double> cooldown;
+    std::uint32_t blueprints = 0;  // planos fabricados en la origami, un bit por tipo y tamano (Armament.h)
+    int pointDefense = 0;          // puntos de defensa puntual montados (aparte de las torretas)
+    int starterBays = 2;           // bahias de drones de serie: se cambian de hueco, no se sacan de la nave
+    // Nave recien hecha: FitToDesign le monta las bahias de drones de serie en las ranuras de popa
+    // (StarterSlots). Se apaga en cuanto se toca un modulo o se carga una partida.
+    bool starter = false;
 };
+
+// Las ranuras exteriores donde van las bahias de drones de serie: hp_torreta_5 y hp_torreta_6 si
+// existen (el modulo de popa, junto a las bodegas); si no, las dos ultimas exteriores.
+std::vector<int> StarterSlots(const ShipDesign& design);
 
 // Nombre legible de una pieza o un anclaje: "puente_cupula" -> "puente cupula".
 std::string PrettyName(const std::string& name);

@@ -38,10 +38,37 @@ inline std::string PowerText(double exajoulesPerHour) {
     return UnitText(petawatts * 1.0e6, "GW", 0);
 }
 
+// Las unidades de masa que se enseñan, de menor a mayor: mg, g, kg, t, kt, Mt (prefijos del SI).
+inline constexpr const char* kMassUnits[] = {"mg", "g", "kg", "t", "kt", "Mt"};
+inline constexpr int kMassUnitCount = 6;
+
+// La unidad mas cercana a una masa en kg: la mayor que no la deja por debajo de 1.
+inline int MassUnitIndex(double kilograms) {
+    if (kilograms >= 1.0e9) return 5;
+    if (kilograms >= 1.0e6) return 4;
+    if (kilograms >= 1.0e3) return 3;
+    if (kilograms >= 1.0) return 2;
+    if (kilograms >= 1.0e-3) return 1;
+    return 0;
+}
+
+// Cuantos kg vale cada unidad de kMassUnits.
+inline constexpr double kMassUnitKg[] = {1.0e-6, 1.0e-3, 1.0, 1.0e3, 1.0e6, 1.0e9};
+
+// Una masa en kg en su unidad mas cercana, con tres cifras: 250 mg, 1.50 g, 12.0 kg, 3.20 t.
+inline std::string ElementMassText(double kilograms) {
+    if (!(kilograms > 0.0)) return "0 g";
+    const int unit = MassUnitIndex(kilograms);
+    const double value = kilograms / kMassUnitKg[unit];
+    return UnitText(value, kMassUnits[unit], value >= 99.95 ? 0 : value >= 9.995 ? 1 : 2);
+}
+
+// En kilotoneladas. Desde 1 t sigue como antes; por debajo baja a kg, g y mg.
 inline std::string MassText(double kilotonnes) {
     if (kilotonnes >= 1000.0) return UnitText(kilotonnes / 1000.0, "Mt", 2);
     if (kilotonnes >= 1.0) return UnitText(kilotonnes, "kt", 1);
-    return UnitText(kilotonnes * 1000.0, "t", 0);
+    if (kilotonnes >= 1.0e-3 || kilotonnes <= 0.0) return UnitText(kilotonnes * 1000.0, "t", 0);
+    return ElementMassText(kilotonnes * 1.0e6);
 }
 
 inline std::string MassRateText(double kilotonnesPerHour) { return MassText(kilotonnesPerHour) + "/h"; }

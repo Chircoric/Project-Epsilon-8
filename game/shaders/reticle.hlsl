@@ -2,7 +2,7 @@
 //
 // Se dibuja sobre la imagen ya terminada porque ningun color fijo se veria en todas partes:
 // una estrella se traga el naranja, y el vacio se traga el negro. Cada pixel lee lo que tiene
-// debajo. El gris medio no tiene inverso visible, asi que ahi se salta a blanco o negro.
+// debajo. El gris no tiene inverso visible, asi que ahi se usa cian, que no existe en la nebulosa.
 //
 // Mismo contrato que effects/scanlines.hlsl, mas doce valores propios.
 
@@ -83,8 +83,18 @@ float4 PSEffect(VsOut i) : SV_Target0 {
     if (uFlags.w > 0.5) mask = max(mask, Stroke(Segment(pixel, uPoints.xy, uPoints.zw), 0.7) * 0.45);
     if (mask <= 0.0) return float4(scene, 1.0);
 
+    // Sobre un color con tono (el rojo y el amarillo de la nebulosa), su inverso: cian o azul.
+    // Sobre lo que no tiene tono (el gris, el vacio, el blanco de una estrella) el inverso no se
+    // distingue, y ahi se usa cian: claro sobre lo oscuro y marino sobre lo claro.
     const float light = dot(scene, float3(0.299, 0.587, 0.114));
-    const float grey = 1.0 - smoothstep(0.12, 0.30, abs(light - 0.5));
-    const float3 inverse = lerp(1.0 - scene, light < 0.5 ? float3(1, 1, 1) : float3(0, 0, 0), grey);
+    const float chroma = max(scene.r, max(scene.g, scene.b)) - min(scene.r, min(scene.g, scene.b));
+    const float grey = 1.0 - smoothstep(0.10, 0.28, chroma);
+    const float3 cyan = light < 0.55 ? float3(0.27, 0.91, 1.0) : float3(0.0, 0.16, 0.42);
+    float3 inverse = 1.0 - scene;
+    inverse = lerp(inverse, cyan, grey);
+    // Un inverso que quede cerca de la luz de lo de detras (rojo medio y su cian medio) se aclara
+    // o se oscurece para separarse.
+    const float gap = dot(inverse, float3(0.299, 0.587, 0.114)) - light;
+    inverse = saturate(inverse + sign(gap + 1e-3) * max(0.0, 0.35 - abs(gap)));
     return float4(lerp(scene, inverse, mask * uIntensity), 1.0);
 }

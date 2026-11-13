@@ -15,6 +15,7 @@
 #include "vs_line.h"
 #include "vs_fullscreen.h"
 #include "ps_textured.h"
+#include "ps_soft_sprite.h"
 #include "ps_line.h"
 #include "ps_sky.h"
 #include "vs_sphere.h"
@@ -26,6 +27,8 @@
 #include "ps_bloom_up.h"
 #include "ps_composite.h"
 #include "ps_copy.h"
+#include "ps_nebula_upsample.h"
+#include "ps_shadow.h"
 #include "ps_nebula.h"
 #include "ps_star_corona.h"
 #include "ps_blackhole.h"
@@ -52,7 +55,8 @@ struct FrameUniforms {
     float pad;
 };
 struct SphereUniforms {
-    float nearZ, time, starBoost, pad;
+    float nearZ, time, starBoost, detail;
+    float ambient[4];  // luz que llega de la nebulosa por todos lados
 };
 struct BloomUniforms {
     float texelX, texelY, threshold, strength;
@@ -82,6 +86,8 @@ struct NebulaUniforms {
     float center[kMaxNebulae][4];
     float inner[kMaxNebulae][4];
     float outer[kMaxNebulae][4];
+    float cloud[4];  // km de la baldosa de la nube (0 = niebla lisa), pasos, calidad, planetas que tapan
+    float blocker[2][4];  // planetas: centro en vista (km) y radio
 };
 struct BlackHoleUniforms {
     Mat4f viewToWorld;
@@ -201,11 +207,17 @@ bool SdlGpuBackend::Initialize(SDL_Window* window, bool debugLayer) {
     postSampler_ = SDL_CreateGPUSampler(device_, &sampler);
     sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
     repeatSampler_ = SDL_CreateGPUSampler(device_, &sampler);
+    // Las chapas del casco se ven casi siempre de refilon: sin anisotropia se emborronan.
+    sampler.enable_anisotropy = true;
+    sampler.max_anisotropy = 8.0f;
+    meshSampler_ = SDL_CreateGPUSampler(device_, &sampler);
+    sampler.enable_anisotropy = false;
+    sampler.max_anisotropy = 0.0f;
     sampler.min_filter = sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
     sampler.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     sampler.address_mode_u = sampler.address_mode_v = sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     pointSampler_ = SDL_CreateGPUSampler(device_, &sampler);
-    if (!clampSampler_ || !postSampler_ || !repeatSampler_ || !pointSampler_) {
+    if (!clampSampler_ || !postSampler_ || !repeatSampler_ || !pointSampler_ || !meshSampler_) {
         lastError_ = std::string("SDL_CreateGPUSampler: ") + SDL_GetError();
         return false;
     }
@@ -243,7 +255,19 @@ bool SdlGpuBackend::Initialize(SDL_Window* window, bool debugLayer) {
             ring[static_cast<std::size_t>(y) * kRingSize + x] = 0x00FFFFFFu | (alpha << 24);
         }
     }
-    return UploadTexture(ring.data(), kRingSize, kRingSize, kRingSize * 4, true) == kRingTexture;
+    if (UploadTexture(ring.data(), kRingSize, kRingSize, kRingSize * 4, true) != kRingTexture) return false;
+
+    // Mapas por defecto de una malla sin los suyos: relieve plano y un material mate, sin metal.
+    const std::uint32_t flat = 0xFFFF8080u, plain = 0xFF008CFFu;  // ABGR: (128,128,255) y (255,140,0)
+    flatNormal_ = UploadTexture(&flat, 1, 1, 4, false);
+    plainOrm_ = UploadTexture(&plain, 1, 1, 4, false);
+    return flatNormal_ != kNoTexture && plainOrm_ != kNoTexture;
+}
+
+void SdlGpuBackend::SetTextureMaps(TextureId color, TextureId normal, TextureId orm) {
+    if (color >= textures_.size()) return;
+    if (textureMaps_.size() <= color) textureMaps_.resize(color + 1, {kNoTexture, kNoTexture});
+    textureMaps_[color] = {normal, orm};
 }
 
 void SdlGpuBackend::Shutdown() {
@@ -266,9 +290,11 @@ void SdlGpuBackend::Shutdown() {
     if (sphereBuffer_) SDL_ReleaseGPUBuffer(device_, sphereBuffer_);
     if (meshBuffer_) SDL_ReleaseGPUBuffer(device_, meshBuffer_);
     if (uploadBuffer_) SDL_ReleaseGPUTransferBuffer(device_, uploadBuffer_);
-    for (SDL_GPUSampler* s : {clampSampler_, postSampler_, repeatSampler_, pointSampler_})
+    for (SDL_GPUSampler* s : {clampSampler_, postSampler_, repeatSampler_, pointSampler_, meshSampler_})
         if (s) SDL_ReleaseGPUSampler(device_, s);
-    for (SDL_GPUGraphicsPipeline* p : {alphaPipeline_, additivePipeline_, linePipeline_, skyPipeline_, spherePipeline_, miniaturePipeline_, starCoronaPipeline_, meshPipeline_, meshTwoSidedPipeline_,
+    if (shadowMap_) SDL_ReleaseGPUTexture(device_, shadowMap_);
+    shadowMap_ = nullptr;
+    for (SDL_GPUGraphicsPipeline* p : {shadowPipeline_, alphaPipeline_, additivePipeline_, softAlphaPipeline_, softAdditivePipeline_, linePipeline_, skyPipeline_, spherePipeline_, miniaturePipeline_, starCoronaPipeline_, meshPipeline_, meshTwoSidedPipeline_,
                                        nebulaPipeline_, nebulaBlendPipeline_, blackHolePipeline_, bloomDownPipeline_, bloomUpPipeline_, compositePipeline_})
         if (p) SDL_ReleaseGPUGraphicsPipeline(device_, p);
     for (const PostEffect& e : effects_)
@@ -282,8 +308,10 @@ void SdlGpuBackend::Shutdown() {
     window_ = nullptr;
     spriteBuffer_ = lineBuffer_ = sphereBuffer_ = meshBuffer_ = nullptr;
     uploadBuffer_ = nullptr;
-    clampSampler_ = postSampler_ = repeatSampler_ = pointSampler_ = nullptr;
-    alphaPipeline_ = additivePipeline_ = linePipeline_ = skyPipeline_ = spherePipeline_ = miniaturePipeline_ = starCoronaPipeline_ = meshPipeline_ = meshTwoSidedPipeline_ = nullptr;
+    clampSampler_ = postSampler_ = repeatSampler_ = pointSampler_ = meshSampler_ = nullptr;
+    textureMaps_.clear();
+    shadowPipeline_ = nullptr;
+    alphaPipeline_ = additivePipeline_ = softAlphaPipeline_ = softAdditivePipeline_ = linePipeline_ = skyPipeline_ = spherePipeline_ = miniaturePipeline_ = starCoronaPipeline_ = meshPipeline_ = meshTwoSidedPipeline_ = nullptr;
     nebulaPipeline_ = nebulaBlendPipeline_ = blackHolePipeline_ = bloomDownPipeline_ = bloomUpPipeline_ = compositePipeline_ = nullptr;
     spriteCapacity_ = lineCapacity_ = sphereCapacity_ = meshCapacity_ = uploadCapacity_ = 0;
 }
@@ -367,6 +395,147 @@ SDL_GPUGraphicsPipeline* SdlGpuBackend::CreatePipeline(const PipelineDesc& d) {
     return pipeline;
 }
 
+SDL_GPUGraphicsPipeline* SdlGpuBackend::CreateShadowPipeline() {
+    SDL_GPUShaderCreateInfo info{};
+    info.format = SDL_GPU_SHADERFORMAT_DXIL;
+    info.code = gVsMesh;
+    info.code_size = sizeof(gVsMesh);
+    info.entrypoint = "main";
+    info.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    info.num_uniform_buffers = 1;
+    info.num_storage_buffers = 1;
+    SDL_GPUShader* vertex = SDL_CreateGPUShader(device_, &info);
+    SDL_GPUShaderCreateInfo finfo{};
+    finfo.format = SDL_GPU_SHADERFORMAT_DXIL;
+    finfo.code = gPsShadow;
+    finfo.code_size = sizeof(gPsShadow);
+    finfo.entrypoint = "main";
+    finfo.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    SDL_GPUShader* fragment = SDL_CreateGPUShader(device_, &finfo);
+
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    if (vertex && fragment) {
+        SDL_GPUGraphicsPipelineCreateInfo p{};
+        p.vertex_shader = vertex;
+        p.fragment_shader = fragment;
+        p.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        p.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        p.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;  // las dos caras tapan la luz
+        p.target_info.num_color_targets = 0;
+        p.target_info.has_depth_stencil_target = true;
+        p.target_info.depth_stencil_format = kDepthFormat;
+        p.depth_stencil_state.enable_depth_test = true;
+        p.depth_stencil_state.enable_depth_write = true;
+        p.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;  // mas alto = mas cerca de la luz
+        SDL_GPUVertexBufferDescription buffer{};
+        buffer.slot = 0;
+        buffer.pitch = sizeof(MeshVertex);
+        buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+        SDL_GPUVertexAttribute attributes[3]{};
+        attributes[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, static_cast<Uint32>(offsetof(MeshVertex, position))};
+        attributes[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, static_cast<Uint32>(offsetof(MeshVertex, normal))};
+        attributes[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, static_cast<Uint32>(offsetof(MeshVertex, u))};
+        p.vertex_input_state.vertex_buffer_descriptions = &buffer;
+        p.vertex_input_state.num_vertex_buffers = 1;
+        p.vertex_input_state.vertex_attributes = attributes;
+        p.vertex_input_state.num_vertex_attributes = 3;
+        pipeline = SDL_CreateGPUGraphicsPipeline(device_, &p);
+    }
+    if (!pipeline) lastError_ = std::string("Pipeline de sombras: ") + SDL_GetError();
+    if (vertex) SDL_ReleaseGPUShader(device_, vertex);
+    if (fragment) SDL_ReleaseGPUShader(device_, fragment);
+    return pipeline;
+}
+
+bool SdlGpuBackend::DrawShadowMap(SDL_GPUCommandBuffer* cmd, const FramePacket& f, float* out) {
+    constexpr Uint32 kShadowSize = 2048;
+    if (!shadows_) return false;
+    // Lo que proyecta sombra: la propia nave y lo que lleva montado (las mallas de primer plano).
+    Vec3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    Vec3f toLight{0, 0, 0};
+    float power = 0.0f;
+    bool any = false;
+    for (const MeshBatch& b : f.meshBatches) {
+        if (!b.foreground || b.mesh >= meshes_.size() || !meshes_[b.mesh].vertices) continue;
+        for (std::uint32_t k = b.first; k < b.first + b.count && k < f.meshes.size(); ++k) {
+            const MeshInstance& m = f.meshes[k];
+            const float r = meshes_[b.mesh].radius * m.scale * std::max({1.0f, m.stretchX, m.stretchY});
+            lo = {std::min(lo.x, m.viewPosition.x - r), std::min(lo.y, m.viewPosition.y - r), std::min(lo.z, m.viewPosition.z - r)};
+            hi = {std::max(hi.x, m.viewPosition.x + r), std::max(hi.y, m.viewPosition.y + r), std::max(hi.z, m.viewPosition.z + r)};
+            if (!any) {
+                toLight = m.lightDirection;
+                power = std::max({m.lightColor.r, m.lightColor.g, m.lightColor.b});
+            }
+            any = true;
+        }
+    }
+    if (!any || power < 0.01f || Length(toLight) < 0.5f || !shadowPipeline_) return false;
+    if (!shadowMap_) {
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = kDepthFormat;
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = info.height = kShadowSize;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        shadowMap_ = SDL_CreateGPUTexture(device_, &info);
+        if (!shadowMap_) return false;
+    }
+
+    // Caja ortogonal mirando desde la estrella que abarca toda la nave.
+    const Vec3f l = Normalize(toLight);
+    const Vec3f reference = std::fabs(l.y) < 0.9f ? Vec3f{0, 1, 0} : Vec3f{1, 0, 0};
+    const Vec3f u = Normalize(Cross(reference, l));
+    const Vec3f v = Cross(l, u);
+    const Vec3f c = (lo + hi) * 0.5f;
+    const float radius = std::max(Length(hi - lo) * 0.5f * 1.02f, 1e-6f);
+    Mat4f m;  // m[columna][fila]
+    const Vec3f rows[3] = {u * (1.0f / radius), v * (1.0f / radius), l * (0.5f / radius)};
+    const float offsets[3] = {-Dot(u, c) / radius, -Dot(v, c) / radius, 0.5f - 0.5f * Dot(l, c) / radius};
+    for (int r = 0; r < 3; ++r) {
+        m.m[0][r] = rows[r].x;
+        m.m[1][r] = rows[r].y;
+        m.m[2][r] = rows[r].z;
+        m.m[3][r] = offsets[r];
+    }
+    m.m[3][3] = 1.0f;
+
+    SDL_GPUDepthStencilTargetInfo depth{};
+    depth.texture = shadowMap_;
+    depth.clear_depth = 0.0f;
+    depth.load_op = SDL_GPU_LOADOP_CLEAR;
+    depth.store_op = SDL_GPU_STOREOP_STORE;
+    depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depth.cycle = true;
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, nullptr, 0, &depth);
+    SDL_BindGPUGraphicsPipeline(pass, shadowPipeline_);
+    SDL_BindGPUVertexStorageBuffers(pass, 0, &meshBuffer_, 1);
+    FrameUniforms frame{};
+    frame.projection = m;
+    frame.viewportW = frame.viewportH = static_cast<float>(kShadowSize);
+    for (const MeshBatch& b : f.meshBatches) {
+        if (!b.foreground || b.mesh >= meshes_.size() || !meshes_[b.mesh].vertices) continue;
+        const GpuMesh& mesh = meshes_[b.mesh];
+        frame.firstInstance = b.first;
+        SDL_PushGPUVertexUniformData(cmd, 0, &frame, sizeof(frame));
+        SDL_GPUBufferBinding vertices{mesh.vertices, 0};
+        SDL_GPUBufferBinding indices{mesh.indices, 0};
+        SDL_BindGPUVertexBuffers(pass, 0, &vertices, 1);
+        SDL_BindGPUIndexBuffer(pass, &indices, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        SDL_DrawGPUIndexedPrimitives(pass, mesh.indexCount, b.count, 0, 0, 0);
+    }
+    SDL_EndGPURenderPass(pass);
+
+    std::memcpy(out, &m.m[0][0], sizeof(float) * 16);
+    const float texelKm = 2.0f * radius / static_cast<float>(kShadowSize);
+    out[16] = 1.0f;
+    out[17] = 1.0f / static_cast<float>(kShadowSize);
+    out[18] = texelKm * 2.0f * 0.5f / radius;  // dos texeles de margen, en unidades de profundidad
+    out[19] = texelKm * 1.5f;                  // se mira un poco fuera de la superficie
+    return true;
+}
+
 bool SdlGpuBackend::CreatePipelines() {
     const int scene = static_cast<int>(kSceneFormat), target = static_cast<int>(kTargetFormat);
     const auto make = [&](const unsigned char* vs, std::size_t vsSize, int vsUniforms, int vsStorage, const unsigned char* fs, std::size_t fsSize,
@@ -376,21 +545,27 @@ bool SdlGpuBackend::CreatePipelines() {
 #define EPS_CODE(name) name, sizeof(name)
     alphaPipeline_ = make(EPS_CODE(gVsSprite), 2, 1, EPS_CODE(gPsTextured), 1, 0, 0, Blend::Alpha, DepthMode::Test, scene);
     additivePipeline_ = make(EPS_CODE(gVsSprite), 2, 1, EPS_CODE(gPsTextured), 1, 0, 0, Blend::Additive, DepthMode::Test, scene);
+    // Los sprites del mundo leen la profundidad como textura y se funden con lo que tapan: van en un
+    // pase sin profundidad enlazada.
+    softAlphaPipeline_ = make(EPS_CODE(gVsSprite), 2, 1, EPS_CODE(gPsSoftSprite), 2, 1, 0, Blend::Alpha, DepthMode::None, scene);
+    softAdditivePipeline_ = make(EPS_CODE(gVsSprite), 2, 1, EPS_CODE(gPsSoftSprite), 2, 1, 0, Blend::Additive, DepthMode::None, scene);
     linePipeline_ = make(EPS_CODE(gVsLine), 2, 2, EPS_CODE(gPsLine), 0, 0, 0, Blend::Additive, DepthMode::Test, scene);
     skyPipeline_ = make(EPS_CODE(gVsFullscreen), 0, 0, EPS_CODE(gPsSky), 1, 1, 0, Blend::Alpha, DepthMode::Ignore, scene);
     spherePipeline_ = make(EPS_CODE(gVsSphere), 1, 1, EPS_CODE(gPsSphere), 0, 1, 1, Blend::Alpha, DepthMode::TestAndWrite, scene);
     miniaturePipeline_ = make(EPS_CODE(gVsSphere), 1, 1, EPS_CODE(gPsSphere), 0, 1, 1, Blend::Alpha, DepthMode::TestAndWrite, target);
     starCoronaPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsStarCorona), 1, 1, 0, Blend::Additive, DepthMode::None, target);
-    meshPipeline_ = make(EPS_CODE(gVsMesh), 1, 1, EPS_CODE(gPsMesh), 1, 0, 0, Blend::Opaque, DepthMode::TestAndWrite, scene, true);
-    meshTwoSidedPipeline_ = make(EPS_CODE(gVsMesh), 1, 1, EPS_CODE(gPsMesh), 1, 0, 0, Blend::Opaque, DepthMode::TestAndWrite, scene, true, true);
+    // Mallas: color, relieve, ORM y el mapa de sombras; un uniform con su matriz.
+    meshPipeline_ = make(EPS_CODE(gVsMesh), 1, 1, EPS_CODE(gPsMesh), 4, 1, 0, Blend::Opaque, DepthMode::TestAndWrite, scene, true);
+    meshTwoSidedPipeline_ = make(EPS_CODE(gVsMesh), 1, 1, EPS_CODE(gPsMesh), 4, 1, 0, Blend::Opaque, DepthMode::TestAndWrite, scene, true, true);
+    shadowPipeline_ = CreateShadowPipeline();
     nebulaPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsNebula), 2, 1, 0, Blend::Opaque, DepthMode::None, scene);
-    nebulaBlendPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsCopy), 1, 0, 0, Blend::Nebula, DepthMode::None, scene);
+    nebulaBlendPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsNebulaUpsample), 2, 0, 0, Blend::Nebula, DepthMode::None, scene);
     blackHolePipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsBlackHole), 3, 1, 0, Blend::Opaque, DepthMode::None, scene);
     bloomDownPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsBloomDown), 1, 1, 0, Blend::Opaque, DepthMode::None, scene);
     bloomUpPipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsBloomUp), 1, 1, 0, Blend::One, DepthMode::None, scene);
     compositePipeline_ = make(EPS_CODE(gVsPost), 0, 0, EPS_CODE(gPsComposite), 2, 1, 0, Blend::Opaque, DepthMode::None, target);
 #undef EPS_CODE
-    return alphaPipeline_ && additivePipeline_ && linePipeline_ && skyPipeline_ && spherePipeline_ && miniaturePipeline_ && starCoronaPipeline_ && meshPipeline_ && meshTwoSidedPipeline_ && nebulaPipeline_ &&
+    return shadowPipeline_ && alphaPipeline_ && additivePipeline_ && softAlphaPipeline_ && softAdditivePipeline_ && linePipeline_ && skyPipeline_ && spherePipeline_ && miniaturePipeline_ && starCoronaPipeline_ && meshPipeline_ && meshTwoSidedPipeline_ && nebulaPipeline_ &&
            nebulaBlendPipeline_ && blackHolePipeline_ && bloomDownPipeline_ && bloomUpPipeline_ && compositePipeline_;
 }
 
@@ -449,6 +624,7 @@ MeshId SdlGpuBackend::CreateMesh(const MeshData& mesh) {
     info.size = indexBytes;
     gpu.indices = SDL_CreateGPUBuffer(device_, &info);
     gpu.indexCount = static_cast<std::uint32_t>(mesh.indices.size());
+    for (const MeshVertex& v : mesh.vertices) gpu.radius = std::max(gpu.radius, Length(v.position));  // para el mapa de sombras
 
     SDL_GPUTransferBufferCreateInfo transferInfo{};
     transferInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -837,6 +1013,17 @@ void SdlGpuBackend::DrawNebulae(SDL_GPUCommandBuffer* cmd, const FramePacket& f)
     u.fogOrigin[2] = f.fogOrigin.z;
     u.fogTone = f.fogTone;
     u.fogRampOn = f.fogRampOn ? 1.0f : 0.0f;
+    u.cloud[0] = f.fogScale;
+    u.cloud[1] = f.post.detail >= 3 ? 44.0f : f.post.detail == 2 ? 34.0f : f.post.detail == 1 ? 22.0f : 14.0f;
+    u.cloud[2] = static_cast<float>(f.post.detail);
+    const std::size_t blockers = std::min<std::size_t>(f.lightBlockers.size(), 2);
+    u.cloud[3] = static_cast<float>(blockers);
+    for (std::size_t i = 0; i < blockers; ++i) {
+        u.blocker[i][0] = f.lightBlockers[i].x;
+        u.blocker[i][1] = f.lightBlockers[i].y;
+        u.blocker[i][2] = f.lightBlockers[i].z;
+        u.blocker[i][3] = f.lightBlockers[i].w;
+    }
     for (std::size_t i = 0; i < 4; ++i) {
         u.ramp[i][0] = f.fogRamp[i].r;
         u.ramp[i][1] = f.fogRamp[i].g;
@@ -915,8 +1102,8 @@ void SdlGpuBackend::DrawNebulae(SDL_GPUCommandBuffer* cmd, const FramePacket& f)
     scene.store_op = SDL_GPU_STOREOP_STORE;
     pass = SDL_BeginGPURenderPass(cmd, &scene, 1, nullptr);
     SDL_BindGPUGraphicsPipeline(pass, nebulaBlendPipeline_);
-    SDL_GPUTextureSamplerBinding source{nebula_, postSampler_};
-    SDL_BindGPUFragmentSamplers(pass, 0, &source, 1);
+    SDL_GPUTextureSamplerBinding sources[2] = {{nebula_, postSampler_}, {depth_, pointSampler_}};
+    SDL_BindGPUFragmentSamplers(pass, 0, sources, 2);
     SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(pass);
 }
@@ -1079,6 +1266,37 @@ void SdlGpuBackend::Render(const FramePacket& f) {
     }
     UploadGpuData(cmd);
 
+    // Sombras de la nave sobre si misma: antes que nada, la nave vista desde su estrella.
+    // Detras de la sombra (20 floats), las lamparas (PointLight): cuantas hay y, de cada una,
+    // posicion y alcance (km) y color. Es el MeshCB de mesh.hlsl.
+    float shadowUniforms[20 + 4 + 8 * kMaxPointLights] = {};
+    if (!DrawShadowMap(cmd, f, shadowUniforms)) shadowUniforms[16] = 0.0f;
+    {
+        // Si hay de sobra, cuentan las que mas cerca de la camara pueden alumbrar algo.
+        std::vector<const PointLight*> chosen;
+        chosen.reserve(f.pointLights.size());
+        for (const PointLight& p : f.pointLights) chosen.push_back(&p);
+        if (chosen.size() > static_cast<std::size_t>(kMaxPointLights)) {
+            const auto reach = [](const PointLight* p) { return Length(p->viewPosition) - p->range; };
+            std::nth_element(chosen.begin(), chosen.begin() + kMaxPointLights, chosen.end(), [&](const PointLight* a, const PointLight* b) { return reach(a) < reach(b); });
+            chosen.resize(static_cast<std::size_t>(kMaxPointLights));
+        }
+        const int lamps = static_cast<int>(chosen.size());
+        shadowUniforms[20] = static_cast<float>(lamps);
+        for (int k = 0; k < lamps; ++k) {
+            const PointLight& p = *chosen[static_cast<std::size_t>(k)];
+            float* at = shadowUniforms + 24 + 4 * k;
+            at[0] = p.viewPosition.x;
+            at[1] = p.viewPosition.y;
+            at[2] = p.viewPosition.z;
+            at[3] = p.range;
+            float* tint = shadowUniforms + 24 + 4 * kMaxPointLights + 4 * k;
+            tint[0] = p.color.r;
+            tint[1] = p.color.g;
+            tint[2] = p.color.b;
+        }
+    }
+
     SDL_GPUColorTargetInfo color{};
     color.texture = scene_;
     color.clear_color = {f.clearColor.r, f.clearColor.g, f.clearColor.b, 1.0f};
@@ -1145,6 +1363,24 @@ void SdlGpuBackend::Render(const FramePacket& f) {
     sphere.nearZ = f.nearZ;
     sphere.time = static_cast<float>(std::fmod(f.time, 3600.0));
     sphere.starBoost = f.post.starBoost;  // las estrellas superan 1 y el bloom las hace brillar
+    sphere.detail = static_cast<float>(f.post.detail);
+    if (f.fogDistance > 0.0f) {
+        // Dentro de una nebulosa el gas brilla por todos lados: el lado de noche no queda negro, sino
+        // teñido del color de la nube.
+        Color tint = f.fogColor;
+        if (f.fogRampOn) {
+            const float at = std::clamp(f.fogTone, 0.0f, 1.0f) * 3.0f;
+            const int k = std::min(static_cast<int>(at), 2);
+            const float t = at - static_cast<float>(k);
+            const Color& a = f.fogRamp[static_cast<std::size_t>(k)];
+            const Color& b = f.fogRamp[static_cast<std::size_t>(k) + 1];
+            tint = {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1.0f};
+        }
+        sphere.ambient[0] = tint.r;
+        sphere.ambient[1] = tint.g;
+        sphere.ambient[2] = tint.b;
+        sphere.ambient[3] = 1.0f;
+    }
     if (worldSphereCount_ > 0) {
         SDL_PushGPUFragmentUniformData(cmd, 0, &sphere, sizeof(sphere));
         SDL_BindGPUGraphicsPipeline(pass, spherePipeline_);
@@ -1158,6 +1394,8 @@ void SdlGpuBackend::Render(const FramePacket& f) {
         SDL_GPUGraphicsPipeline* bound = meshPipeline_;
         SDL_BindGPUGraphicsPipeline(pass, bound);
         SDL_BindGPUVertexStorageBuffers(pass, 0, &meshBuffer_, 1);
+        SDL_PushGPUFragmentUniformData(cmd, 0, shadowUniforms, sizeof(shadowUniforms));
+        SDL_GPUTexture* shadowTexture = shadowMap_ ? shadowMap_ : textures_[kWhiteTexture];
         for (const MeshBatch& b : f.meshBatches) {
             if (b.foreground != foreground || b.mesh >= meshes_.size() || !meshes_[b.mesh].vertices) continue;
             SDL_GPUGraphicsPipeline* wanted = b.doubleSided ? meshTwoSidedPipeline_ : meshPipeline_;
@@ -1170,7 +1408,17 @@ void SdlGpuBackend::Render(const FramePacket& f) {
             FrameUniforms batch = frame;
             batch.firstInstance = b.first;
             SDL_PushGPUVertexUniformData(cmd, 0, &batch, sizeof(batch));
-            bindTexture(b.texture, repeatSampler_);
+            {
+                // Color, relieve y oclusion-rugosidad-metal (SetTextureMaps); sin mapas, los neutros.
+                const TextureId base = b.texture < textures_.size() ? b.texture : kWhiteTexture;
+                TextureId normal = flatNormal_, orm = plainOrm_;
+                if (base < textureMaps_.size()) {
+                    if (textureMaps_[base][0] < textures_.size()) normal = textureMaps_[base][0];
+                    if (textureMaps_[base][1] < textures_.size()) orm = textureMaps_[base][1];
+                }
+                SDL_GPUTextureSamplerBinding maps[4] = {{textures_[base], meshSampler_}, {textures_[normal], meshSampler_}, {textures_[orm], meshSampler_}, {shadowTexture, pointSampler_}};
+                SDL_BindGPUFragmentSamplers(pass, 0, maps, 4);
+            }
             SDL_GPUBufferBinding vertices{mesh.vertices, 0};
             SDL_GPUBufferBinding indices{mesh.indices, 0};
             SDL_BindGPUVertexBuffers(pass, 0, &vertices, 1);
@@ -1203,16 +1451,42 @@ void SdlGpuBackend::Render(const FramePacket& f) {
         SDL_DrawGPUPrimitives(pass, 6, static_cast<Uint32>(gpuLines_.size()), 0, 0);
     }
 
-    bool additiveBound = false, anyBound = false;
-    for (const SpriteBatch& b : f.batches) {
-        const bool additive = b.blend == BlendMode::Additive;
-        if (!anyBound || additive != additiveBound) {
-            SDL_BindGPUGraphicsPipeline(pass, additive ? additivePipeline_ : alphaPipeline_);
-            additiveBound = additive;
-            anyBound = true;
+    // Los sprites del mundo, en un pase sin profundidad enlazada: la leen como textura para fundirse
+    // con lo que atraviesan (una estela con el casco, una explosion con la roca). Sin lente de
+    // curvatura van despues de la nave, que se dibuja al final: asi una estela que pasa por delante
+    // del casco se ve delante y se funde con el. Con la lente van antes, para que ella los curve.
+    bool lensActive = false;
+    for (const PostEffect& e : effects_) lensActive = lensActive || (e.enabled && e.behindForeground);
+    const auto drawWorldSprites = [&] {
+        color.load_op = SDL_GPU_LOADOP_LOAD;
+        color.cycle = false;
+        pass = SDL_BeginGPURenderPass(cmd, &color, 1, nullptr);
+        bindSpriteBuffers();
+        // Si van despues del velo de niebla de pantalla, se velan en el shader en la misma medida.
+        const float soft[4] = {f.nearZ, hasScreenTint_ && !lensActive ? f.screenTint.a : 0.0f, 0, 0};
+        SDL_PushGPUFragmentUniformData(cmd, 0, soft, sizeof(soft));
+        bool additiveBound = false, anyBound = false;
+        for (const SpriteBatch& b : f.batches) {
+            const bool additive = b.blend == BlendMode::Additive;
+            if (!anyBound || additive != additiveBound) {
+                SDL_BindGPUGraphicsPipeline(pass, additive ? softAdditivePipeline_ : softAlphaPipeline_);
+                additiveBound = additive;
+                anyBound = true;
+            }
+            const TextureId valid = b.texture < textures_.size() ? b.texture : kWhiteTexture;
+            SDL_GPUTextureSamplerBinding bindings[2] = {{textures_[valid], clampSampler_}, {depth_, pointSampler_}};
+            SDL_BindGPUFragmentSamplers(pass, 0, bindings, 2);
+            drawSprites(worldSpriteFirst_ + b.first, b.count);
         }
-        bindTexture(b.texture, clampSampler_);
-        drawSprites(worldSpriteFirst_ + b.first, b.count);
+        SDL_EndGPURenderPass(pass);
+    };
+    if (lensActive && !f.batches.empty()) {
+        SDL_EndGPURenderPass(pass);
+        drawWorldSprites();
+        depth.load_op = SDL_GPU_LOADOP_LOAD;
+        depth.cycle = false;
+        pass = SDL_BeginGPURenderPass(cmd, &color, 1, &depth);
+        bindSpriteBuffers();
     }
 
     if (hasScreenTint_) {
@@ -1258,6 +1532,7 @@ void SdlGpuBackend::Render(const FramePacket& f) {
         drawMeshes(true);
         SDL_EndGPURenderPass(pass);
     }
+    if (!lensActive && !f.batches.empty()) drawWorldSprites();
 
     if (f.post.bloom) DrawBloom(cmd, f);
     DrawComposite(cmd, f);
@@ -1326,6 +1601,7 @@ void SdlGpuBackend::Render(const FramePacket& f) {
         miniFrame.firstInstance = worldSphereCount_;
         SDL_PushGPUVertexUniformData(cmd, 0, &miniFrame, sizeof(miniFrame));
         sphere.starBoost = 1.0f;
+        for (float& a : sphere.ambient) a = 0.0f;  // la miniatura del mapa no esta dentro de la nube
         SDL_PushGPUFragmentUniformData(cmd, 0, &sphere, sizeof(sphere));
         SDL_BindGPUGraphicsPipeline(mini, miniaturePipeline_);
         SDL_BindGPUVertexStorageBuffers(mini, 0, &sphereBuffer_, 1);

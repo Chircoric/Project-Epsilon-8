@@ -95,6 +95,7 @@ void FrameBuilder::Build(const FrameInput& input, JobSystem& jobs, FramePacket& 
     out.fogDistance = input.fogDistance;
     out.fogColor = input.fogColor;
     out.fogOrigin = input.fogOrigin;
+    out.fogScale = input.fogScale;
     out.fogRampOn = input.fogRampOn;
     out.fogRamp = input.fogRamp;
     out.fogTone = input.fogTone;
@@ -111,10 +112,12 @@ void FrameBuilder::Build(const FrameInput& input, JobSystem& jobs, FramePacket& 
     out.meshes.clear();
     out.meshBatches.clear();
     out.craters.clear();
+    out.pointLights.clear();
     out.nebulae.clear();
     out.blackHoles.clear();
     out.starLights.clear();
     out.atmospheres.clear();
+    out.lightBlockers.clear();
     out.lines.clear();
     out.stats = {};
 

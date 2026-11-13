@@ -64,6 +64,40 @@ float4 PSCopy(VsOut i) : SV_Target0 {
     return gSource.SampleLevel(gLinear, i.uv, 0);
 }
 
+// La nube se calcula a media resolucion y con un punto de partida al azar en cada pixel. Al
+// ampliarla se mezcla con sus vecinas para que no quede grano ni trama, pero no a traves del
+// borde de lo opaco: alli la transparencia cambia de golpe y la vecina no cuenta.
+// gBloom lleva aqui la profundidad de la escena a resolucion completa (Z invertida: 0 = cielo).
+// Cada texel de la nube se calculo con la profundidad de su centro; solo cuentan los de una
+// profundidad parecida a la de este pixel. Sin esto, en el contorno de un planeta los pixeles de
+// cielo cogian la nube del planeta (casi sin niebla) y dejaban un borde negro.
+float DepthKey(float d) { return d > 0.0 ? -log(d) : 40.0; }
+
+float4 PSNebulaUpsample(VsOut i) : SV_Target0 {
+    float w, h;
+    gSource.GetDimensions(w, h);
+    const float2 size = float2(w, h);
+    const float key = DepthKey(gBloom.SampleLevel(gLinear2, i.uv, 0).r);
+    const float2 at = i.uv * size - 0.5;
+    const int2 base = int2(floor(at));
+    float4 sum = float4(0, 0, 0, 0);
+    float total = 0.0;
+    [unroll] for (int y = -2; y <= 3; ++y) {
+        [unroll] for (int x = -2; x <= 3; ++x) {
+            const int2 texel = clamp(base + int2(x, y), int2(0, 0), int2(size) - 1);
+            const float2 centerUv = (float2(texel) + 0.5) / size;
+            const float4 s = gSource.Load(int3(texel, 0));
+            const float2 d = float2(texel) - at;
+            const float same = DepthKey(gBloom.SampleLevel(gLinear2, centerUv, 0).r) - key;
+            // Casi plano en 4 x 4 texeles: asi entra el patron de Bayer completo de la nube.
+            const float weight = exp(-dot(d, d) / 9.0) * exp(-min(abs(same) * 6.0, 60.0)) + 1e-12;
+            sum += s * weight;
+            total += weight;
+        }
+    }
+    return sum / total;
+}
+
 cbuffer CompositeCB : register(b0, space3) {
     float uBloomStrength;
     float uExposure;
@@ -74,8 +108,11 @@ cbuffer CompositeCB : register(b0, space3) {
     float2 uCompositePad;
 };
 
+// Lo oscuro y lo medio quedan intactos (la nebulosa tenue no se hunde en negro); a partir de 0,6
+// la luz se comprime poco a poco hacia 1, canal a canal, asi que lo muy brillante se apaga hacia
+// el blanco en vez de saturar en un color chillon o quemarse de golpe.
 float3 ToneMap(float3 c) {
-    const float k = 0.82;  // por debajo no se toca
+    const float k = 0.60;
     const float3 over = max(c - k, 0.0);
     return min(c, k) + (1.0 - k) * (1.0 - exp(-over / (1.0 - k)));
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
@@ -19,19 +20,21 @@ const Quatf kAlongZ = Quatf::FromAxisAngle({1, 0, 0}, kQuarter);
 const Quatf kAlongX = Quatf::FromAxisAngle({0, 0, 1}, kQuarter);
 
 constexpr float kShipEdge = 12.0f;  // m: arista mas larga de la nave, para que se pueda abollar
+constexpr float kStationEdge = 80.0f;  // m: lo mismo en un bastion alienigena, que mide kilometros
 constexpr float kEmissiveScale = 0.4f, kEmissiveMaximum = 3.0f;  // brillo de un .glb: intensidad del material
 
 // Ayuda a montar un modelo con piezas repetidas sin subir la misma malla varias veces.
 class Builder {
 public:
-    Builder(const MeshUpload& upload, TextureId hull, const std::string& name, bool keepTriangles = false) : upload_(upload), hull_(hull), model_(std::make_shared<ModelAsset>()), keep_(keepTriangles) { model_->name = name; }
+    // keepTriangles: cada pieza guarda sus triangulos (choque y zonas), partidos hasta aristas de edge m.
+    Builder(const MeshUpload& upload, TextureId hull, const std::string& name, bool keepTriangles = false, float edge = kShipEdge) : upload_(upload), hull_(hull), model_(std::make_shared<ModelAsset>()), keep_(keepTriangles), edge_(edge) { model_->name = name; }
 
     void Add(const std::string& name, const MeshData& source, const Vec3f& position, const Quatf& rotation, const Color& color, float emissive = 0.0f, bool textured = true) {
         // La nave se abolla vertice a vertice (crateres de mesh.hlsl): sus caras grandes se parten.
         MeshData refined;
         if (keep_) {
             refined = source;
-            SubdivideLongEdges(refined, kShipEdge, 60000);
+            SubdivideLongEdges(refined, edge_, 60000);
         }
         const MeshData& mesh = keep_ ? refined : source;
         ModelPart p;
@@ -54,6 +57,7 @@ private:
     TextureId hull_;
     std::shared_ptr<ModelAsset> model_;
     bool keep_ = false;
+    float edge_ = kShipEdge;
 };
 
 Vec3f Around(float angle, float radius, float z = 0.0f) { return {std::cos(angle) * radius, std::sin(angle) * radius, z}; }
@@ -95,42 +99,6 @@ ModelRef BuildShip(const MeshUpload& upload, TextureId hull) {
     return b.Done();
 }
 
-// Mineria: nucleo, tres patas con taladro y tolvas que crecen con los modulos.
-ModelRef BuildMining(const MeshUpload& upload, TextureId hull) {
-    Builder b(upload, hull, "Estacion de mineria");
-    const Color warn{1.0f, 0.70f, 0.22f, 1.0f};
-    b.Add("nucleo", MakeCylinder(90.0f, 180.0f, 8), {0, 0, 0}, {}, kSteel);
-    b.Add("cupula", MakeSphere(70.0f, 20), {0, -100.0f, 0}, {}, kDark);
-    b.Add("baliza", MakeSphere(10.0f, 12), {0, -180.0f, 0}, {}, warn, 5.0f, false);
-    b.Add("antena", MakeCylinder(4.0f, 90.0f, 8), {0, -130.0f, 0}, {}, kDark);
-    for (int i = 0; i < 3; ++i) {
-        const float angle = 2.0943951f * static_cast<float>(i);
-        const Vec3f out{std::cos(angle), 0.0f, std::sin(angle)};
-        const Quatf turn = Quatf::FromAxisAngle({0, 1, 0}, -angle);
-        b.Add("brazo", MakeBox(230.0f, 24.0f, 30.0f), out * 170.0f, turn, kDark);
-        b.Add("pata", MakeCylinder(18.0f, 240.0f, 12), Vec3f{out.x * 280.0f, 110.0f, out.z * 280.0f}, {}, kSteel);
-        b.Add("taladro", MakeCylinder(32.0f, 60.0f, 6), Vec3f{out.x * 280.0f, 250.0f, out.z * 280.0f}, {}, warn, 0.4f);
-    }
-    // Escotilla de atraque: en el costado del nucleo, entre dos brazos (GameSession::Port).
-    {
-        const float angle = 1.0471976f;
-        const Vec3f out{std::cos(angle), 0.0f, std::sin(angle)};
-        const Quatf turn = Quatf::FromAxisAngle({0, 1, 0}, -angle);
-        const Color dock{0.35f, 1.0f, 0.55f, 1.0f};
-        b.Add("collar", MakeBox(40.0f, 74.0f, 74.0f), Vec3f{out.x * 80.0f, -20.0f, out.z * 80.0f}, turn, kDark);
-        b.Add("escotilla_luz", MakeBox(4.0f, 84.0f, 84.0f), Vec3f{out.x * 101.0f, -20.0f, out.z * 101.0f}, turn, dock, 4.0f, false);
-        b.Add("escotilla", MakeBox(6.0f, 60.0f, 60.0f), Vec3f{out.x * 104.0f, -20.0f, out.z * 104.0f}, turn, kSteel);
-        b.Add("guia", MakeSphere(8.0f, 10), Vec3f{out.x * 104.0f, -64.0f, out.z * 104.0f}, {}, dock, 6.0f, false);
-    }
-    // Una pieza por modulo: el nombre mod_N indica desde cuantos modulos aparece.
-    for (int i = 0; i < 4; ++i) {
-        const float angle = kQuarter * static_cast<float>(i) + 0.785f;
-        const Vec3f at{std::cos(angle) * 125.0f, 60.0f, std::sin(angle) * 125.0f};
-        b.Add("mod_" + std::to_string(i + 1), MakeBox(70.0f, 90.0f, 70.0f), at, Quatf::FromAxisAngle({0, 1, 0}, -angle), kCopper);
-    }
-    return b.Done();
-}
-
 // Energia: una corola de colectores que mira a la estrella y una cuchara delante.
 ModelRef BuildPower(const MeshUpload& upload, TextureId hull) {
     Builder b(upload, hull, "Estacion de energia");
@@ -159,9 +127,10 @@ ModelRef BuildPower(const MeshUpload& upload, TextureId hull) {
     return b.Done();
 }
 
-// Las naves ajenas no usan piezas humanas: formas continuas y cristales encendidos.
+// Las naves ajenas no usan piezas humanas: formas continuas y cristales encendidos. Guardan sus
+// triangulos como la nave: de ellos salen sus zonas (AlienZoneOfPart) y se abollan al recibir.
 ModelRef BuildAlienShip(const MeshUpload& upload, bool hostile) {
-    Builder b(upload, 0, hostile ? "Nave hostil" : "Nave neutral");
+    Builder b(upload, 0, hostile ? "Nave hostil" : "Nave neutral", true);
     const Color skin = hostile ? Color{0.16f, 0.07f, 0.09f, 1.0f} : Color{0.46f, 0.62f, 0.60f, 1.0f};
     const Color light = hostile ? Color{1.0f, 0.18f, 0.10f, 1.0f} : Color{0.30f, 1.0f, 0.82f, 1.0f};
     if (hostile) {
@@ -185,7 +154,7 @@ ModelRef BuildAlienShip(const MeshUpload& upload, bool hostile) {
 }
 
 ModelRef BuildAlienStation(const MeshUpload& upload, bool hostile) {
-    Builder b(upload, 0, hostile ? "Bastion hostil" : "Estacion neutral");
+    Builder b(upload, 0, hostile ? "Bastion hostil" : "Estacion neutral", true, kStationEdge);
     const Color skin = hostile ? Color{0.14f, 0.07f, 0.08f, 1.0f} : Color{0.44f, 0.58f, 0.60f, 1.0f};
     const Color light = hostile ? Color{1.0f, 0.16f, 0.10f, 1.0f} : Color{0.30f, 1.0f, 0.82f, 1.0f};
     b.Add("nucleo", MakeSphere(620.0f, 40), {0, 0, 0}, {}, skin);
@@ -201,6 +170,27 @@ ModelRef BuildAlienStation(const MeshUpload& upload, bool hostile) {
         if (hostile) b.Add("pincho", MakeBox(1100.0f, 36.0f, 36.0f), out * 2150.0f, turn, skin);
         if (hostile) b.Add("punta", MakeSphere(70.0f, 12), out * 2720.0f, {}, light, 5.0f);
     }
+    return b.Done();
+}
+
+// El planeta coraza: una esfera blindada de 70 000 km de radio (Jupiter), con anillos de placas y
+// costuras encendidas. En metros, como todo modelo.
+ModelRef BuildArmorPlanet(const MeshUpload& upload, double radiusKm) {
+    Builder b(upload, 0, "Planeta coraza");
+    const float r = static_cast<float>(radiusKm * 1000.0);
+    const Color armor{0.12f, 0.08f, 0.09f, 1.0f}, plate{0.20f, 0.13f, 0.13f, 1.0f}, seam{1.0f, 0.20f, 0.08f, 1.0f};
+    b.Add("coraza", MakeSphere(r, 96), {0, 0, 0}, {}, armor);
+    // Cinturones de placas a varias latitudes, y una costura de luz en cada uno.
+    for (int i = -3; i <= 3; ++i) {
+        const float lat = 0.33f * static_cast<float>(i);
+        const float ring = r * std::cos(lat);
+        const float y = r * std::sin(lat);
+        b.Add("placas", MakeTorus(ring, r * 0.025f, 128, 8), {0, y, 0}, {}, plate);
+        b.Add("costura", MakeTorus(ring * 1.004f, r * 0.006f, 128, 6), {0, y, 0}, {}, seam, 3.0f);
+    }
+    // Dos grandes ojos de luz en los polos.
+    b.Add("polo", MakeSphere(r * 0.08f, 24), {0, -r, 0}, {}, seam, 4.0f);
+    b.Add("polo", MakeSphere(r * 0.08f, 24), {0, r, 0}, {}, seam, 4.0f);
     return b.Done();
 }
 
@@ -227,7 +217,7 @@ ModelRef BuildDerelict(const MeshUpload& upload) {
 
 // En el mundo, arriba es -Y: por eso cada altura de la cubierta y de las personas va en negativo.
 ModelRef BuildDeck(const MeshUpload& upload, StationKind kind) {
-    Builder b(upload, 0, kind == StationKind::Mining ? "Cubierta de mina" : "Cubierta de central");
+    Builder b(upload, 0, "Cubierta de central");
     int index = 0;
     for (const DeckBox& box : MakeDeck(kind).boxes) {
         const Vec3f center{static_cast<float>(box.center.x), static_cast<float>(-box.center.y), static_cast<float>(box.center.z)};
@@ -284,7 +274,10 @@ MeshData MakeShard() {
     return m;
 }
 
-ModelRef LoadShipModel(const std::string& path, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* error) {
+namespace {
+
+// Una nave de un .gltf, la propia o una alienigena: piezas centradas en su caja y con sus triangulos.
+ModelRef LoadHullModel(const std::string& path, const std::string& name, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* error) {
     std::vector<ImportedPart> parts;
     if (!LoadGltf(path, parts, error)) return nullptr;
     if (parts.empty()) {
@@ -292,7 +285,7 @@ ModelRef LoadShipModel(const std::string& path, const MeshUpload& upload, const 
         return nullptr;
     }
     auto model = std::make_shared<ModelAsset>();
-    model->name = "Nave Epsilon";
+    model->name = name;
     for (ImportedPart& imported : parts) {
         MeshData& mesh = imported.mesh;
         if (mesh.vertices.empty() || mesh.indices.empty()) continue;
@@ -324,8 +317,204 @@ ModelRef LoadShipModel(const std::string& path, const MeshUpload& upload, const 
     return model;
 }
 
-std::shared_ptr<ZoneLayout> BuildZoneLayout(const ModelAsset& ship) {
-    constexpr double kCell = 30.0;     // m: cada bola cubre lo que cae en un cubo de este lado
+}  // namespace
+
+ModelRef LoadShipModel(const std::string& path, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* error) {
+    return LoadHullModel(path, "Nave Epsilon", upload, texture, error);
+}
+
+ModelRef LoadAlienShipModel(const std::string& path, const std::string& name, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* error) {
+    return LoadHullModel(path, name, upload, texture, error);
+}
+
+ModelRef NeutralColors(const ModelAsset& hostile) {
+    // Los colores de las maquetas (BuildAlienShip): la piel hostil, rojiza y oscura, pasa a la verdosa
+    // conservando cuanto mas clara u oscura es cada pieza; lo que brilla, a turquesa.
+    const Color hostileSkin{0.16f, 0.07f, 0.09f, 1.0f}, neutralSkin{0.46f, 0.62f, 0.60f, 1.0f}, neutralLight{0.30f, 1.0f, 0.82f, 1.0f};
+    const auto luminance = [](const Color& c) { return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; };
+    auto model = std::make_shared<ModelAsset>(hostile);
+    model->name = hostile.name + " (neutral)";
+    for (ModelPart& p : model->parts) {
+        if (p.emissive > 0.0f) {
+            p.color = neutralLight;
+            continue;
+        }
+        const float k = std::clamp(luminance(p.color) / luminance(hostileSkin), 0.3f, 2.0f);
+        p.color = {std::min(neutralSkin.r * k, 1.0f), std::min(neutralSkin.g * k, 1.0f), std::min(neutralSkin.b * k, 1.0f), p.color.a};
+    }
+    return model;
+}
+
+const char* TurretModelName(ShipModuleKind kind) {
+    switch (kind) {
+        case ShipModuleKind::PointDefensePlatform: return "defensa_puntual";
+        case ShipModuleKind::CoilgunLight: return "coilgun_ligera";
+        case ShipModuleKind::CoilgunHeavy: return "coilgun_pesada";
+        case ShipModuleKind::RailSpinalLight: return "espinal_ligera";
+        case ShipModuleKind::RailSpinalHeavy: return "espinal_pesada";
+        case ShipModuleKind::Rail360Light: return "railgun360_ligera";
+        case ShipModuleKind::Rail360Heavy: return "railgun360_pesada";
+        // Las tres bahias de cada tamano comparten lanzador.
+        case ShipModuleKind::BayLight10:
+        case ShipModuleKind::BayLight25:
+        case ShipModuleKind::BayLight50: return "misiles_ligera";
+        case ShipModuleKind::BayHeavy10:
+        case ShipModuleKind::BayHeavy25:
+        case ShipModuleKind::BayHeavy50: return "misiles_pesada";
+        case ShipModuleKind::NuclearLight: return "nuclear_ligera";
+        case ShipModuleKind::NuclearHeavy: return "nuclear_pesada";
+        default: return nullptr;
+    }
+}
+
+ModelRef LoadGltfModel(const std::string& path, const std::string& name, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* error) {
+    std::vector<ImportedPart> parts;
+    if (!LoadGltf(path, parts, error)) return nullptr;
+    auto model = std::make_shared<ModelAsset>();
+    model->name = name;
+    for (ImportedPart& imported : parts) {
+        MeshData& mesh = imported.mesh;
+        if (mesh.vertices.empty() || mesh.indices.empty()) continue;
+        Vec3f low = mesh.vertices[0].position, high = low;
+        for (const MeshVertex& v : mesh.vertices) {
+            low = {std::min(low.x, v.position.x), std::min(low.y, v.position.y), std::min(low.z, v.position.z)};
+            high = {std::max(high.x, v.position.x), std::max(high.y, v.position.y), std::max(high.z, v.position.z)};
+        }
+        const Vec3f center = (low + high) * 0.5f;
+        for (MeshVertex& v : mesh.vertices) v.position = v.position - center;
+        ModelPart p;
+        p.name = imported.name;
+        p.mesh = upload(mesh);
+        p.position = center;
+        p.radius = MeshRadius(mesh);
+        p.color = imported.color;
+        p.emissive = std::min(imported.emissive * kEmissiveScale, kEmissiveMaximum);
+        if (texture && !imported.texturePath.empty()) p.texture = texture(imported.texturePath);
+        model->parts.push_back(std::move(p));
+    }
+    if (model->parts.empty()) {
+        if (error) *error = "ninguna malla tenia triangulos";
+        return nullptr;
+    }
+    return model;
+}
+
+void LoadStationAndDrones(GameAssets& a, const std::string& folder, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* log) {
+    const auto note = [&](const std::string& line) {
+        if (log) *log += line + "\n";
+    };
+    std::error_code ignored;
+    std::string error;
+    const std::string station = folder + "estacion.gltf";
+    if (std::filesystem::exists(station, ignored)) {
+        if (ModelRef model = LoadGltfModel(station, "Estacion origami", upload, texture, &error)) {
+            auto animation = std::make_shared<ModelAnimation>();
+            if (LoadGltfAnimation(station, "despliegue", *animation, 24.0, &error)) {
+                std::map<std::string, int> index;
+                for (std::size_t i = 0; i < animation->parts.size(); ++i) index[animation->parts[i]] = static_cast<int>(i);
+                a.origamiTrack.clear();
+                for (const ModelPart& p : model->parts) {
+                    const auto found = index.find(p.name);
+                    a.origamiTrack.push_back(found == index.end() ? -1 : found->second);
+                }
+                a.origamiDeploy = animation;
+            } else {
+                note("Estacion origami sin animacion: " + error);
+            }
+            a.origami = model;
+        } else {
+            note("No se pudo cargar la estacion origami: " + error);
+        }
+    } else {
+        note("Sin " + station + ": la origami usa la maqueta de la central.");
+    }
+    const std::string bay = folder + "bahia_drones.gltf";
+    if (std::filesystem::exists(bay, ignored)) {
+        if (ModelRef model = LoadGltfModel(bay, "Bahia de drones", upload, texture, &error)) {
+            a.droneBay = model;
+            std::vector<ImportedMarker> markers;
+            if (LoadGltfMarkers(bay, markers, &error)) {
+                std::vector<Vec3f> spots;
+                for (const char* wanted : {"dron_1", "dron_2"})
+                    for (const ImportedMarker& m : markers)
+                        if (m.name == wanted) spots.push_back(m.position);
+                if (spots.size() == 2) a.droneSpots = spots;
+            }
+        } else {
+            note("No se pudo cargar la bahia de drones: " + error);
+        }
+    }
+    const std::string drone = folder + "dron.gltf";
+    if (std::filesystem::exists(drone, ignored)) {
+        if (ModelRef model = LoadGltfModel(drone, "Dron minero", upload, texture, &error)) a.drone = model;
+        else note("No se pudo cargar el dron: " + error);
+    }
+}
+
+namespace {
+// Las zonas de un modelo alienigena: su forma y la zona de cada pieza, en su orden.
+void RebuildAlienZones(GameAssets& a, AlienModel model) {
+    const std::size_t m = static_cast<std::size_t>(model);
+    const ModelAsset& asset = *AlienModelAsset(a, model);
+    a.alienZones[m] = BuildAlienZoneLayout(asset, model);
+    a.alienPartZones[m].clear();
+    for (const ModelPart& p : asset.parts) a.alienPartZones[m].push_back(AlienZoneOfPart(p.name, p.position));
+}
+}  // namespace
+
+void LoadCombatModels(GameAssets& a, const std::string& folder, const MeshUpload& upload, const std::function<TextureId(const std::string&)>& texture, std::string* log) {
+    const auto note = [&](const std::string& line) {
+        if (log) *log += line + "\n";
+    };
+    std::error_code ignored;
+    std::string error;
+    static const char* const kFiles[kAlienClassModelCount] = {"alien_dron.gltf", "alien_corveta.gltf", "alien_fragata.gltf"};
+    static const char* const kNames[kAlienClassModelCount] = {"Dron alienigena", "Corveta alienigena", "Fragata alienigena"};
+    for (int i = 0; i < kAlienClassModelCount; ++i) {
+        const std::string path = folder + kFiles[i];
+        if (!std::filesystem::exists(path, ignored)) {
+            note("Sin " + path + ": la " + std::string(kShipClassNames[i]) + " alienigena usa la maqueta.");
+            continue;
+        }
+        ModelRef model = LoadAlienShipModel(path, kNames[i], upload, texture, &error);
+        if (!model) {
+            note("No se pudo cargar " + path + ": " + error);
+            continue;
+        }
+        const ShipClassId id = static_cast<ShipClassId>(i);
+        a.hostileClassShips[static_cast<std::size_t>(i)] = model;
+        a.neutralClassShips[static_cast<std::size_t>(i)] = NeutralColors(*model);
+        RebuildAlienZones(a, ClassModel(id, true));
+        RebuildAlienZones(a, ClassModel(id, false));
+    }
+
+    const std::string turrets = folder + "torretas.gltf";
+    if (!std::filesystem::exists(turrets, ignored)) {
+        note("Sin " + turrets + ": las armas usan la maqueta de la torreta.");
+        return;
+    }
+    const ModelRef all = LoadGltfModel(turrets, "Torretas", upload, texture, &error);
+    if (!all) {
+        note("No se pudo cargar " + turrets + ": " + error);
+        return;
+    }
+    // Un solo archivo con todas: cada arma son las piezas con su prefijo.
+    for (int k = 0; k < static_cast<int>(ShipModuleKind::Count); ++k) {
+        const char* name = TurretModelName(static_cast<ShipModuleKind>(k));
+        if (!name) continue;
+        const std::string prefix = std::string(name) + "_";
+        auto model = std::make_shared<ModelAsset>();
+        model->name = name;
+        for (const ModelPart& p : all->parts)
+            if (p.name.rfind(prefix, 0) == 0) model->parts.push_back(p);
+        if (model->parts.empty()) note(std::string("torretas.gltf no tiene las piezas de ") + name);
+        else a.moduleModels[static_cast<std::size_t>(k)] = model;
+    }
+}
+
+std::shared_ptr<ZoneLayout> BuildZoneLayout(const ModelAsset& ship) { return BuildZoneLayout(ship, ZoneOfPart, 30.0); }
+
+std::shared_ptr<ZoneLayout> BuildZoneLayout(const ModelAsset& ship, const std::function<int(const std::string&, const Vec3f&)>& zoneOf, double kCell) {
     constexpr double kMinBall = 2.0;   // m: una pieza diminuta sigue siendo blanco
     const auto lowest = [](const Vec3d& a, const Vec3d& b) { return Vec3d{std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)}; };
     const auto highest = [](const Vec3d& a, const Vec3d& b) { return Vec3d{std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)}; };
@@ -342,7 +531,7 @@ std::shared_ptr<ZoneLayout> BuildZoneLayout(const ModelAsset& ship) {
 
     for (const ModelPart& p : ship.parts) {
         if (!p.collision) continue;
-        const std::size_t zone = static_cast<std::size_t>(ZoneOfPart(p.name, p.position));
+        const std::size_t zone = static_cast<std::size_t>(std::clamp(zoneOf(p.name, p.position), 0, kHullZoneCount - 1));
         const Mat4f turn = p.rotation.ToMatrix();
         Box part{empty0, empty1};
         for (const MeshVertex& v : p.collision->vertices) {
@@ -462,6 +651,27 @@ MeshData MakeHeatCap() {
     return m;
 }
 
+// Bahia de drones de reserva (sin el glTF): la losa del hangar sobre la base, +Y hacia fuera.
+MeshData MakeDroneBay() {
+    MeshData m;
+    AppendMesh(m, MakeCylinder(14.0f, 2.0f, 24), {0, 1.0f, 0});
+    AppendMesh(m, MakeBox(25.0f, 6.0f, 21.0f), {0, 5.0f, 0});
+    AppendMesh(m, MakeBox(8.0f, 4.0f, 16.0f), {-8.0f, 10.0f, 0});
+    AppendMesh(m, MakeBox(8.0f, 4.0f, 16.0f), {8.0f, 10.0f, 0});
+    return m;
+}
+
+// Dron de reserva: cuerpo, bodega y broca, con la proa a +Z y -Y arriba, en metros.
+ModelRef BuildDroneMaquette(const MeshUpload& upload) {
+    ImportedPart body;
+    body.name = "dron_casco";
+    AppendMesh(body.mesh, MakeBox(9.6f, 7.8f, 24.0f), {0, -1.0f, -2.0f});
+    AppendMesh(body.mesh, MakeCylinder(5.2f, 16.0f, 16), {0, 5.0f, -3.0f}, Quatf::FromAxisAngle({1, 0, 0}, 1.5707963f));
+    AppendMesh(body.mesh, MakeCylinder(3.0f, 9.0f, 12), {0, -1.0f, 15.0f}, Quatf::FromAxisAngle({1, 0, 0}, 1.5707963f));
+    body.color = {0.82f, 0.80f, 0.74f, 1.0f};
+    return BuildModel("Dron minero", {body}, upload);
+}
+
 std::shared_ptr<ShipDesign> BuildShipDesign(const ModelAsset& ship, const std::vector<ImportedMarker>& markers) {
     auto design = std::make_shared<ShipDesign>();
     for (const ModelPart& p : ship.parts) {
@@ -515,6 +725,7 @@ std::shared_ptr<ShipDesign> BuildShipDesign(const ModelAsset& ship, const std::v
     for (const ImportedMarker& m : markers)
         if (m.name.find("atraque") != std::string::npos) {
             design->dockPort = {m.position.x, m.position.y, m.position.z};
+            design->dockNormal = Normalize(Vec3d{m.up.x, m.up.y, m.up.z} + Vec3d{1e-9, 0, 0});
             fixed = true;
         }
     if (!fixed) {
@@ -549,6 +760,11 @@ GameAssets BuildGameAssets(const MeshUpload& upload, TextureId hull) {
     a.moduleMeshes[static_cast<std::size_t>(ShipModuleKind::Radiator)] = upload(MakeRadiatorFin());
     a.moduleMeshes[static_cast<std::size_t>(ShipModuleKind::SensorArray)] = upload(MakeSensorDish());
     a.moduleMeshes[static_cast<std::size_t>(ShipModuleKind::ArmorPlate)] = upload(MakeArmorPlate());
+    a.moduleMeshes[static_cast<std::size_t>(ShipModuleKind::DroneBay)] = upload(MakeDroneBay());
+    // Armas humanas y defensa puntual: sin torretas.gltf (LoadCombatModels), se ven como la torreta.
+    for (int k = static_cast<int>(ShipModuleKind::PointDefensePlatform); k < static_cast<int>(ShipModuleKind::Count); ++k)
+        a.moduleMeshes[static_cast<std::size_t>(k)] = a.moduleMeshes[static_cast<std::size_t>(ShipModuleKind::Turret)];
+    a.drone = BuildDroneMaquette(upload);
     a.dome = upload(MakeDome());
     a.thrusterPod = upload(MakeThrusterPod());
     a.heatCap = upload(MakeHeatCap());
@@ -557,15 +773,18 @@ GameAssets BuildGameAssets(const MeshUpload& upload, TextureId hull) {
     a.girder = upload(MakeGirder());
     a.plate = upload(MakePlate());
     a.shard = upload(MakeShard());
-    a.miningStation = BuildMining(upload, hull);
     a.powerStation = BuildPower(upload, hull);
     a.hostileShip = BuildAlienShip(upload, true);
     a.neutralShip = BuildAlienShip(upload, false);
+    // Dron, corveta y fragata: la maqueta hasta que LoadCombatModels lea sus modelos.
+    a.hostileClassShips.fill(a.hostileShip);
+    a.neutralClassShips.fill(a.neutralShip);
     a.hostileStation = BuildAlienStation(upload, true);
     a.neutralStation = BuildAlienStation(upload, false);
+    for (int m = 0; m < kAlienModelCount; ++m) RebuildAlienZones(a, static_cast<AlienModel>(m));
     a.derelict = BuildDerelict(upload);
+    a.armorPlanet = BuildArmorPlanet(upload, AnomalyRules{}.armorPlanetRadius);
     for (std::uint32_t seed = 1; seed <= 4; ++seed) a.debris.push_back(upload(MakeAsteroid(seed * 53u, 2)));
-    a.miningDeck = BuildDeck(upload, StationKind::Mining);
     a.powerDeck = BuildDeck(upload, StationKind::Power);
     a.pilot = BuildPerson(upload, Color{1.0f, 0.55f, 0.16f, 1.0f}, "Capitan");
     a.crew = BuildPerson(upload, Color{0.30f, 0.48f, 0.62f, 1.0f}, "Tripulante");
@@ -573,11 +792,75 @@ GameAssets BuildGameAssets(const MeshUpload& upload, TextureId hull) {
 }
 
 const ModelRef& ModelFor(const GameAssets& assets, const Anomaly& a) {
-    switch (a.kind) {
-        case AnomalyKind::AlienShip: return a.stance == Stance::Hostile ? assets.hostileShip : assets.neutralShip;
-        case AnomalyKind::AlienStation: return a.stance == Stance::Hostile ? assets.hostileStation : assets.neutralStation;
-        default: return assets.derelict;
+    if (IsArmorPlanet(a)) return assets.armorPlanet;
+    const int model = AlienModelOf(a);
+    return model >= 0 ? AlienModelAsset(assets, static_cast<AlienModel>(model)) : assets.derelict;
+}
+
+const ModelRef& AlienModelAsset(const GameAssets& assets, AlienModel model) {
+    switch (model) {
+        case AlienModel::HostileShip: return assets.hostileShip;
+        case AlienModel::NeutralShip: return assets.neutralShip;
+        case AlienModel::HostileStation: return assets.hostileStation;
+        case AlienModel::NeutralStation: return assets.neutralStation;
+        default: {
+            const int m = static_cast<int>(model);
+            const int hostile = static_cast<int>(AlienModel::HostileDrone), neutral = static_cast<int>(AlienModel::NeutralDrone);
+            if (m >= neutral) return assets.neutralClassShips[static_cast<std::size_t>(std::min(m - neutral, kAlienClassModelCount - 1))];
+            return assets.hostileClassShips[static_cast<std::size_t>(std::clamp(m - hostile, 0, kAlienClassModelCount - 1))];
+        }
     }
+}
+
+std::shared_ptr<ZoneLayout> BuildAlienZoneLayout(const ModelAsset& model, AlienModel kind) {
+    const bool station = kind == AlienModel::HostileStation || kind == AlienModel::NeutralStation;
+    // Un bastion mide kilometros: bolas mas grandes, o serian miles. Una nave pequena (un dron de 34 m)
+    // las necesita mas finas, o una bola de su cuerpo taparia sus cuchillas: un decimo de su medida.
+    double size = 0.0;
+    for (const ModelPart& p : model.parts) size = std::max(size, static_cast<double>(Length(p.position) + p.radius * p.scale));
+    const double cell = station ? 150.0 : std::clamp(size * 0.1, 2.0, 30.0);
+    std::shared_ptr<ZoneLayout> layout = BuildZoneLayout(model, AlienZoneOfPart, cell);
+    layout->touch = station ? 4.0 : 0.5;
+    const auto name = [&](HullZone z, const char* text, bool masculine) {
+        layout->names[static_cast<std::size_t>(z)] = text;
+        layout->masculine[static_cast<std::size_t>(z)] = masculine;
+    };
+    // Las naves, por los nombres de sus piezas: sirve para las maquetas y para los modelos por clase.
+    const auto has = [&](const char* word) {
+        for (const ModelPart& p : model.parts)
+            if (p.name.find(word) != std::string::npos) return true;
+        return false;
+    };
+    switch (kind) {
+        case AlienModel::HostileStation:
+        case AlienModel::NeutralStation: break;
+        default:
+            name(HullZone::Spine, has("disco") ? "disco" : "cuerpo", true);
+            if (has("centro")) name(HullZone::Core, "centro", true);
+            else if (has("ojo")) name(HullZone::Core, "ojo", true);
+            else name(HullZone::Core, "núcleo", true);
+            name(HullZone::Bridge, "corazón", true);
+            name(HullZone::WarpRing, "aro", true);
+            name(HullZone::PortNacelle, "cuchilla de babor", false);
+            name(HullZone::StarboardNacelle, "cuchilla de estribor", false);
+            return layout;
+    }
+    switch (kind) {
+        default:
+            name(HullZone::Core, "núcleo", true);
+            name(HullZone::Bridge, "corazón", true);
+            name(HullZone::WarpRing, "anillo", true);
+            for (int i = 0; i < 6; ++i) {
+                layout->names[static_cast<std::size_t>(HullZone::Hold1) + static_cast<std::size_t>(i)] = "brazo " + std::to_string(i + 1);
+                layout->masculine[static_cast<std::size_t>(HullZone::Hold1) + static_cast<std::size_t>(i)] = true;
+            }
+            break;
+    }
+    return layout;
+}
+
+void RegisterAlienZones(const GameAssets& assets) {
+    for (int m = 0; m < kAlienModelCount; ++m) SetAlienZones(static_cast<AlienModel>(m), assets.alienZones[static_cast<std::size_t>(m)]);
 }
 
 }  // namespace game

@@ -16,7 +16,7 @@ namespace {
 constexpr double kHalfX = 30.0, kHalfZ = 20.0, kHigh = 9.0, kWall = 0.5;  // m: un hangar de 60 por 40
 
 const Color kFloor{0.30f, 0.32f, 0.36f, 1.0f}, kPlate{0.46f, 0.48f, 0.52f, 1.0f}, kRail{0.62f, 0.50f, 0.26f, 1.0f};
-const Color kLamp{1.0f, 0.92f, 0.72f, 1.0f}, kCrate{0.52f, 0.38f, 0.20f, 1.0f}, kDoor{0.35f, 0.85f, 1.0f, 1.0f};
+const Color kLamp{1.0f, 0.92f, 0.72f, 1.0f}, kDoor{0.35f, 0.85f, 1.0f, 1.0f};
 
 void Add(DeckPlan& d, const Vec3d& center, const Vec3d& size, const Color& color, float emissive = 0.0f, bool solid = true) {
     d.boxes.push_back({center, size, color, emissive, solid});
@@ -29,8 +29,8 @@ void AddCrate(DeckPlan& d, double x, double z, double side, const Color& color) 
 
 DeckPlan MakeDeck(StationKind kind) {
     DeckPlan d;
-    const bool mining = kind == StationKind::Mining;
-    const Color wall = mining ? Color{0.36f, 0.33f, 0.29f, 1.0f} : Color{0.30f, 0.36f, 0.44f, 1.0f};
+    (void)kind;  // por ahora solo hay la cubierta de la central
+    const Color wall{0.30f, 0.36f, 0.44f, 1.0f};
 
     // La caja del hangar. Es opaca y cerrada: dentro no se ve la estacion ni el espacio.
     Add(d, {0, -kWall * 0.5, 0}, {kHalfX * 2.0 + kWall * 2.0, kWall, kHalfZ * 2.0 + kWall * 2.0}, kFloor, 0.08f);
@@ -67,19 +67,11 @@ DeckPlan MakeDeck(StationKind kind) {
     d.spawn = {-kHalfX + 3.0, 0.01, 0};
     d.airlock = {-kHalfX + 0.5, 0, 0};
 
-    if (mining) {
-        AddCrate(d, 8.0, -4.0, 2.4, kCrate);
-        AddCrate(d, 10.6, -4.0, 2.4, kCrate);
-        AddCrate(d, 9.3, -1.4, 2.4, kCrate);
-        Add(d, {22.0, 0.6, -5.0}, {3.0, 1.2, 20.0}, kPlate, 0.1f);  // cinta de mineral
-        Add(d, {22.0, 1.3, -5.0}, {2.6, 0.2, 20.0}, Color{0.20f, 0.17f, 0.14f, 1.0f}, 0.05f);
-    } else {
-        // El nucleo de la central: una columna de luz antimateria.
-        Add(d, {14.0, kHigh * 0.5, -3.0}, {4.0, kHigh, 4.0}, Color{0.55f, 0.35f, 1.0f, 1.0f}, 2.2f);
-        Add(d, {14.0, 0.6, -3.0}, {6.0, 1.2, 6.0}, kPlate, 0.1f);
-        AddCrate(d, -6.0, -9.0, 1.6, kPlate);
-        AddCrate(d, -3.8, -9.0, 1.6, kPlate);
-    }
+    // El nucleo de la central: una columna de luz antimateria.
+    Add(d, {14.0, kHigh * 0.5, -3.0}, {4.0, kHigh, 4.0}, Color{0.55f, 0.35f, 1.0f, 1.0f}, 2.2f);
+    Add(d, {14.0, 0.6, -3.0}, {6.0, 1.2, 6.0}, kPlate, 0.1f);
+    AddCrate(d, -6.0, -9.0, 1.6, kPlate);
+    AddCrate(d, -3.8, -9.0, 1.6, kPlate);
     return d;
 }
 

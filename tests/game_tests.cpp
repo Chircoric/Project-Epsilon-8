@@ -1,12 +1,17 @@
 // Pruebas del juego. Juegan partidas enteras sin ventana ni GPU.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <sstream>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
 #include <string>
 
+#include "game/Armament.h"
+#include "game/Defense.h"
 #include "game/Economy.h"
 #include "game/GameLayer.h"
 #include "game/GameModels.h"
@@ -62,6 +67,19 @@ static TargetRef FirstPlanet(const GameSession& g, int system, std::size_t skip 
     for (std::size_t b = 0; b < data.bodies.size(); ++b)
         if (data.bodies[b].parent < 0 && data.bodies[b].kind != PlanetClass::Comet && data.bodies[b].kind != PlanetClass::Asteroid && skip-- == 0) return {Kind::Planet, system, static_cast<int>(b)};
     return {};
+}
+
+// Una central en la orbita de la estrella del sistema 0: la estacion que usan las pruebas de atraque,
+// de ruta y de taller. La primera es gratis.
+static TargetRef PlaceStation(GameSession& g) {
+    const TargetRef star{Kind::Star, 0, 0};
+    const StarYield yield = YieldOf(g.GetWorld().systems[0]->StarAt(0));
+    if (g.Ship().heatShieldTier < yield.requiredTier) g.Ship().heatShieldTier = yield.requiredTier;
+    g.MarkScanned(0);
+    CHECK(g.JumpTo(star, g.Resolve(star)->arrival));
+    Run(g, 0.5);
+    CHECK(g.DeployPower(star));
+    return {Kind::Station, 0, g.Stations().All().back().id};
 }
 
 static void TestEconomy() {
@@ -379,65 +397,7 @@ static void TestWarpCost() {
 
 static void TestStationRules() {
     const Balance rules;
-    StationNetwork net(rules.stations);
-    Inventory cargo;
-    Deposit deposit;
-    deposit.share[static_cast<std::size_t>(Resource::Metal)] = 1.0;
     std::string error;
-
-    // Las tres primeras son gratis, aunque la bodega este vacia.
-    for (int i = 0; i < 3; ++i) {
-        CHECK(net.NextIsFree(StationKind::Mining));
-        StationSite site;
-        site.body = i;
-        CHECK(net.Deploy(StationKind::Mining, site, "m", deposit, {}, cargo, &error) > 0);
-    }
-    CHECK(!net.NextIsFree(StationKind::Mining));
-    StationSite fourth;
-    fourth.body = 3;
-    CHECK(net.Deploy(StationKind::Mining, fourth, "m", deposit, {}, cargo, &error) < 0);
-    CHECK(net.Count(StationKind::Mining) == 3);
-
-    // La cuarta cuesta, y solo una por sitio.
-    cargo.Add(Resource::Metal, rules.stations.miningMetal);
-    cargo.Add(Resource::Silicate, rules.stations.miningSilicate);
-    StationSite repeated;
-    repeated.body = 2;
-    CHECK(net.Deploy(StationKind::Mining, repeated, "m", deposit, {}, cargo, &error) < 0);
-    CHECK(cargo.Get(Resource::Metal) == rules.stations.miningMetal);
-    CHECK(net.Deploy(StationKind::Mining, fourth, "m", deposit, {}, cargo, &error) > 0);
-    CHECK(cargo.Total() == 0.0);
-
-    // Producen por tiempo, hasta llenarse.
-    const int id = net.All()[0].id;
-    net.Produce(2.0);
-    CHECK(std::abs(net.Find(id)->stored.Get(Resource::Metal) - rules.stations.miningRate * 2.0) < 1e-6);
-    net.Produce(1000.0);
-    CHECK(std::abs(net.Find(id)->stored.Total() - rules.stations.miningStorage) < 1e-6);
-
-    // Un modulo mejora, cuesta mas en cada nivel y tiene tope.
-    const double slow = net.MiningPerHour(*net.Find(id));
-    cargo.Add(Resource::Metal, 1.0e6);
-    CHECK(net.AddOrUpgradeModule(id, ModuleKind::Drill, cargo, &error));
-    CHECK(net.MiningPerHour(*net.Find(id)) > slow);
-    const double cost1 = net.ModuleCost(*net.Find(id), ModuleKind::Drill).Get(Resource::Metal);
-    CHECK(net.AddOrUpgradeModule(id, ModuleKind::Drill, cargo, &error));
-    CHECK(net.ModuleCost(*net.Find(id), ModuleKind::Drill).Get(Resource::Metal) > cost1);
-    CHECK(!net.AddOrUpgradeModule(id, ModuleKind::Collector, cargo, &error));  // no sirve aqui
-    for (int i = 0; i < 6; ++i) net.AddOrUpgradeModule(id, ModuleKind::Drill, cargo, &error);
-    CHECK(net.Find(id)->modules[0].level == rules.stations.moduleMaxLevel);
-
-    const double beforeOre = net.Find(id)->stored.Total();
-    CHECK(net.AddOrUpgradeModule(id, ModuleKind::Hopper, cargo, &error));
-    CHECK(net.OreCapacity(*net.Find(id)) > rules.stations.miningStorage);
-    CHECK(net.Find(id)->stored.Total() == beforeOre);
-
-    // Recoger respeta lo que cabe en la bodega y deja el resto.
-    Inventory hold;
-    double tank = 0;
-    net.Collect(id, hold, 100.0, tank, 1000.0);
-    CHECK(std::abs(hold.Total() - 100.0) < 1e-6);
-    CHECK(std::abs(net.Find(id)->stored.Total() - (beforeOre - 100.0)) < 1e-6);
 
     // Una central convierte su energia en antimateria, y guarda esta y la materia por separado.
     Inventory free;
@@ -450,14 +410,18 @@ static void TestStationRules() {
     paid.Add(Resource::Silicate, 1.0e4);
     StationSite star;
     star.star = 0;
-    const int central = power.Deploy(StationKind::Power, star, "c", {}, yield, paid, &error);
+    const int central = power.Deploy(StationKind::Power, star, "c", yield, paid, &error);
     CHECK(central > 0);
     CHECK(paid.Get(Resource::Metal) == 1.0e4);  // la primera central es gratis
     CHECK(!power.NextIsFree(StationKind::Power));
+    CHECK(power.Deploy(StationKind::Power, star, "c", yield, paid, &error) < 0);  // solo una por sitio
+    CHECK(paid.Get(Resource::Metal) == 1.0e4);
     StationSite second;
     second.star = 1;
-    CHECK(power.Deploy(StationKind::Power, second, "c", {}, yield, paid, &error) > 0);
-    CHECK(paid.Get(Resource::Metal) < 1.0e4);  // la segunda ya cuesta
+    CHECK(power.Deploy(StationKind::Power, second, "c", yield, paid, &error) > 0);
+    CHECK(paid.Get(Resource::Metal) == 1.0e4 - rules.stations.powerMetal);  // la segunda ya cuesta
+    CHECK(paid.Get(Resource::Silicate) == 1.0e4 - rules.stations.powerSilicate);
+    CHECK(power.Count(StationKind::Power) == 2);
     power.Produce(3.0);
     CHECK(std::abs(power.Find(central)->storedAntimatter - 3.0) < 1e-6);
     CHECK(std::abs(power.Find(central)->stored.Get(Resource::StellarMatter) - 15.0) < 1e-6);
@@ -470,6 +434,30 @@ static void TestStationRules() {
     // Se llena hasta su deposito y ahi se queda.
     power.Produce(1000.0);
     CHECK(power.Find(central)->storedAntimatter == power.AntimatterCapacity(*power.Find(central)));
+
+    // Recoger respeta lo que cabe en la bodega y deja el resto.
+    Inventory hold;
+    double tank = 0;
+    const double matterBefore = power.Find(central)->stored.Get(Resource::StellarMatter);
+    power.Collect(central, hold, 100.0, tank, 1000.0);
+    CHECK(std::abs(hold.Total() - 100.0) < 1e-6);
+    CHECK(std::abs(power.Find(central)->stored.Get(Resource::StellarMatter) - (matterBefore - 100.0)) < 1e-6);
+
+    // Un modulo mejora, cuesta mas en cada nivel y tiene tope.
+    const double slow = power.AntimatterPerHour(*power.Find(central));
+    paid.Add(Resource::Metal, 1.0e6);
+    CHECK(power.AddOrUpgradeModule(central, ModuleKind::Collector, paid, &error));
+    CHECK(power.AntimatterPerHour(*power.Find(central)) > slow);
+    const double cost1 = power.ModuleCost(*power.Find(central), ModuleKind::Collector).Get(Resource::Metal);
+    CHECK(power.AddOrUpgradeModule(central, ModuleKind::Collector, paid, &error));
+    CHECK(power.ModuleCost(*power.Find(central), ModuleKind::Collector).Get(Resource::Metal) > cost1);
+    CHECK(!power.AddOrUpgradeModule(central, static_cast<ModuleKind>(0), paid, &error));  // el taladro de la mina ya no existe
+    for (int i = 0; i < 6; ++i) power.AddOrUpgradeModule(central, ModuleKind::Collector, paid, &error);
+    CHECK(power.Find(central)->modules[0].level == rules.stations.moduleMaxLevel);
+    const double storedBefore = power.Find(central)->storedAntimatter;
+    CHECK(power.AddOrUpgradeModule(central, ModuleKind::Capacitor, paid, &error));
+    CHECK(power.AntimatterCapacity(*power.Find(central)) > rules.stations.antimatterStorage);
+    CHECK(power.Find(central)->storedAntimatter == storedBefore);
 
     // Una estrella como el Sol da una burbuja cada dos horas, mas o menos.
     std::mt19937 rng(3);
@@ -523,7 +511,7 @@ static void TestAnomalies() {
     const Vec3d at = fort.offset;
     StepAnomaly(fort, Vec3d{1.0e3, 0, 0}, rules.anomalies, 3600.0, rng);
     CHECK(Length(fort.offset - at) == 0.0);
-    CHECK(fort.armed && fort.weapon == WeaponKind::Missile && fort.hull == rules.anomalies.stationHull);
+    CHECK(fort.armed && fort.weapon == WeaponKind::Missile && fort.hull == StationHull(rules.anomalies, fort.stationLevel));
     CHECK(enemy.armed == false);  // sin InitCombat, un Anomaly a mano no trae arma
     for (const Anomaly& x : a) {
         if (x.kind == AnomalyKind::Derelict) CHECK(x.maxHull == 0.0 && !x.armed);
@@ -546,6 +534,302 @@ static void TestAnomalies() {
     CHECK(!Explore(ruin, rules.anomalies, 1.0));
 }
 
+// Fase A: escala de combate x20 y tabla de clases de nave.
+static void TestShipClasses() {
+    const Balance rules;
+    CHECK(kCombatScale == 20.0);
+
+    // El casco del jugador y la referencia de la tabla son lo mismo: la fragata ligera vale 1.
+    CHECK(rules.ship.hull == 1000.0 * kCombatScale);
+    CHECK(rules.ship.hull == rules.anomalies.referenceHull);
+    CHECK(ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).hull == 1.0);
+    CHECK(ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).shield == 1.0);
+    CHECK(ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).weaponSlots == 6);
+
+    // El dano de las armas, por veinte; el resto de cada arma, como estaba.
+    CHECK(rules.combat.weapons[0].damage == 400.0);
+    CHECK(rules.combat.weapons[1].damage == 5200.0);
+    CHECK(rules.combat.weapons[2].damage == 3600.0);
+    CHECK(rules.combat.weapons[3].damage == 360.0);
+    CHECK(rules.combat.weapons[0].cooldown == 3.0 && rules.combat.weapons[0].range == 1.5e5);
+
+    // La tabla crece con la clase y con la variante, y las cifras tienen sentido.
+    for (int v = 0; v < kShipVariantCount; ++v) {
+        for (int c = 0; c < kShipClassCount; ++c) {
+            const ShipClass& k = ShipClassOf(static_cast<ShipClassId>(c), static_cast<ShipVariant>(v));
+            CHECK(k.length > 0.0 && k.hull > 0.0 && k.shield > 0.0 && k.weaponSlots >= 1);
+            CHECK(k.speed > 0.0 && k.speed < kLightSpeed * 0.1);  // por debajo de la curvatura: se puede huir
+            if (v == static_cast<int>(ShipVariant::Light)) CHECK(!k.heavyWeapons);  // la ligera nunca las monta
+            if (c > 0) {
+                const ShipClass& smaller = ShipClassOf(static_cast<ShipClassId>(c - 1), static_cast<ShipVariant>(v));
+                CHECK(k.hull > smaller.hull && k.length > smaller.length);  // los huecos no: un carguero lleva menos que un acorazado
+            }
+        }
+    }
+    for (int c = 0; c < kShipClassCount; ++c) {
+        const ShipClassId id = static_cast<ShipClassId>(c);
+        CHECK(ShipClassOf(id, ShipVariant::Light).hull < ShipClassOf(id, ShipVariant::Normal).hull);
+        CHECK(ShipClassOf(id, ShipVariant::Normal).hull < ShipClassOf(id, ShipVariant::Heavy).hull);
+        CHECK(std::string(kShipClassNames[c]).size() > 2);
+    }
+    CHECK(ShipClassOf(ShipClassId::Drone, ShipVariant::Normal).hull == 0.01);
+    CHECK(ShipClassOf(ShipClassId::Superfreighter, ShipVariant::Normal).weaponSlots == 100);
+    CHECK(ShipClassOf(ShipClassId::SupremeCapital, ShipVariant::Normal).weaponSlots == 600);
+
+    // Las naves alienigenas generadas llevan clase (dron, corveta o fragata ligera) y de ella sale casco y escudo.
+    std::vector<double> extents(30, 1.0e10);
+    const std::vector<Anomaly> all = GenerateAnomalies(extents, rules.anomalies, 7);
+    int count[3] = {0, 0, 0};
+    for (const Anomaly& a : all) {
+        if (a.kind != AnomalyKind::AlienShip) continue;
+        const ShipClass& k = ClassOf(a);
+        CHECK(a.shipClass == ShipClassId::Drone || a.shipClass == ShipClassId::Corvette || a.shipClass == ShipClassId::Frigate);
+        CHECK(a.variant == (a.shipClass == ShipClassId::Frigate ? ShipVariant::Light : ShipVariant::Normal));
+        CHECK(a.maxHull == k.hull * rules.anomalies.referenceHull && a.hull == a.maxHull);
+        CHECK(a.shieldMax == k.shield * rules.anomalies.referenceShield && a.shieldCharge == a.shieldMax);
+        ++count[static_cast<int>(a.shipClass)];
+    }
+    CHECK(count[0] > 3 && count[1] > 3 && count[2] > 3);
+
+    // La velocidad de persecucion sale de la clase: el dron alcanza al de la fragata.
+    std::mt19937 rng(5);
+    const Vec3d far{1.0e6, 0, 0};
+    double speed[2] = {0, 0};
+    const ShipClassId chasers[2] = {ShipClassId::Drone, ShipClassId::Frigate};
+    for (int i = 0; i < 2; ++i) {
+        Anomaly a;
+        a.kind = AnomalyKind::AlienShip;
+        a.stance = Stance::Hostile;
+        a.shipClass = chasers[i];
+        a.variant = ShipVariant::Normal;
+        for (int t = 0; t < 60; ++t) StepAnomaly(a, far, rules.anomalies, 1.0, rng);
+        speed[i] = Length(a.velocity);
+        CHECK(speed[i] > 0.9 * ClassOf(a).speed && speed[i] <= ClassOf(a).speed + 1e-9);
+    }
+    CHECK(speed[0] > speed[1]);
+    // La fragata ligera conserva la velocidad de siempre.
+    CHECK(ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).speed == rules.anomalies.hostileSpeed);
+
+    // Se guarda la clase, y una partida anterior a la escala se pone al dia sin perder la fraccion de casco.
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 20261105);
+    g.Step(0.05, {});
+    std::size_t ships = 0;
+    for (Anomaly& a : g.Anomalies()) {
+        if (a.kind != AnomalyKind::AlienShip) continue;
+        ++ships;
+        a.hull = a.maxHull * 0.25;
+        a.shieldCharge = a.shieldMax * 0.5;
+    }
+    CHECK(ships > 0);
+    g.Ship().hull = 500.0 * kCombatScale;
+    const std::string text = WriteSave(g.Snapshot());
+    CHECK(text.find("\nclase ") != std::string::npos);
+    const std::optional<SaveData> read = ReadSave(text);
+    CHECK(read.has_value());
+    if (!read) return;
+    CHECK(WriteSave(*read) == text);
+    CHECK(read->Ship()->ship.hull == 500.0 * kCombatScale);
+    for (std::size_t i = 0; i < read->world.anomalies.size(); ++i) {
+        CHECK(read->world.anomalies[i].shipClass == g.Anomalies()[i].shipClass && read->world.anomalies[i].variant == g.Anomalies()[i].variant);
+    }
+
+}
+
+// La animacion de la estacion origami, leida del glTF: plegada en reposo y abierta al final.
+static void TestOrigamiAnimation() {
+    const std::string path = "modelos/estacion.gltf";
+    std::error_code ignored;
+    if (!GltfSupported() || !std::filesystem::exists(path, ignored)) {
+        std::printf("  (sin %s: se salta)\n", path.c_str());
+        return;
+    }
+    std::vector<ImportedPart> parts;
+    std::string error;
+    CHECK(LoadGltf(path, parts, &error));
+    ModelAnimation deploy;
+    CHECK(LoadGltfAnimation(path, "despliegue", deploy, 24.0, &error));
+    CHECK(std::abs(deploy.duration - 15.0) < 0.1);
+    CHECK(deploy.parts.size() == parts.size());
+    CHECK(!LoadGltfAnimation(path, "no-existe", deploy, 24.0, &error));
+    CHECK(LoadGltfAnimation(path, "", deploy, 24.0, &error));  // la primera
+    const auto center = [](const ImportedPart& p) {
+        Vec3f low = p.mesh.vertices[0].position, high = low;
+        for (const MeshVertex& v : p.mesh.vertices) {
+            low = {std::min(low.x, v.position.x), std::min(low.y, v.position.y), std::min(low.z, v.position.z)};
+            high = {std::max(high.x, v.position.x), std::max(high.y, v.position.y), std::max(high.z, v.position.z)};
+        }
+        return (low + high) * 0.5f;
+    };
+    std::vector<PartMotion> start, end;
+    deploy.Pose(0.0, start);
+    deploy.Pose(99.0, end);  // se sujeta al final
+    int checked = 0;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (parts[i].name != "nudo_01_nucleo" && parts[i].name != "nudo_02_nucleo") continue;
+        const Vec3f rest = center(parts[i]);
+        // En reposo esta plegada: los nudos a 380 m del eje (Y en el motor), a 54 m arriba o abajo.
+        CHECK(std::abs(std::hypot(rest.x, rest.z) - 380.0f) < 2.0f);
+        CHECK(std::abs(std::abs(rest.y) - 54.0f) < 2.0f);
+        const Vec3f still = start[i].rotation.ToMatrix().TransformDirection(rest) + start[i].offset;
+        CHECK(Length(still - rest) < 0.5f);
+        // Al final, el anillo abierto: 470 m y en el plano.
+        const Vec3f open = end[i].rotation.ToMatrix().TransformDirection(rest) + end[i].offset;
+        CHECK(std::abs(std::hypot(open.x, open.z) - 470.0f) < 2.0f);
+        CHECK(std::abs(open.y) < 1.0f);
+        ++checked;
+    }
+    CHECK(checked == 2);
+
+    // El andamio de transporte: va en el modelo, se pliega al soltarse y sale despedido.
+    const ModelRef model = LoadGltfModel(path, "origami", [](const MeshData&) { return MeshId{1}; }, nullptr, &error);
+    CHECK(model != nullptr);
+    if (!model) return;
+    int strut = -1, sector = -1, cradle = 0;
+    for (std::size_t i = 0; i < model->parts.size(); ++i) {
+        if (model->parts[i].name == "andamio_03_puntal") strut = static_cast<int>(i);
+        if (model->parts[i].name == "andamio_03") sector = static_cast<int>(i);
+        cradle += model->parts[i].name.rfind("cuna_", 0) == 0 ? 1 : 0;
+    }
+    CHECK(strut >= 0 && sector >= 0);
+    CHECK(cradle == 0);  // la cuna vieja ya no esta
+    if (strut < 0 || sector < 0) return;
+    const auto moved = [&](const std::vector<PartMotion>& m, int part) {
+        const Vec3f p = model->parts[static_cast<std::size_t>(part)].position;
+        return m[static_cast<std::size_t>(part)].rotation.ToMatrix().TransformDirection(p) + m[static_cast<std::size_t>(part)].offset;
+    };
+    const Vec3f strutRest = model->parts[static_cast<std::size_t>(strut)].position;
+    std::vector<PartMotion> scaffold;
+    CHECK(GameLayer::ScaffoldMotion(*model, 0.0, scaffold));
+    CHECK(Length(moved(scaffold, strut) - strutRest) < 0.01f);
+    // Al segundo, el puntal esta plegado contra el anillo: mas cerca del eje y a la misma altura.
+    CHECK(GameLayer::ScaffoldMotion(*model, 1.5, scaffold));
+    const Vec3f folded = moved(scaffold, strut);
+    CHECK(std::hypot(strutRest.x, strutRest.z) > 270.0f);
+    CHECK(std::hypot(folded.x, folded.z) < 250.0f && std::hypot(folded.x, folded.z) > 228.0f);
+    CHECK(std::abs(folded.y - strutRest.y) < 0.01f);
+    // Suelto, el sector se aleja hacia fuera; y al rato ya no se dibuja.
+    const double loose = GameSession::kShipyardOpenSeconds + GameSession::kShipyardSlideSeconds;
+    CHECK(GameLayer::ScaffoldMotion(*model, loose + 10.0, scaffold));
+    const Vec3f away = moved(scaffold, sector);
+    CHECK(std::hypot(away.x, away.z) > 228.0f + 300.0f);
+    CHECK(!GameLayer::ScaffoldMotion(*model, loose + 30.0, scaffold));
+}
+
+// La estacion origami y los drones mineros, de la nave de serie a la entrega de material.
+static void TestShipyardAndDrones() {
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 42);
+    g.Step(0.05, {});
+    g.MarkScanned(0);
+    g.Step(0.05, {});
+
+    // De serie: dos bahias de drones en ranuras exteriores, con dos drones cada una, y la origami a bordo.
+    CHECK(WorkingModules(g.Ship(), ShipModuleKind::DroneBay) == 2);
+    CHECK(g.Drones().size() == 4);
+    CHECK(g.Ship().stationAboard);
+    CHECK(g.DronesOut() == 0);
+
+    // Los drones no salen hacia una estrella ni desde lejos.
+    CHECK(!g.DeployDrones({Kind::Star, 0, 0}));
+    const TargetRef planet = FirstPlanet(g, 0, 2);
+    CHECK(!g.DeployDrones(planet));
+
+    // En orbita del planeta: salen, minan, vuelven y descargan, viaje tras viaje.
+    CHECK(Fly(g, planet, DriveMode::Warp, 600.0));
+    g.SetDrive(DriveMode::Impulse);
+    const double before = g.Ship().cargo.Total();
+    CHECK(g.DeployDrones(planet));
+    CHECK(g.DroneSite() && *g.DroneSite() == planet);
+    int maxOut = 0, mining = 0;
+    for (double t = 0; t < 900.0; t += 0.05) {
+        g.Step(0.05, {});
+        maxOut = std::max(maxOut, g.DronesOut());
+        for (const MiningDrone& d : g.Drones()) {
+            mining += d.state == DroneState::Mining ? 1 : 0;
+            // Minando estan en su sitio, junto al punto de trabajo, y no se quedan atras del planeta.
+            if (d.state == DroneState::Mining && g.DroneWorkPoint()) CHECK(Length(*g.DroneWorkPoint() - d.position) < 200.0);
+        }
+    }
+    CHECK(maxOut == 4);
+    CHECK(mining > 0);
+    const double mined = g.Ship().cargo.Total() - before;
+    std::printf("  drones: %.1f kt minadas en 900 s reales\n", mined);
+    CHECK(mined > rules.drones.hold);  // al menos un viaje completo de un dron
+
+    // Al recogerlos vuelven todos; y con otro motor que el impulso se repliegan de golpe.
+    g.RecallDrones();
+    CHECK(!g.DroneSite());
+    Run(g, 300.0);
+    CHECK(g.DronesOut() == 0);
+    CHECK(g.DeployDrones(planet));
+    Run(g, 2.0);
+    CHECK(g.DronesOut() > 0);
+    g.SetDrive(DriveMode::Cruise);
+    g.Step(0.05, {});
+    CHECK(g.DronesOut() == 0 && !g.DroneSite());
+    g.SetDrive(DriveMode::Impulse);
+
+    // La origami: no se suelta en orbita ni en marcha; fuera de la orbita y parada, si.
+    std::string why;
+    CHECK(g.Orbiting() && !g.CanDeployShipyard(&why));
+    g.SetThrottle(0.2);
+    g.Step(0.05, {});  // dar mando la saca de la orbita
+    CHECK(!g.Orbiting());
+    g.HoldPosition();
+    Run(g, 60.0);
+    const bool can = g.CanDeployShipyard(&why);
+    if (!can) std::printf("  no se puede soltar: %s (%.2f km/s)\n", why.c_str(), g.Ship().speed);
+    CHECK(can);
+    const Vec3d shipAt = g.Ship().position;
+    CHECK(g.DeployShipyard());
+    CHECK(!g.Ship().stationAboard);
+    CHECK(g.Stations().Count(StationKind::Shipyard) == 1);
+    CHECK(!g.DeployShipyard());  // solo hay una
+    const int id = g.Stations().All().back().id;
+    const TargetRef yard{Kind::Station, 0, id};
+    // Se abre alrededor de las bodegas: al principio su centro esta en la nave.
+    CHECK(Length(g.Resolve(yard)->position - shipAt) < 0.3);
+    Run(g, GameSession::kShipyardOpenSeconds + GameSession::kShipyardSlideSeconds + GameSession::kShipyardArmsSeconds + 2.0);
+    const GameSession::ShipyardPhase done = GameSession::ShipyardDeploy(g.Stations().Find(id)->deployAge);
+    CHECK(done.ring == 1.0 && done.slide == 1.0 && done.arms == 1.0);
+    // Y luego se aparta a popa, sin llevarse la nave.
+    const double apart = Length(g.Resolve(yard)->position - g.Ship().position);
+    std::printf("  origami a %.2f km de la nave tras desplegarse\n", apart);
+    CHECK(apart > 1.0 && apart < 3.0);
+    CHECK(g.Stations().Find(id)->modules.empty());
+    CHECK(!g.UpgradeStation(id, ModuleKind::Collector));  // no es modular todavia
+
+    // Atracada, se le entrega el metal y el silicato que pase de la reserva del escudo de arena.
+    g.Ship().cargo.Add(Resource::Metal, 300.0);
+    CHECK(g.Dock(yard, true));
+    CHECK(g.Interact(yard));
+    const Station* s = g.Stations().Find(id);
+    CHECK(s && s->stored.Get(Resource::Metal) >= 300.0);
+    CHECK(g.Ship().cargo.Get(Resource::Metal) == 0.0);
+    CHECK(g.Ship().cargo.Get(Resource::Silicate) >= rules.ship.startSilicate - 1e-9);
+
+    // Se guarda con su sitio y su orientacion, y la nave ya no la lleva.
+    const std::optional<SaveData> back = ReadSave(WriteSave(g.Snapshot()));
+    CHECK(back.has_value());
+    if (back) {
+        CHECK(!back->Ship()->ship.stationAboard);
+        const Station* saved = nullptr;
+        for (const Station& t : back->world.stations)
+            if (t.kind == StationKind::Shipyard) saved = &t;
+        CHECK(saved != nullptr);
+        if (saved && s) {
+            CHECK(Length(saved->site.offset - s->site.offset) < 1e-9);
+            CHECK(std::abs(saved->attitude.w - s->attitude.w) < 1e-12 && std::abs(saved->attitude.x - s->attitude.x) < 1e-12);
+            CHECK(saved->stored.Get(Resource::Metal) >= 300.0);
+        }
+        // Una partida sin la linea de la origami la tiene a bordo.
+        std::string text = WriteSave(g.Snapshot());
+        CHECK(text.find("origami-a-bordo 0") != std::string::npos);
+    }
+}
+
 // La partida de principio a fin, siguiendo el orden que tendra un jugador.
 static void TestFullLoop() {
     Balance rules;
@@ -557,43 +841,24 @@ static void TestFullLoop() {
     CHECK(g.GetWorld().state[0].loaded);
     CHECK(!g.Contacts().empty() || true);
 
-    // Tres minas gratis en tres sitios.
-    for (std::size_t i = 0; i < 3; ++i) {
-        const TargetRef planet = FirstPlanet(g, 0, i + 2);
-        CHECK(planet.kind == Kind::Planet);
-        CHECK(Fly(g, planet, DriveMode::Warp, 600.0));
-        const double spent = g.Ship().cargo.Total();
-        CHECK(g.DeployMining(planet));
-        CHECK(g.Ship().cargo.Total() == spent);
-    }
-    CHECK(g.Stations().Count(StationKind::Mining) == 3);
-    CHECK(!g.Stations().NextIsFree(StationKind::Mining));
-
     // Una central no se puede poner desde lejos ni en una estrella que quema.
     const TargetRef star{Kind::Star, 0, 0};
     CHECK(!g.DeployPower(star));
     CHECK(!g.DeployPower(FirstPlanet(g, 0, 0)));
-    CHECK(!g.DeployMining(star));
 
-    // Dejando pasar el tiempo se llenan las minas.
-    Run(g, 1200.0);
-    const TargetRef mine{Kind::Station, 0, g.Stations().All()[0].id};
-    CHECK(Fly(g, mine, DriveMode::Warp, 600.0));
-    CHECK(g.Interact(mine));
-    CHECK(g.Ship().cargo.Total() > 100.0);
+    // La primera central es gratis y da antimateria a la nave.
+    CHECK(Fly(g, star, DriveMode::Warp, 600.0));
+    const double spent = g.Ship().cargo.Total();
+    CHECK(g.DeployPower(star));
+    CHECK(g.Ship().cargo.Total() == spent);
+    const TargetRef central{Kind::Station, 0, g.Stations().All().back().id};
+    CHECK(Fly(g, central, DriveMode::Impulse, 600.0));
 
     // En orbita, la nave acompana a la estacion sin quedarse atras, aunque esta se mueva.
-    const double arrival = Length(g.Resolve(mine)->position - g.Ship().position);
+    const double arrival = Length(g.Resolve(central)->position - g.Ship().position);
     Run(g, 20.0);
-    CHECK(std::abs(Length(g.Resolve(mine)->position - g.Ship().position) - arrival) < 1.0);
-
-    // Con lo recogido se paga la central, que da antimateria a la nave.
-    g.Ship().cargo.Add(Resource::Metal, 600.0);
-    g.Ship().cargo.Add(Resource::Silicate, 500.0);
-    CHECK(Fly(g, star, DriveMode::Warp, 600.0));
-    CHECK(g.DeployPower(star));
-    const TargetRef central{Kind::Station, 0, g.Stations().All().back().id};
-    Run(g, 600.0);
+    CHECK(std::abs(Length(g.Resolve(central)->position - g.Ship().position) - arrival) < 1.0);
+    Run(g, 580.0);
     g.Ship().antimatter = 0.0;
     CHECK(Fly(g, central, DriveMode::Impulse, 600.0));
     CHECK(g.Interact(central));
@@ -634,7 +899,7 @@ static void TestFullLoop() {
     const TargetRef back{Kind::Star, 0, 0};
     CHECK(Fly(g, back, DriveMode::Hyper, 300.0));
     CHECK(g.GetWorld().state[0].loaded);
-    CHECK(g.Resolve(mine).has_value());
+    CHECK(g.Resolve(central).has_value());
 }
 
 static void TestHazards() {
@@ -707,7 +972,7 @@ static void TestModels() {
         CHECK(!m.vertices.empty() && !m.indices.empty());
         return static_cast<MeshId>(uploads);
     });
-    for (const ModelRef& model : {assets.ship, assets.miningStation, assets.powerStation, assets.hostileShip, assets.neutralShip, assets.hostileStation, assets.neutralStation, assets.derelict}) {
+    for (const ModelRef& model : {assets.ship, assets.powerStation, assets.hostileShip, assets.neutralShip, assets.hostileStation, assets.neutralStation, assets.derelict}) {
         CHECK(model != nullptr);
         CHECK(model->parts.size() >= 4);
     }
@@ -718,7 +983,7 @@ static void TestModels() {
 
     // Los modulos aparecen en el modelo uno a uno.
     int modules = 0;
-    for (const ModelPart& p : assets.miningStation->parts) modules += p.name.rfind("mod_", 0) == 0 ? 1 : 0;
+    for (const ModelPart& p : assets.powerStation->parts) modules += p.name.rfind("mod_", 0) == 0 ? 1 : 0;
     CHECK(modules == 4);
 
     // La capa dibuja todo con las escalas correctas y la niebla apaga lo lejano.
@@ -1011,17 +1276,15 @@ static void TestContact() {
         CHECK(Length(g.Ship().position - g.Resolve(planet)->position) > before + 1000.0);
     }
 
-    // Una mina al otro lado del planeta: la ruta lo rodea y llega, sin rozarlo.
+    // Una central al otro lado de la estrella: la ruta la rodea y llega, sin rozarla.
     {
         auto game = Session(*engine, rules, GameModeId::Normal);
         GameSession& g = *game;
-        const TargetRef planet = MinablePlanet(g);
+        const TargetRef planet{TargetRef::Kind::Star, 0, 0};
         const double radius = g.Resolve(planet)->radius;
-        g.JumpTo(planet, radius * 1.5);
-        CHECK(g.DeployMining(planet));
-        const int mine = g.Stations().All().back().id;
-        g.Stations().Find(mine)->angle += kPi;  // justo enfrente
-        const TargetRef station{TargetRef::Kind::Station, 0, mine};
+        const TargetRef station = PlaceStation(g);
+        g.Stations().Find(station.index)->angle += kPi;  // justo enfrente
+        g.TimeScale() = 600.0;  // a impulso, cruzar una estrella a escala normal tarda minutos reales
         CHECK(g.SetAutopilot(station));
         CHECK(g.Route().phase != RoutePhase::None || true);
         double closest = 1.0e300;
@@ -1030,8 +1293,7 @@ static void TestContact() {
             g.Step(1.0 / 60.0, {});
             closest = std::min(closest, Length(g.Ship().position - g.Resolve(planet)->position));
         }
-        std::printf("  Rodear el planeta: %.0f s, altura minima %.2f radios\n", steps / 60.0, closest / radius);
-        CHECK(!g.Autopilot());
+        std::printf("  Rodear la estrella: %.0f s, altura minima %.2f radios\n", steps / 60.0, closest / radius);        CHECK(!g.Autopilot());
         CHECK(g.Orbiting().has_value());
         CHECK(closest > radius * 1.08);
         CHECK(steps < 60 * 120);
@@ -1104,11 +1366,10 @@ static void TestFlightControls() {
     // Junto a una estacion el tiempo corre menos, y la estacion se monta poco a poco.
     CHECK(g.JumpTo(planet, radius * 1.5));
     CHECK(g.TimeFocus() == 1.0);
-    CHECK(g.DeployMining(planet));
+    const TargetRef mine = PlaceStation(g);
     CHECK(g.Stations().All().back().deployAge == 0.0);
     g.Step(0.5, {});
     CHECK(g.Stations().All().back().deployAge == 0.5);
-    const TargetRef mine{TargetRef::Kind::Station, 0, g.Stations().All().back().id};
     CHECK(g.JumpTo(mine, 500.0));
     for (int i = 0; i < 180; ++i) g.Step(1.0 / 60.0, {});
     CHECK(g.TimeFocus() < 0.4);
@@ -1135,7 +1396,7 @@ static void TestAstroScan() {
     CHECK(!g.Scanned(planet));
     CHECK(g.ScannedCount() == 0);
     CHECK(g.JumpTo(planet, g.Resolve(planet)->radius * 2.0));
-    CHECK(!g.DeployMining(planet));
+    CHECK(!g.DeployDrones(planet));
     for (int i = 0; i < 30; ++i) g.Step(1.0 / 60.0, {});
     for (const Contact& c : g.Contacts())
         if (c.target == planet) CHECK(!c.identified);
@@ -1144,7 +1405,7 @@ static void TestAstroScan() {
     for (int i = 0; i < 40; ++i) g.Step(1.0, {});
     CHECK(g.Scanned(planet));
     CHECK(g.ScannedCount() > 1);
-    CHECK(g.DeployMining(planet));
+    CHECK(g.DeployDrones(planet));
     for (int i = 0; i < 30; ++i) g.Step(1.0 / 60.0, {});
     bool named = false;
     for (const Contact& c : g.Contacts()) named = named || (c.target == planet && c.identified);
@@ -1153,7 +1414,7 @@ static void TestAstroScan() {
     // Se conserva al guardar.
     const std::optional<SaveData> copy = ReadSave(WriteSave(g.Snapshot()));
     CHECK(copy.has_value());
-    if (copy) CHECK(copy->scanned.size() == static_cast<std::size_t>(g.ScannedCount()));
+    if (copy) CHECK(copy->player.scanned.size() == static_cast<std::size_t>(g.ScannedCount()));
 }
 
 // Las etiquetas se pintan con estas posiciones: no pueden ir por detras de lo que marcan.
@@ -1227,6 +1488,53 @@ static void TestSettings() {
     CHECK(Profile(GraphicsQuality::Low).renderScale <= 0.5f);
     CHECK(!Profile(GraphicsQuality::Low).bloom);
     CHECK(Profile(GraphicsQuality::High).renderScale == 1.0f);
+
+    // La pestaña de graficos: de serie son las opciones de Alta, y un archivo antiguo, que solo trae
+    // la calidad, las rellena con las de esa calidad.
+    CHECK(!GameSettings{}.Custom());
+    const GameSettings old = ReadSettings("calidad 0\n");
+    CHECK(!old.Custom());
+    CHECK(old.graphics.renderScale == 50);
+    CHECK(!old.graphics.bloom);
+    CHECK(old.graphics.hullDamage == 0);
+    CHECK(OptionsOf(GraphicsQuality::Ultra).lighting == 3);
+
+    // Cada opcion cambiada a mano vuelve igual del archivo y deja la calidad como personalizada.
+    GameSettings custom = old;
+    custom.graphics.renderScale = 75;
+    custom.graphics.shadows = false;
+    custom.graphics.lighting = 3;
+    custom.graphics.film = true;
+    const GameSettings again = ReadSettings(WriteSettings(custom));
+    CHECK(again.Custom());
+    CHECK(again.quality == GraphicsQuality::Low);
+    CHECK(again.graphics == custom.graphics);
+    // Lo que se sale de rango se recorta.
+    CHECK(ReadSettings("luz 9\nescena 5\n").graphics.lighting == 3);
+    CHECK(ReadSettings("luz 9\nescena 5\n").graphics.renderScale == 25);
+
+    // La interfaz: sin elegir hasta que el jugador elige; el tamaño y las ventanas plegadas se guardan.
+    const GameSettings fresh;
+    CHECK(fresh.uiStyle == UiStyle::Unset);
+    CHECK(!fresh.Minimal());
+    CHECK(fresh.Folded(HudPanel::MiniDetails));
+    CHECK(!fresh.Folded(HudPanel::Ship));
+    GameSettings look;
+    look.uiStyle = UiStyle::Minimal;
+    look.uiScale = 130;
+    look.folded = PanelBit(HudPanel::Radar) | PanelBit(HudPanel::MiniSignals);
+    const GameSettings seen = ReadSettings(WriteSettings(look));
+    CHECK(seen.Minimal());
+    CHECK(seen.uiScale == 130);
+    CHECK(seen.Folded(HudPanel::Radar));
+    CHECK(seen.Folded(HudPanel::MiniSignals));
+    CHECK(!seen.Folded(HudPanel::MiniDetails));
+    CHECK(ReadSettings("interfaz 1\n").uiStyle == UiStyle::Expert);
+    CHECK(ReadSettings("interfaz 7\n").uiStyle == UiStyle::Unset);
+    CHECK(ReadSettings("tamano-interfaz 400\n").uiScale == kUiScales[kUiScaleCount - 1]);
+    // Un archivo de antes, sin estas lineas, pregunta la interfaz y deja la letra de serie.
+    CHECK(ReadSettings("calidad 2\nvolumen-interfaz 50\n").uiStyle == UiStyle::Unset);
+    CHECK(ReadSettings("calidad 2\n").uiScale == 115);
 }
 
 static void TestUnits() {
@@ -1242,6 +1550,105 @@ static void TestUnits() {
     CHECK(MassText(3000.0) == "3.00 Mt");
     CHECK(MassText(0.25) == "250 t");
     CHECK(MassRateText(18.0) == "18.0 kt/h");
+    CHECK(MassText(0.0) == "0 t");
+
+    // Por debajo de la tonelada baja a kg, g y mg.
+    CHECK(MassText(0.0005) == "500 kg");
+    CHECK(MassText(2.5e-9) == "2.50 g");
+    CHECK(MassText(4.0e-10) == "400 mg");
+    CHECK(ElementMassText(0.00025) == "250 mg");
+    CHECK(ElementMassText(0.0015) == "1.50 g");
+    CHECK(ElementMassText(1.5) == "1.50 kg");
+    CHECK(ElementMassText(12.3) == "12.3 kg");
+    CHECK(ElementMassText(2500.0) == "2.50 t");
+    CHECK(ElementMassText(3.0e6) == "3.00 kt");
+    CHECK(ElementMassText(5.0e9) == "5.00 Mt");
+    CHECK(ElementMassText(0.0) == "0 g");
+
+    // La unidad mas cercana, para resaltarla en el diagrama de prefijos.
+    CHECK(MassUnitIndex(1.0e-5) == 0);
+    CHECK(MassUnitIndex(0.5) == 1);
+    CHECK(MassUnitIndex(1.0) == 2);
+    CHECK(MassUnitIndex(999.0) == 2);
+    CHECK(MassUnitIndex(1000.0) == 3);
+    CHECK(MassUnitIndex(2.0e6) == 4);
+    CHECK(MassUnitIndex(7.0e9) == 5);
+    CHECK(std::string(kMassUnits[MassUnitIndex(1.0e6)]) == "kt");
+}
+
+// Inventario de elementos: se guarda exacto, las partidas viejas siguen cargando y la extraccion
+// selectiva rinde ritmo x fraccion x recuperacion.
+static void TestElementInventory() {
+    ElementStock stock;
+    stock.Add(1, 0.1 + 0.2);
+    stock.Add(118, 1.0e-7);
+    stock.Add(26, 5.0);
+    stock.Add(26, -9.0);   // no baja de cero
+    stock.Add(0, 100.0);   // fuera de la tabla: se ignora
+    stock.Add(119, 100.0);
+    CHECK(stock.Get(1) == 0.1 + 0.2 && stock.Get(118) == 1.0e-7);
+    CHECK(stock.Get(26) == 0.0 && stock.Get(0) == 0.0 && stock.Get(119) == 0.0);
+
+    CHECK(ElementYieldPerHour(DroneRules{}, 2.0, 0.01) == DroneRules{}.rate * 2.0 * 0.01 * DroneRules{}.recovery);
+    CHECK(ElementYieldPerHour(DroneRules{}, 1.0, 0.0) == 0.0);
+
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules);
+    g.Conversation().Stop();
+    for (int i = 0; i < 20; ++i) g.Step(1.0 / 60.0, {});
+    const TargetRef planet = MinablePlanet(g);
+    CHECK(g.JumpTo(planet, g.Resolve(planet)->radius * 2.0));
+    CHECK(g.StartScan());
+    for (int i = 0; i < 40; ++i) g.Step(1.0, {});
+    CHECK(g.Scanned(planet));
+    CHECK(!g.ElementSharesOf({Kind::Planet, planet.system, 99999}).has_value());
+
+    // El elemento mas abundante del planeta que no sea hidrogeno ni helio, para tener algo que sacar.
+    const std::optional<astro::PeriodicShares> shares = g.ElementSharesOf(planet);
+    CHECK(shares.has_value());
+    if (!shares) return;
+    int z = 0;
+    for (int i = 3; i <= ElementStock::kCount; ++i)
+        if (z == 0 || (*shares)[static_cast<std::size_t>(i - 1)] > (*shares)[static_cast<std::size_t>(z - 1)]) z = i;
+    const double fraction = (*shares)[static_cast<std::size_t>(z - 1)];
+    CHECK(fraction > 0.0);
+
+    const double rate = g.ElementYieldRate(planet, z);
+    CHECK(rate > 0.0);
+    const double richness = rate / (rules.drones.rate * fraction * rules.drones.recovery);  // la riqueza del yacimiento
+    CHECK(richness > 0.05 && richness < 20.0);
+    CHECK(g.ElementYieldRate(planet, 0) == 0.0);
+
+    // Los drones sacan solo ese elemento: va al inventario en kg, no a la bodega, y cada viaje
+    // trae hold x fraccion x recuperacion.
+    g.SetExtractElement(z);
+    CHECK(g.ExtractElement() == z);
+    g.SetExtractElement(500);
+    CHECK(g.ExtractElement() == 0);
+    g.SetExtractElement(z);
+    const double metalBefore = g.Ship().cargo.Get(Resource::Metal), iceBefore = g.Ship().cargo.Get(Resource::Ice);
+    CHECK(g.DeployDrones(planet));
+    Run(g, 900.0);
+    const double perTrip = rules.drones.hold * fraction * rules.drones.recovery * 1.0e6;  // kg
+    const double got = g.Ship().elements.Get(z);
+    std::printf("  extraccion selectiva: %s en 900 s reales (%.3g kg por viaje)\n", ElementMassText(got).c_str(), perTrip);
+    CHECK(got >= perTrip * 0.999);
+    const double trips = got / perTrip;
+    CHECK(std::abs(trips - std::round(trips)) < 1.0e-6);
+    CHECK(g.Ship().cargo.Get(Resource::Metal) == metalBefore && g.Ship().cargo.Get(Resource::Ice) == iceBefore);  // no minan a granel
+
+    // El inventario va en la partida y vuelve exacto.
+    g.Ship().elements.Add(79, 0.1 + 0.7);
+    const SaveData before = g.Snapshot();
+    const std::string text = WriteSave(before);
+    CHECK(text.find("\nelementos ") != std::string::npos);
+    const std::optional<SaveData> read = ReadSave(text);
+    CHECK(read.has_value());
+    if (!read) return;
+    for (int i = 1; i <= ElementStock::kCount; ++i) CHECK(read->Ship()->ship.elements.Get(i) == before.Ship()->ship.elements.Get(i));
+    CHECK(read->Ship()->ship.elements.Get(79) == 0.1 + 0.7);
+    CHECK(WriteSave(*read) == text);
 }
 
 static void TestLeaveStar() {
@@ -1296,6 +1703,29 @@ static void TestDiscovery() {
     CHECK(g.TakeSaveRequest());  // lo descubierto no debe perderse
 }
 
+// La suma de control de un documento del guardado (FNV-1a), como la calcula SaveGame.cpp.
+static std::string SumLine(const std::string& body) {
+    std::uint64_t h = 14695981039346656037ull;
+    for (const char c : body) {
+        h ^= static_cast<unsigned char>(c);
+        h *= 1099511628211ull;
+    }
+    char sum[32];
+    std::snprintf(sum, sizeof(sum), "suma %016llx\n", static_cast<unsigned long long>(h));
+    return sum;
+}
+
+// La misma partida con otra cabecera en el documento del mundo (el primero) y su suma rehecha. El
+// documento del jugador, que va detras, queda como esta.
+static std::string WithHeader(const std::string& text, const std::string& header) {
+    const std::size_t sum = text.find("suma ");
+    const std::size_t rest = text.find('\n', sum) + 1;
+    const std::string body = header + text.substr(text.find('\n'), sum - text.find('\n'));
+    return body + SumLine(body) + text.substr(rest);
+}
+
+static std::string WithVersion(const std::string& text, int version) { return WithHeader(text, "EPSILON-NEBULOSA-MUNDO " + std::to_string(version)); }
+
 static void TestSave() {
     Balance rules;
     auto engine = MakeEngine(rules);
@@ -1309,23 +1739,12 @@ static void TestSave() {
     g.TimeScale() = 600.0;
     for (int i = 0; i < 30; ++i) g.Step(0.05, {});
 
-    const World& w = g.GetWorld();
-    TargetRef field{TargetRef::Kind::Belt, 0, 0};
-    const StarSystemData& system = *w.systems[0];
-    TargetRef planet;
-    for (std::size_t b = 0; b < system.bodies.size(); ++b) {
-        const TargetRef t{TargetRef::Kind::Planet, 0, static_cast<int>(b)};
-        Deposit deposit;
-        if (system.bodies[b].parent < 0 && g.Resolve(t) && DepositOf(system.bodies[b], deposit)) planet = t;
-    }
-    (void)field;
-    CHECK(g.JumpTo(planet, g.Resolve(planet)->radius * 1.4));
-    g.MarkScanned(0);
-    CHECK(g.DeployMining(planet));
+    const TargetRef placed = PlaceStation(g);
+    g.Ship().hull = 777.125;  // junto a la estrella en Dificil el casco podria resentirse
     CHECK(g.TakeSaveRequest());
     CHECK(!g.TakeSaveRequest());
-    const int station = g.Stations().All().back().id;
-    g.Stations().Find(station)->modules.push_back({ModuleKind::Drill, 3});
+    const int station = placed.index;
+    g.Stations().Find(station)->modules.push_back({ModuleKind::Collector, 3});
     g.Anomalies()[0].revealed = true;
     g.Anomalies()[0].emitter = false;
 
@@ -1336,71 +1755,64 @@ static void TestSave() {
     if (!read) return;
 
     // Los numeros vuelven exactos, y escribirlo otra vez da el mismo archivo.
-    CHECK(read->simTime == before.simTime);
-    CHECK(read->ship.hull == 777.125);
-    CHECK(read->ship.orientation.w == before.ship.orientation.w);
-    CHECK(read->absolutePosition.x == before.absolutePosition.x);
-    CHECK(read->stations.size() == before.stations.size());
-    CHECK(read->stations.back().name == before.stations.back().name);
-    CHECK(read->stations.back().modules.size() == 1 && read->stations.back().modules[0].level == 3);
-    CHECK(read->anomalies.size() == before.anomalies.size());
-    CHECK(read->anomalies[0].name == before.anomalies[0].name);
-    CHECK(read->ship.antimatter == before.ship.antimatter);
-    CHECK(read->ship.emitters == 3);
-    CHECK(!read->anomalies[0].emitter);
+    CHECK(read->world.simTime == before.world.simTime);
+    CHECK(read->Ship()->ship.hull == 777.125);
+    CHECK(read->Ship()->ship.orientation.w == before.Ship()->ship.orientation.w);
+    CHECK(read->Ship()->absolutePosition.x == before.Ship()->absolutePosition.x);
+    CHECK(read->world.stations.size() == before.world.stations.size());
+    CHECK(read->world.stations.back().name == before.world.stations.back().name);
+    CHECK(read->world.stations.back().modules.size() == 1 && read->world.stations.back().modules[0].level == 3);
+    CHECK(read->world.anomalies.size() == before.world.anomalies.size());
+    CHECK(read->world.anomalies[0].name == before.world.anomalies[0].name);
+    CHECK(read->Ship()->ship.antimatter == before.Ship()->ship.antimatter);
+    CHECK(read->Ship()->ship.emitters == 3);
+    CHECK(!read->world.anomalies[0].emitter);
     CHECK(WriteSave(*read) == text);
 
-    // Una partida de la version 3 llevaba materia oscura en la bodega: se descarta, y haberla
-    // encontrado cuenta como el primer emisor.
+    // Una partida de cualquier version anterior se rechaza con un mensaje que lo dice, sin migrarla;
+    // y una de una version posterior, tambien. La suma de control es buena: lo que falla es la version.
+    for (const int old : {1, 3, 5, kSaveVersion - 1, kSaveVersion + 1}) {
+        std::string why;
+        CHECK(!ReadSave(WithVersion(text, old), &why));
+        CHECK(why.find("versión " + std::to_string(old)) != std::string::npos || why.find("(" + std::to_string(old) + ")") != std::string::npos);
+        if (old < kSaveVersion) CHECK(why.find("anterior") != std::string::npos && why.find("misión nueva") != std::string::npos);
+        else CHECK(why.find("posterior") != std::string::npos);
+        if (old == kSaveVersion - 1) std::printf("  partida antigua: %s\n", why.c_str());
+    }
+    // Y una de las de un solo archivo, de antes de separar mundo y jugador, igual.
     {
-        std::string v3 = text.substr(0, text.rfind("suma "));
-        const std::string current = "NEBULOSA " + std::to_string(kSaveVersion);
-        v3.replace(v3.find(current), current.size(), "NEBULOSA 3");
-        const std::size_t bodega = v3.find("\nbodega");
-        v3.insert(v3.find('\n', bodega + 1), " 7.5");
-        std::string kept;
-        std::istringstream lines(v3);
-        for (std::string line; std::getline(lines, line);)
-            if (line.rfind("estacion ", 0) != 0) kept += line + "\n";
-        std::uint64_t h = 14695981039346656037ull;
-        for (const char c : kept) {
-            h ^= static_cast<unsigned char>(c);
-            h *= 1099511628211ull;
-        }
-        char sum[32];
-        std::snprintf(sum, sizeof(sum), "suma %016llx\n", static_cast<unsigned long long>(h));
-        std::string error3;
-        const std::optional<SaveData> old = ReadSave(kept + sum, &error3);
-        CHECK(old.has_value());
-        if (old) {
-            CHECK(old->ship.emitters == 1);
-            CHECK(old->ship.cargo.Get(Resource::Metal) == before.ship.cargo.Get(Resource::Metal));
-            CHECK(old->ship.cargo.Total() == before.ship.cargo.Total());
-        }
+        std::string why;
+        CHECK(!ReadSave(WithHeader(text, "EPSILON-NEBULOSA 12"), &why));
+        CHECK(why.find("anterior") != std::string::npos);
+        CHECK(!ReadSave(WithHeader(text, "OTRA-COSA 13"), &why) && why == "no es una partida");
     }
 
-    // Una partida antigua sigue valiendo: la curvatura de entonces es el crucero de ahora, y sus
-    // centrales pasan a fabricar antimateria.
+    // Son dos documentos, cada uno con su suma: el mundo y el jugador se leen tambien por separado.
     {
-        SaveData old = before;
-        StarYield yield;
-        yield.energyPerHour = 100.0;
-        Station central;
-        central.kind = StationKind::Power;
-        central.yield = yield;
-        central.storedAntimatter = 1500.0;  // entonces era energia
-        old.stations.push_back(central);
-        old.ship.mode = static_cast<DriveMode>(2);  // el hiper de entonces
-        old.ship.antimatter = 0.0;
-        old.ship.warpCharge = 1.0;
-        old.tutorialStep = 8;
-        UpgradeFromFirstVersion(old);
-        CHECK(old.ship.mode == DriveMode::Hyper);
-        CHECK(old.ship.warpCharge == 0.0);
-        CHECK(old.ship.antimatter == rules.ship.startAntimatter);
-        CHECK(old.stations.back().storedAntimatter == 0.0);
-        CHECK(old.stations.back().yield.energyPerHour == 100.0 * kCollectorScale);
-        CHECK(old.tutorialStep == 9);
+        const std::string worldText = WriteWorld(before.world), playerText = WritePlayer(before.player);
+        CHECK(text == worldText + playerText);
+        CHECK(worldText.rfind("EPSILON-NEBULOSA-MUNDO ", 0) == 0 && playerText.rfind("EPSILON-NEBULOSA-JUGADOR ", 0) == 0);
+        const std::optional<WorldSave> world = ReadWorld(worldText);
+        const std::optional<PlayerSave> player = ReadPlayer(playerText);
+        CHECK(world && player);
+        if (world && player) {
+            CHECK(world->ships.size() == 1 && world->ships[0].id == player->ship);
+            CHECK(WriteWorld(*world) == worldText && WritePlayer(*player) == playerText);
+            // De los sistemas solo se escriben los marcados: la lista leida puede ser mas corta.
+            CHECK(std::count(player->knownSystems.begin(), player->knownSystems.end(), 1) == std::count(before.player.knownSystems.begin(), before.player.knownSystems.end(), 1));
+            CHECK(player->scanned == before.player.scanned && !player->scanned.empty());
+        }
+        // Las naves van en el mundo, no en el jugador; lo que se conoce, al reves.
+        CHECK(worldText.find("\nnave 1\n") != std::string::npos && playerText.find("\nbodega") == std::string::npos);
+        CHECK(playerText.find("\nanalizados") != std::string::npos && worldText.find("\nanalizados") == std::string::npos);
+        CHECK(!ReadPlayer(worldText) && !ReadWorld(playerText));  // cada uno, lo suyo
+        CHECK(!ReadSave(worldText));                              // sin jugador no es una partida entera
+        // Un dato de nave antes de abrir ninguna nave no vale.
+        std::string orphan = worldText.substr(0, worldText.rfind("suma "));
+        const std::size_t ship = orphan.find("\nnave 1\n");
+        orphan.erase(ship, std::string("\nnave 1").size());
+        std::string why;
+        CHECK(!ReadWorld(orphan + SumLine(orphan), &why) && why.find("nave") != std::string::npos);
     }
 
     // Lo danado se rechaza, no se carga a medias.
@@ -1424,25 +1836,49 @@ static void TestSave() {
     CHECK(h.Anomalies()[0].revealed);
     CHECK(h.Orbiting().has_value());
     const Vec3d absolute = h.Ship().position + h.GetWorld().origin;
-    CHECK(Length(absolute - before.absolutePosition) < 1.0e4);  // sigue en orbita de lo mismo
-    CHECK(h.Snapshot().stations.back().modules.size() == 1);
+    CHECK(Length(absolute - before.Ship()->absolutePosition) < 1.0e4);  // sigue en orbita de lo mismo
+    CHECK(h.Snapshot().world.stations.back().modules.size() == 1);
 
     SaveData foreign = *read;
-    foreign.seed = 77;
+    foreign.world.seed = 77;
     CHECK(!h.Restore(foreign, &error));
 
-    // Archivo real, sin dejar restos.
-    const std::filesystem::path path = std::filesystem::temp_directory_path() / "epsilon_prueba.sav";
-    const std::string file = path.string();
-    CHECK(SaveToFile(file, before));
-    const std::optional<SaveData> loaded = LoadFromFile(file);
+    // Carpeta real: mundo.sav y jugadores/<id>.sav, sin dejar restos.
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "epsilon_prueba_partida";
+    const std::string folder = path.string();
+    std::filesystem::remove_all(path);
+    std::string problem;
+    CHECK(!LoadGame(folder, "ana", &problem) && problem == "sin partida guardada");
+    SaveData mine = before;
+    mine.player.id = "ana";
+    mine.player.name = "Ana María";
+    CHECK(SaveGame(folder, mine));
+    CHECK(std::filesystem::exists(path / "mundo.sav") && std::filesystem::exists(path / "jugadores" / "ana.sav"));
+    CHECK(!std::filesystem::exists(path / "mundo.sav.tmp") && !std::filesystem::exists(path / "jugadores" / "ana.sav.tmp"));
+    const std::optional<SaveData> loaded = LoadGame(folder, "ana");
     CHECK(loaded.has_value());
-    if (loaded) CHECK(loaded->ship.hull == before.ship.hull);
-    CHECK(!std::filesystem::exists(file + ".tmp"));
-    std::filesystem::remove(path);
-    CHECK(!LoadFromFile(file));
+    if (loaded) {
+        CHECK(loaded->Ship()->ship.hull == before.Ship()->ship.hull);
+        CHECK(loaded->player.name == "Ana María" && loaded->player.scanned == before.player.scanned);
+        CHECK(WriteSave(*loaded) == WriteSave(mine));
+    }
+    // Otro jugador en el mismo mundo: entra sin archivo propio, con la primera nave y sin saber nada.
+    const std::optional<SaveData> guest = LoadGame(folder, "../luis");
+    CHECK(guest.has_value());
+    if (guest) {
+        CHECK(guest->player.id == "___luis" && guest->player.scanned.empty() && guest->player.tutorialStep == 0);
+        CHECK(guest->Ship() && guest->Ship()->id == before.Ship()->id);
+        CHECK(guest->world.stations.size() == before.world.stations.size());
+        CHECK(SaveGame(folder, *guest));
+        CHECK(std::filesystem::exists(path / "jugadores" / "___luis.sav"));  // el id no sale de su carpeta
+        CHECK(LoadGame(folder, "ana").has_value());                            // y el de Ana sigue ahi
+    }
+    DeleteGame(folder);
+    CHECK(!LoadGame(folder, "ana"));
+    CHECK(!std::filesystem::exists(path / "jugadores"));
+    std::filesystem::remove_all(path);
 
-    // Perder la nave en modo realista borra la partida; en los demas, guarda el punto de control.
+    // Perder la nave en modo realista borra la partida; en los demas, se guarda con la marca de perdida.
     GameSession lost(*engine, rules, 20261105, GameModeId::Realistic);
     lost.Step(1.0 / 60.0, {});
     lost.Ship().hull = 0.0;
@@ -1452,7 +1888,7 @@ static void TestSave() {
     g.Ship().hull = 0.0;
     g.Step(1.0 / 60.0, {});
     CHECK(!g.TakeSaveDeletion());
-    CHECK(g.Snapshot().ship.hull > 0.0);
+    CHECK(g.Snapshot().Ship()->lost);
 }
 
 static void TestScanner() {
@@ -1515,7 +1951,10 @@ static void TestScanner() {
     Run(g, 1.0);
     g.Ship().energy = rules.ship.energy;
     CHECK(g.StartScan());
-    Run(g, 40.0);
+    Run(g, 29.0);
+    CHECK(g.Scanning());  // el barrido dura 30 s reales, sin depender de la aceleracion del tiempo
+    Run(g, 2.0);
+    CHECK(!g.Scanning());
     CHECK(ruin->revealed);
     CHECK(g.RevealedStructures() == 1);
     Run(g, 1.0);
@@ -1528,6 +1967,195 @@ static void TestScanner() {
     bool deepest = false;
     for (const Anomaly& a : g.Anomalies()) deepest = deepest || (a.cold && a.signature > 1);
     CHECK(deepest);
+}
+
+static Anomaly* FirstStructure(GameSession& g) {
+    for (Anomaly& a : g.Anomalies())
+        if (a.system == 0 && a.kind == AnomalyKind::Derelict) return &a;
+    return nullptr;
+}
+
+// Un barrido completo donde esta la nave, con la energia llena.
+static bool ScanHere(GameSession& g) {
+    g.Ship().energy = g.Rules().ship.energy;
+    if (!g.StartScan()) return false;
+    Run(g, g.Rules().scanner.seconds + 1.0);
+    return !g.Scanning();
+}
+
+static double AngleDegrees(const Vec3d& a, const Vec3d& b) { return std::acos(std::clamp(Dot(Normalize(a), Normalize(b)), -1.0, 1.0)) * 180.0 / kPi; }
+
+static void TestColdEcho() {
+    Balance rules;
+    const double au = kAstronomicalUnit;
+    const ScannerRules& sr = rules.scanner;
+    const AnomalyRules& ar = rules.anomalies;
+    // La cifra tiene sentido: desde la orbita de la estrella, el nivel 1 la alcanza con margen.
+    CHECK(ar.firstDerelictMinAu < ar.firstDerelictMaxAu && ar.firstDerelictMaxAu * au < sr.range * 0.75);
+
+    // La estructura del sistema 0 se encuentra con un barrido desde la orbita de la estrella, sin modo
+    // creativo y con el escaner de serie, en varias galaxias.
+    for (const std::uint32_t seed : {20261105u, 1u, 2u, 3u, 42u, 777u}) {
+        auto engine = MakeEngine(rules, seed);
+        GameSession g(*engine, rules, seed, GameModeId::Peaceful);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        Anomaly* ruin = FirstStructure(g);
+        CHECK(ruin != nullptr);
+        if (!ruin) continue;
+        const TargetRef star{Kind::Star, 0, 0};
+        const std::optional<TargetInfo> sun = g.Resolve(star);
+        CHECK(sun.has_value());
+        if (!sun) continue;
+        const double fromCenter = Length(ruin->offset);
+        CHECK(fromCenter >= ar.firstDerelictMinAu * au * 0.999 && fromCenter <= ar.firstDerelictMaxAu * au * 1.001);
+        const double fromStart = Length(g.AnomalyPosition(*ruin) - g.Ship().position);
+        CHECK(g.JumpTo(star, sun->arrival));
+        Run(g, 1.0);
+        CHECK(g.Orbiting().has_value() && g.CanScan());
+        CHECK(g.Ship().scannerTier == 1 && !g.Creative());
+        const double fromOrbit = Length(g.AnomalyPosition(*ruin) - g.Ship().position);
+        CHECK(fromOrbit < g.ScanRange());
+        CHECK(ScanHere(g));
+        CHECK(ruin->revealed && g.RevealedStructures() == 1);
+        std::printf("  semilla %u: estructura a %.2f UA de la estrella y %.1f UA de la salida; desde la orbita, %.2f UA\n", seed, fromCenter / au, fromStart / au, fromOrbit / au);
+    }
+
+    // Colocarla cerca de la estrella gasta los mismos numeros que antes: lo demas sale igual.
+    {
+        auto engine = MakeEngine(rules);
+        Balance moved = rules;
+        moved.anomalies.firstDerelictMaxAu = 5.0;
+        const std::vector<Anomaly> a = GenerateAnomalies(engine->GetWorld().extents, rules.anomalies, 99);
+        const std::vector<Anomaly> b = GenerateAnomalies(engine->GetWorld().extents, moved.anomalies, 99);
+        const std::vector<Anomaly> c = GenerateAnomalies(engine->GetWorld().extents, rules.anomalies, 99);
+        CHECK(a.size() == b.size() && a.size() == c.size());
+        bool same = a.size() == b.size(), repeat = a.size() == c.size();
+        for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+            if (a[i].id == 1) continue;  // la que se ha movido
+            same = same && a[i].offset.x == b[i].offset.x && a[i].offset.z == b[i].offset.z && a[i].signature == b[i].signature && a[i].kind == b[i].kind;
+        }
+        for (std::size_t i = 0; i < std::min(a.size(), c.size()); ++i) repeat = repeat && a[i].offset.x == c[i].offset.x && a[i].offset.y == c[i].offset.y;
+        CHECK(same);
+        CHECK(repeat);
+    }
+
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 20261105, GameModeId::Peaceful);
+    g.Conversation().Stop();
+    g.Step(0.05, {});
+    Anomaly* ruin = FirstStructure(g);
+    CHECK(ruin != nullptr);
+    if (!ruin) return;
+    const TargetRef target{Kind::Anomaly, 0, ruin->id};
+    CHECK(sr.echoFactor > 1.0 && std::abs(g.EchoRange() - g.ScanRange() * sr.echoFactor) < 1.0);
+
+    // Fuera del alcance pero dentro del eco: no la revela, pero da rumbo y distancia aproximados.
+    const auto hintAt = [&](double ranges, int tier) {  // a tantas veces el alcance de ese nivel
+        g.Ship().scannerTier = tier;
+        CHECK(g.JumpTo(target, g.ScanRange() * ranges));
+        g.CancelAutopilot();
+        g.HoldPosition();
+        Run(g, 0.5);
+        CHECK(ScanHere(g));
+    };
+    hintAt(2.0, 1);
+    CHECK(!ruin->revealed);
+    const EchoHint first = g.Echo();
+    CHECK(first.active && !first.exact && first.system == 0 && first.weak == 0);
+    CHECK(g.LastScan().find("Eco frío") != std::string::npos && g.LastScan().find(" UA") != std::string::npos && g.LastScan().find("rumbo") != std::string::npos);
+    const Vec3d truth = g.AnomalyPosition(*ruin) - g.Ship().position;
+    const Vec3d guess = *g.EchoPosition() - g.Ship().position;
+    const double offBy = AngleDegrees(truth, guess);
+    CHECK(offBy <= sr.echoBearingError + 1e-6);
+    CHECK(std::abs(first.distance / Length(truth) - 1.0) <= sr.echoDistanceError + 1e-9);
+    CHECK(std::abs(Length(guess) - first.distance) < 1.0);
+    CHECK(first.bearing >= 0.0 && first.bearing < 360.0 && std::abs(first.elevation) <= 90.0);
+    CHECK(first.error > 0.0);
+    std::printf("  pista con nivel 1: %.2f UA (de verdad %.2f), %.1f grados de error, zona de %.2f UA\n", first.distance / au, Length(truth) / au, offBy, first.error / au);
+
+    // Siguiendo la pista se llega: unos pocos saltos hasta el punto marcado, barriendo cada vez.
+    int hops = 0;
+    while (!ruin->revealed && hops < 4 && g.EchoPosition()) {
+        ShipControls nudge;  // un toque de mando saca de la orbita que dejo el salto
+        nudge.throttleChange = 0.01;
+        g.Step(1.0 / 60.0, nudge);
+        g.SetThrottle(0.0);
+        CHECK(!g.Orbiting());
+        g.Ship().position = *g.EchoPosition();
+        g.HoldPosition();
+        Run(g, 0.5);
+        CHECK(ScanHere(g));
+        ++hops;
+    }
+    CHECK(ruin->revealed);
+    std::printf("  siguiendo la pista: encontrada en %d saltos\n", hops);
+    Run(g, 1.0);
+    CHECK(!g.Echo().active);  // revelada, la pista sobra
+    ruin->revealed = false;
+
+    // Con mas nivel la precision mejora (y el eco llega mas lejos).
+    const double reach1 = g.EchoRange();
+    hintAt(2.0, 3);
+    CHECK(g.EchoRange() > reach1);
+    CHECK(g.Echo().active);
+    if (g.Echo().active) {
+        const Vec3d t3 = g.AnomalyPosition(*ruin) - g.Ship().position;
+        CHECK(AngleDegrees(t3, *g.EchoPosition() - g.Ship().position) <= sr.echoBearingError * sr.echoErrorPerTier * sr.echoErrorPerTier + 1e-6);
+        CHECK(std::abs(g.Echo().distance / Length(t3) - 1.0) <= sr.echoDistanceError * sr.echoErrorPerTier * sr.echoErrorPerTier + 1e-9);
+        CHECK(g.Echo().error / g.Echo().distance < first.error / first.distance);
+    }
+    g.Ship().scannerTier = 1;
+
+    // Mas alla del eco, nada: fuera del tutorial se aplica la regla normal.
+    hintAt(sr.echoFactor * 1.3, 1);
+    CHECK(!g.Echo().active && !ruin->revealed);
+    CHECK(g.LastScan().find("Eco frío") == std::string::npos);
+
+    // La regla de la firma: lo que pide mas nivel no da rumbo, solo "senal debil".
+    ruin->signature = 3;
+    hintAt(2.0, 1);
+    CHECK(!ruin->revealed && !g.Echo().active);
+    CHECK(g.Echo().weak >= 1 && g.Echo().needTier == 3);
+    CHECK(g.LastScan().find("Señal débil más allá del alcance") != std::string::npos && g.LastScan().find("nivel 3") != std::string::npos);
+
+    // El tutorial la garantiza: en el paso de la estructura, la pista es exacta y llega aunque el eco
+    // no alcance. Pero no se salta la firma.
+    {
+        GameSession t(*engine, rules, 20261105, GameModeId::Peaceful);
+        t.Step(0.05, {});
+        const std::vector<DialogueStep> steps = MakeTutorial();
+        std::size_t structureStep = steps.size();
+        for (std::size_t i = 0; i < steps.size(); ++i)
+            if (steps[i].tag == kStructureStep) structureStep = i;
+        CHECK(structureStep < steps.size());
+        t.Conversation().Resume(structureStep);
+        CHECK(t.EchoGuaranteed());
+        Anomaly* r = FirstStructure(t);
+        if (!r) return;
+        const TargetRef there{Kind::Anomaly, 0, r->id};
+        CHECK(t.JumpTo(there, t.EchoRange() * 1.5));
+        t.CancelAutopilot();
+        t.HoldPosition();
+        Run(t, 0.5);
+        CHECK(ScanHere(t));
+        CHECK(!r->revealed);
+        CHECK(t.Echo().active && t.Echo().exact && t.Echo().error == 0.0);
+        if (t.EchoPosition()) CHECK(Length(*t.EchoPosition() - t.AnomalyPosition(*r)) < 1.0);
+        CHECK(t.LastScan().find("Eco frío exacto") != std::string::npos);
+        CHECK(t.Conversation().Tag() == kStructureStep);  // sigue en el paso hasta encontrarla
+
+        r->signature = 2;  // con la firma por encima del nivel, ni el tutorial da rumbo
+        CHECK(ScanHere(t));
+        CHECK(!t.Echo().active && !r->revealed);
+        r->signature = 1;
+
+        // Terminado el tutorial, la misma posicion ya no da pista.
+        t.Conversation().Stop();
+        CHECK(!t.EchoGuaranteed());
+        CHECK(ScanHere(t));
+        CHECK(!t.Echo().active);
+    }
 }
 
 static void TestModes() {
@@ -1547,29 +2175,66 @@ static void TestModes() {
     Run(peace, 10.0);
     CHECK(peace.Ship().hull == rules.ship.hull);
 
-    // Normal: se vuelve al punto de control, con una parte de la bodega.
+    // Normal: el mundo no vuelve atras. La nave reaparece reparada, con tres cuartos de la bodega, en el
+    // punto de partida si no ha atracado en ninguna estacion propia.
     auto normalEngine = MakeEngine(rules);
     GameSession g(*normalEngine, rules, 7, GameModeId::Normal);
     g.Step(0.05, {});
+    const Vec3d start = g.Ship().position + g.GetWorld().origin;
     g.Ship().cargo.Add(Resource::Metal, 1000.0);
     g.Ship().emitters = 2;
-    const TargetRef planet = FirstPlanet(g, 0, 1);
-    CHECK(g.JumpTo(planet, g.Resolve(planet)->arrival));
-    Run(g, 1.0);
-    g.MarkScanned(0);
-    CHECK(g.DeployMining(planet));  // guarda aqui
-    const Vec3d saved = g.Ship().position;
-    g.Ship().cargo.Add(Resource::Metal, 5000.0);  // lo que venga despues se pierde
+    const TargetRef station = PlaceStation(g);
+    const double metal = g.Ship().cargo.Get(Resource::Metal) + 5000.0;
+    g.Ship().cargo.Add(Resource::Metal, 5000.0);
+    const double clock = g.SimTime();
     g.Ship().hull = 0.0;
     Run(g, 8.0);
     CHECK(g.Phase() == GamePhase::GameOver);
+    CHECK(g.Snapshot().Ship()->lost);
     g.ContinueAfterDefeat();
+    CHECK(g.Phase() == GamePhase::Flying && !g.Docked());
+    CHECK(Length(g.Ship().position + g.GetWorld().origin - start) < 1.0);
     Run(g, 0.05);
-    CHECK(std::abs(g.Ship().cargo.Get(Resource::Metal) - 750.0) < 1e-6);
+    CHECK(std::abs(g.Ship().cargo.Get(Resource::Metal) - metal * 0.75) < 1e-6);
     CHECK(g.Ship().emitters == 2);  // ya estan en el motor
     CHECK(g.Ship().hull == rules.ship.hull);
-    CHECK(g.Stations().Count(StationKind::Mining) == 1);
-    (void)saved;
+    CHECK(g.Stations().Count(StationKind::Power) == 1);  // la central sigue ahi
+    CHECK(g.SimTime() > clock);                          // y el reloj no ha vuelto atras
+
+    // Tras atracar en una estacion propia, es ahi donde reaparece: atracada y reparada.
+    CHECK(g.JumpTo(station, g.Resolve(station)->arrival));
+    CHECK(g.Dock(station, true));
+    Run(g, 0.5);
+    CHECK(g.Docked());
+    g.Undock();
+    Run(g, 2.0);
+    const TargetRef far = FirstPlanet(g, 0);
+    CHECK(g.JumpTo(far, g.Resolve(far)->arrival));
+    Run(g, 0.5);
+    g.Ship().zones[0] = 0.2;
+    g.Ship().hull = 0.0;
+    Run(g, 8.0);
+    CHECK(g.Phase() == GamePhase::GameOver);
+    // Guardada con la nave perdida, al cargar ya ha reaparecido.
+    const SaveData wrecked = g.Snapshot();
+    CHECK(wrecked.Ship()->lost && wrecked.Ship()->homeStation == station.index);
+    const std::optional<SaveData> reread = ReadSave(WriteSave(wrecked));
+    CHECK(reread && reread->Ship()->lost && reread->Ship()->homeStation == station.index);
+    g.ContinueAfterDefeat();
+    Run(g, 0.2);
+    CHECK(g.Phase() == GamePhase::Flying && g.Docked());
+    CHECK(g.DockedStation() && g.DockedStation()->id == station.index);
+    CHECK(g.Ship().hull == rules.ship.hull && g.Ship().zones[0] == 1.0);
+    if (reread) {
+        auto loadEngine = MakeEngine(rules);
+        GameSession h(*loadEngine, rules, 7, GameModeId::Normal);
+        h.Step(0.05, {});
+        CHECK(h.Restore(*reread));
+        for (int i = 0; i < 200 && !h.Docked(); ++i) h.Step(0.05, {});
+        CHECK(h.Phase() == GamePhase::Flying && h.Docked());
+        CHECK(h.Ship().hull == rules.ship.hull);
+        CHECK(!h.Snapshot().Ship()->lost);
+    }
 
     // Realista: no queda nada.
     auto hardEngine = MakeEngine(rules);
@@ -1577,10 +2242,7 @@ static void TestModes() {
     real.Step(0.05, {});
     real.Ship().cargo.Add(Resource::Metal, 1000.0);
     real.Ship().emitters = 2;
-    const TargetRef second = FirstPlanet(real, 0, 1);
-    CHECK(real.JumpTo(second, real.Resolve(second)->arrival));
-    Run(real, 1.0);
-    CHECK((real.MarkScanned(0), real.DeployMining(second)));
+    PlaceStation(real);
     real.Ship().hull = 0.0;
     Run(real, 8.0);
     real.ContinueAfterDefeat();
@@ -1612,7 +2274,11 @@ static void TestDialogue() {
     }
     CHECK(whole);
 
-    // Enter completa la linea y luego pasa a la siguiente.
+    // Enter completa la linea y luego pasa a la siguiente. Se vuelve a empezar el paso para tener una
+    // linea a medio escribir, sea cual sea su largo.
+    talk.Replay();
+    talk.Update(g, 0.1);
+    CHECK(!talk.LineComplete());
     talk.Next();
     CHECK(talk.LineComplete());
     const std::string before = talk.Line()->text;
@@ -1637,6 +2303,207 @@ static void TestDialogue() {
     CHECK(!talk.Active());
     CHECK(talk.Objective().empty());
     Run(g, 1.0);
+}
+
+// Alguno de los motivos por los que el objetivo aun no se cumple contiene ese texto.
+static bool HasBlocker(const Guidance& guidance, const std::string& text) {
+    for (const std::string& blocker : guidance.blockers)
+        if (blocker.find(text) != std::string::npos) return true;
+    return false;
+}
+
+static void TestTutorialGuide() {
+    // Todo lo que se puede senalar existe: una tecla de la barra, una opcion de la rueda o un panel.
+    for (int k = 1; k < static_cast<int>(Highlight::Count); ++k) {
+        const HighlightTarget where = Locate(static_cast<Highlight>(k));
+        CHECK(where.where != HighlightTarget::Where::None);
+        CHECK(where.label && where.label[0] != '\0');
+        if (where.where == HighlightTarget::Where::Key || where.where == HighlightTarget::Where::Wheel) CHECK(where.key && where.key[0] != '\0');
+        if (where.where == HighlightTarget::Where::Wheel) {
+            CHECK(where.option < WheelOption::Count);
+            CHECK(std::string(where.key) == "T");
+            CHECK(std::string(where.label) == Name(where.option));
+        }
+    }
+    CHECK(Locate(Highlight::None).where == HighlightTarget::Where::None);
+
+    // Cada paso con objetivo senala algo, y lo que senala resuelve a un elemento que existe.
+    const std::vector<DialogueStep> steps = MakeTutorial();
+    CHECK(steps.size() >= 12);
+    std::set<std::string> objectives;
+    for (const DialogueStep& step : steps) {
+        CHECK(!step.lines.empty());
+        for (const DialogueLine& line : step.lines) CHECK(line.text.size() < 140);  // una idea por linea
+        if (step.objective.empty()) continue;
+        CHECK(step.done != nullptr);
+        CHECK(step.highlight != Highlight::None);
+        CHECK(Locate(step.highlight).where != HighlightTarget::Where::None);
+        CHECK(objectives.insert(step.objective).second);  // ningun objetivo repetido
+    }
+    // Drones, estacion y central son pasos distintos.
+    const auto stepOf = [&](const char* word) {
+        for (std::size_t i = 0; i < steps.size(); ++i)
+            if (steps[i].objective.find(word) != std::string::npos) return i;
+        return steps.size();
+    };
+    const std::size_t drones = stepOf("drones"), yard = stepOf("origami"), power = stepOf("central en");
+    CHECK(drones < yard && yard < power && power < steps.size());
+    CHECK(steps[yard].optional && !steps[drones].optional && !steps[power].optional);
+
+    // El tutorial entero avanza cumpliendo cada condicion, con su aviso y la guia de cada paso.
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 20261105, GameModeId::Peaceful);
+    g.Step(0.05, {});
+    Dialogue& talk = g.Conversation();
+    CHECK(talk.Active() && talk.StepCount() == steps.size());
+    TargetRef target;
+    const auto guide = [&] { return talk.Guide(g, target); };
+    // Pasa las lineas y da al paso un momento con el objetivo en pantalla.
+    const auto read = [&] {
+        talk.SkipLines();
+        CHECK(!talk.Reading() && !talk.Objective().empty());
+    };
+    // Cumplido lo que pide, avanza y lo cuenta.
+    const auto passes = [&](std::size_t step) {
+        const int before = talk.Completions();
+        talk.Update(g, 0.01);
+        CHECK(talk.Step() == step + 1);
+        CHECK(talk.Completions() == before + 1);
+        CHECK(talk.LastCompleted() == steps[step].objective);
+        CHECK(talk.SinceCompleted() < 0.1);
+    };
+
+    // 0: mando.
+    read();
+    CHECK(guide().highlight == Highlight::KeyThrottle && HasBlocker(guide(), "Velocidad"));
+    g.Ship().speed = 50.0;
+    passes(0);
+    // 1: frenar.
+    read();
+    CHECK(guide().highlight == Highlight::KeyBrake);
+    g.Ship().speed = 0.0;
+    g.Ship().throttle = 0.0;
+    passes(1);
+    // 2: cursor.
+    read();
+    CHECK(guide().highlight == Highlight::KeyCursor);
+    g.MarkCursorUsed();
+    passes(2);
+    // 3: escaner. Moviendose senala Espacio; sin energia dice cuanta falta.
+    read();
+    g.Ship().speed = 50.0;
+    CHECK(guide().highlight == Highlight::KeyBrake && HasBlocker(guide(), "Nave quieta: no"));
+    g.Ship().speed = 0.0;
+    g.Ship().energy = 0.0;
+    CHECK(guide().highlight == Highlight::WheelScan && HasBlocker(guide(), "Energía insuficiente: faltan"));
+    g.Ship().energy = rules.ship.energy;
+    CHECK(guide().blockers.empty());
+    g.MarkScanned(0);
+    passes(3);
+    // 4: analisis. Sin objetivo senala Tab.
+    read();
+    CHECK(guide().highlight == Highlight::KeyTarget && HasBlocker(guide(), "Objetivo"));
+    target = {Kind::Star, 0, 0};
+    CHECK(guide().highlight == Highlight::WheelAnalysis);
+    g.MarkAnalysisUsed();
+    passes(4);
+    // 5: drones. Una estrella no vale; un planeta lejos pide Ir.
+    read();
+    CHECK(guide().highlight == Highlight::KeyTarget);
+    target = FirstPlanet(g, 0);
+    CHECK(target.kind == Kind::Planet);
+    if (Length(g.Resolve(target)->position - g.Ship().position) > rules.drones.range) CHECK(guide().highlight == Highlight::WheelGo && HasBlocker(guide(), "Distancia"));
+    CHECK(g.JumpTo(target, g.Resolve(target)->arrival));
+    g.CancelAutopilot();
+    CHECK(guide().highlight == Highlight::WheelDrones);
+    CHECK(g.DeployDrones(target));
+    passes(5);
+    // 6: la estacion es opcional. Enter no la salta hasta que el objetivo lleva un momento en pantalla.
+    read();
+    CHECK(talk.Optional());
+    talk.Next();
+    CHECK(talk.Step() == yard);
+    talk.Update(g, 1.0);
+    CHECK(talk.Step() == yard);
+    const int skipped = talk.Completions();
+    talk.Next();
+    CHECK(talk.Step() == yard + 1 && talk.Completions() == skipped);  // saltarlo no cuenta como cumplido
+    g.RecallDrones();
+    // 7: central, en la orbita de la estrella.
+    read();
+    CHECK(guide().highlight == Highlight::KeyTarget);  // el objetivo sigue siendo el planeta
+    const StarYield yield = YieldOf(g.GetWorld().systems[0]->StarAt(0));
+    if (g.Ship().heatShieldTier < yield.requiredTier) g.Ship().heatShieldTier = yield.requiredTier;
+    target = {Kind::Star, 0, 0};
+    CHECK(g.JumpTo(target, g.Resolve(target)->arrival));
+    g.CancelAutopilot();
+    CHECK(guide().highlight == Highlight::WheelPower && guide().blockers.empty());
+    CHECK(g.DeployPower(target));
+    passes(power);
+    // 8: recoger de la central.
+    read();
+    CHECK(guide().highlight == Highlight::KeyTarget);
+    target = {Kind::Station, 0, g.Stations().All().back().id};
+    g.Ship().relayTier = 1;  // con enlace se recoge a distancia: aqui no importa donde quede la central
+    CHECK(guide().highlight == Highlight::WheelUse && guide().blockers.empty());
+    CHECK(g.Interact(target));
+    passes(power + 1);
+    // 9: la estructura. Sin pista, el escaner; con pista, la marca del radar y su distancia.
+    read();
+    CHECK(talk.Tag() == kStructureStep);
+    CHECK(HasBlocker(guide(), "Pista: aún no"));
+    Anomaly* ruin = FirstStructure(g);
+    CHECK(ruin != nullptr);
+    if (!ruin) return;
+    CHECK(g.JumpTo({Kind::Anomaly, 0, ruin->id}, g.EchoRange() * 1.5));
+    g.CancelAutopilot();
+    g.HoldPosition();
+    Run(g, 0.5);
+    CHECK(ScanHere(g));
+    CHECK(g.EchoPosition().has_value());
+    CHECK(guide().highlight == Highlight::EchoMarker && HasBlocker(guide(), "acérquese a la marca"));
+    ruin->revealed = true;
+    const std::size_t structure = talk.Step();
+    passes(structure);
+    // 10: explorarla.
+    read();
+    CHECK(guide().highlight == Highlight::KeyTarget);
+    target = {Kind::Anomaly, 0, ruin->id};
+    CHECK(guide().highlight == Highlight::WheelGo || guide().highlight == Highlight::WheelUse);
+    g.Ship().emitters = 1;
+    passes(structure + 1);
+    // 11: la burbuja Hibrida dice lo que cuesta y lo que hay.
+    read();
+    g.Ship().antimatter = 0.0;
+    CHECK(guide().highlight == Highlight::KeyHybrid && HasBlocker(guide(), "Antimateria: faltan") && HasBlocker(guide(), "tiene"));
+    g.Ship().mode = DriveMode::Warp;
+    g.Ship().warpCharge = 0.5;
+    CHECK(guide().highlight == Highlight::KeyThrottle && HasBlocker(guide(), "Formando: 50 %"));
+    g.Ship().warpCharge = 1.0;
+    passes(structure + 2);
+    // 12: la despedida termina sola.
+    talk.SkipLines();
+    talk.Update(g, 0.01);
+    CHECK(!talk.Active());
+    CHECK(talk.Completions() == static_cast<int>(objectives.size()) - 1);  // todos menos la estacion, que se salto
+
+    // Repetir el consejo vuelve a las lineas del paso, sin cambiar de paso.
+    talk.Start(MakeTutorial());
+    talk.Resume(3);
+    talk.SkipLines();
+    CHECK(!talk.Reading());
+    talk.Replay();
+    CHECK(talk.Reading() && talk.Step() == 3 && talk.VisibleText().empty());
+
+    // El paso se guarda y vuelve; una partida de la version anterior, con el tutorial viejo, se rechaza.
+    const std::string text = WriteSave(g.Snapshot());
+    const std::optional<SaveData> back = ReadSave(text);
+    CHECK(back && back->player.tutorialStep == 3);
+    CHECK(kSaveVersion >= 12);
+    std::string why;
+    CHECK(!ReadSave(WithVersion(text, kSaveVersion - 1), &why));
+    CHECK(why.find("anterior") != std::string::npos);
 }
 
 // Vuela un proyectil sin dueno, con toda la gravedad, y dice lo que se acerca al blanco.
@@ -1743,9 +2610,20 @@ static void TestBallistics() {
     CHECK(Strongest(many, Vec3d{}, 3).size() == 3 && Strongest(many, Vec3d{}, 3)[0].position.x == 1.0e5);
 }
 
-static TargetRef FindShip(const GameSession& g, Stance stance, AnomalyKind kind = AnomalyKind::AlienShip) {
-    for (const Anomaly& a : g.Anomalies())
-        if (a.stance == stance && a.kind == kind) return {Kind::Anomaly, a.system, a.id};
+// Las pruebas de combate miden contra la fragata ligera, la nave de referencia (casco = 1): un dron
+// moriria de un solo impacto. La clase que el juego reparte de verdad se prueba en TestShipClasses.
+static TargetRef FindShip(GameSession& g, Stance stance, AnomalyKind kind = AnomalyKind::AlienShip) {
+    const AnomalyRules anomalyRules;
+    for (Anomaly& a : g.Anomalies()) {
+        if (a.stance != stance || a.kind != kind) continue;
+        if (kind == AnomalyKind::AlienShip && (a.shipClass != ShipClassId::Frigate || a.variant != ShipVariant::Light)) {
+            a.shipClass = ShipClassId::Frigate;
+            a.variant = ShipVariant::Light;
+            a.maxHull = a.hull = ClassOf(a).hull * anomalyRules.referenceHull;
+            a.shieldMax = a.shieldCharge = ClassOf(a).shield * anomalyRules.referenceShield;
+        }
+        return {Kind::Anomaly, a.system, a.id};
+    }
     return {};
 }
 
@@ -2030,7 +2908,7 @@ static void TestAtlas() {
     Run(g, 2.0);
     CHECK(g.Visited(1) && g.VisitedSystems() == 2);
     const std::optional<SaveData> read = ReadSave(WriteSave(g.Snapshot()));
-    CHECK(read && read->visitedSystems.size() > 1 && read->visitedSystems[1]);
+    CHECK(read && read->player.visitedSystems.size() > 1 && read->player.visitedSystems[1]);
 }
 
 // La composicion por elementos: suma 1 y cada clase de astro tiene lo que le toca.
@@ -2185,10 +3063,7 @@ static void TestDocking() {
     g.Step(0.05, {});
     g.MarkScanned(0);
     const TargetRef planet = FirstPlanet(g, 0, 1);
-    CHECK(g.JumpTo(planet, g.Resolve(planet)->arrival));
-    Run(g, 0.5);
-    CHECK(g.DeployMining(planet));
-    const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+    const TargetRef station = PlaceStation(g);
     for (int i = 0; i < 200; ++i) g.Step(0.05, {});  // que termine de montarse
 
     CHECK(!g.Dock(planet));  // solo estaciones
@@ -2233,7 +3108,7 @@ static void TestDocking() {
 
     // Se guarda atracada.
     const std::optional<SaveData> read = ReadSave(WriteSave(g.Snapshot()));
-    CHECK(read && read->docked);
+    CHECK(read && read->Ship()->docked);
 
     // A pie: cubierta, gente, tiempo real y la esclusa para volver.
     CHECK(g.Disembark());
@@ -2271,11 +3146,7 @@ static void TestApproach() {
     g.Conversation().Stop();
     g.Step(0.05, {});
     g.MarkScanned(0);
-    const TargetRef planet = FirstPlanet(g, 0, 1);
-    CHECK(g.JumpTo(planet, g.Resolve(planet)->arrival));
-    Run(g, 0.5);
-    CHECK(g.DeployMining(planet));
-    const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+    const TargetRef station = PlaceStation(g);
     CHECK(g.JumpTo(station, 200.0));
     FaceTo(g.Ship(), g.Resolve(station)->position - g.Ship().position);
     g.SetThrottle(1.0);
@@ -2300,7 +3171,7 @@ static void TestApproach() {
 }
 
 // Al soltar amarras la estacion no se aleja: la nave vuela en su marco aunque la estacion orbite y
-// el planeta tire de ella.
+// la estrella tire de ella.
 static void TestStationFrame() {
     Balance rules;
     auto engine = MakeEngine(rules, 7);
@@ -2308,11 +3179,7 @@ static void TestStationFrame() {
     g.Conversation().Stop();
     g.Step(0.05, {});
     g.MarkScanned(0);
-    const TargetRef planet = FirstPlanet(g, 0, 1);
-    CHECK(g.JumpTo(planet, g.Resolve(planet)->arrival));
-    Run(g, 0.5);
-    CHECK(g.DeployMining(planet));
-    const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+    const TargetRef station = PlaceStation(g);
     for (int i = 0; i < 200; ++i) g.Step(0.05, {});
     CHECK(g.JumpTo(station, 5.0));
     CHECK(g.Dock(station, true));
@@ -2387,10 +3254,10 @@ static void TestCombatSave() {
     const std::optional<SaveData> read = ReadSave(WriteSave(data), &error);
     CHECK(read.has_value());
     if (!read) return;
-    CHECK(read->ship.computerTier == 4);
-    CHECK(read->ship.weapons.size() == 4 && read->ship.weapons[0].tier == 3 && read->ship.weapons[0].cooldown == 1.5);
+    CHECK(read->Ship()->ship.computerTier == 4);
+    CHECK(read->Ship()->ship.weapons.size() == 4 && read->Ship()->ship.weapons[0].tier == 3 && read->Ship()->ship.weapons[0].cooldown == 1.5);
     bool found = false;
-    for (const Anomaly& a : read->anomalies)
+    for (const Anomaly& a : read->world.anomalies)
         if (a.id == hurt.id) {
             found = true;
             CHECK(a.hull == 123.5 && a.maxHull == hurt.maxHull && a.cooldown == 7.25 && a.armed == hurt.armed && a.weapon == hurt.weapon);
@@ -2399,14 +3266,230 @@ static void TestCombatSave() {
 
     // Una partida de antes del combate se carga con armas y cascos de serie.
     SaveData old = data;
-    old.ship.weapons.clear();
-    for (Anomaly& a : old.anomalies) a.hull = a.maxHull = 0.0;
+    old.Ship()->ship.weapons.clear();
+    for (Anomaly& a : old.world.anomalies) a.hull = a.maxHull = 0.0;
     GameSession loaded(*engine, rules, 7, GameModeId::Peaceful);
     CHECK(loaded.Restore(old));
     CHECK(loaded.Ship().weapons.size() == 4);
     for (const Anomaly& a : loaded.Anomalies()) {
         if (a.kind == AnomalyKind::Derelict) CHECK(a.maxHull == 0.0);
         else CHECK(a.maxHull > 0.0 && a.hull == a.maxHull);
+    }
+}
+
+// Fase F: niveles de estacion, planeta coraza, alerta por region, rendicion y revancha.
+static void TestStationLevelsAndAlert() {
+    Balance rules;
+    const AnomalyRules& ar = rules.anomalies;
+    const AlertRules& al = rules.alert;
+
+    // Vida por nivel: el 2 es 30 veces la fragata ligera; el 6, el planeta coraza, 30 000.
+    const double frigate = ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).hull * ar.referenceHull;
+    CHECK(StationHull(ar, 2) == 30.0 * frigate);
+    CHECK(StationHull(ar, 1) == 10.0 * frigate && StationHull(ar, 4) == 300.0 * frigate && StationHull(ar, 6) == 30000.0 * frigate);
+    for (int l = 2; l <= kStationLevels; ++l) CHECK(StationHull(ar, l) > StationHull(ar, l - 1));
+
+    // El nivel sale del id: siempre de 1 a 5, todos aparecen y el 1 es el mas comun.
+    int seen[kStationLevels + 1] = {};
+    for (int id = 1; id <= 4000; ++id) {
+        const int l = StationLevelFor(id, ar);
+        CHECK(l >= 1 && l <= 5);
+        if (l >= 1 && l <= 5) ++seen[l];
+        if (id <= 50) CHECK(StationLevelFor(id, ar) == l);
+    }
+    for (int l = 1; l <= 5; ++l) CHECK(seen[l] > 0);
+    CHECK(seen[1] > seen[3] && seen[3] > seen[5]);
+
+    // Generacion: estaciones con nivel y su vida; como mucho un planeta coraza, al final, en la mitad lejana.
+    const std::vector<double> extents(40, 6.0e9);
+    int withPlanet = 0;
+    for (std::uint32_t seed = 1; seed <= 60; ++seed) {
+        const std::vector<Anomaly> list = GenerateAnomalies(extents, ar, seed);
+        int planets = 0, maxId = 0;
+        for (const Anomaly& a : list) {
+            maxId = std::max(maxId, a.id);
+            if (a.kind != AnomalyKind::AlienStation) continue;
+            if (IsArmorPlanet(a)) {
+                ++planets;
+                CHECK(a.stance == Stance::Hostile && a.radius == ar.armorPlanetRadius && a.system >= 20 && a.system < 40);
+                CHECK(a.maxHull == StationHull(ar, kArmorPlanetLevel) && a.hull == a.maxHull && a.signature == ar.armorPlanetSignature);
+                CHECK(Length(a.offset) > extents[static_cast<std::size_t>(a.system)]);  // por fuera de sus planetas
+                CHECK(a.id == list.back().id);
+            } else {
+                CHECK(a.stationLevel >= 1 && a.stationLevel <= 5 && a.maxHull == StationHull(ar, a.stationLevel));
+            }
+        }
+        CHECK(planets <= 1);
+        withPlanet += planets;
+        // Lo demas no cambia con el planeta: mismos ids que antes de anadirlo.
+        if (planets == 1) CHECK(list[list.size() - 2].id == maxId - 1);
+    }
+    CHECK(withPlanet > 0 && withPlanet < 60);  // raro, pero existe
+
+    // El planeta coraza no se mueve.
+    Anomaly planet;
+    planet.id = 99;
+    MakeArmorPlanet(planet, ar);
+    std::mt19937 rng(3);
+    const Vec3d at = planet.offset;
+    StepAnomaly(planet, Vec3d{1.0e5, 0, 0}, ar, 3600.0, rng);
+    CHECK(Length(planet.offset - at) == 0.0 && AlienModelOf(planet) == -1);
+
+    // Alerta por region: sube en los 4 sistemas del grupo y en ninguno mas.
+    SpeciesState s;
+    ResizeSpecies(s, 40);
+    RaiseAlert(s, 5, 0.3, 100.0, al);
+    for (int k = 0; k < 40; ++k) CHECK((s.alert[static_cast<std::size_t>(k)] > 0.0) == (k >= 4 && k <= 7));
+    CHECK(s.lastAttack[5] == 100.0 && s.lastAttack[3] < 0.0);
+    RaiseAlert(s, 5, 0.9, 100.0, al);
+    CHECK(s.alert[5] == 1.0);  // tope
+
+    // Un hangar militar destruido la lleva a los 20 sistemas mas cercanos.
+    SpeciesState h;
+    ResizeSpecies(h, 40);
+    std::vector<Vec3d> line;
+    for (int k = 0; k < 40; ++k) line.push_back(Vec3d{static_cast<double>(k) * (k % 2 ? 1.0 : 1.001), 0, 0});
+    RaiseAlert(h, 21, DestroyRaise(al, kHangarLevel), 0.0, al, &line, al.hangarSpread);
+    int raised = 0;
+    for (const double v : h.alert) raised += v > 0.0 ? 1 : 0;
+    CHECK(raised == 20 && h.alert[21] == DestroyRaise(al, kHangarLevel) && h.alert[0] == 0.0 && h.alert[39] == 0.0);
+    // Destruir un nivel 1 casi no la sube; un nivel 5 se nota mucho.
+    CHECK(DestroyRaise(al, 1) < DestroyRaise(al, 5) * 0.1 && DestroyRaise(al, 0) == al.shipRaise);
+
+    // Baja con el tiempo, y mas deprisa donde no se ataca desde hace calmHours.
+    SpeciesState d;
+    ResizeSpecies(d, 8);
+    RaiseAlert(d, 0, 0.5, 0.0, al);  // region 0: sistemas 0 a 3
+    RaiseAlert(d, 4, 0.5, 0.0, al);  // region 1: 4 a 7
+    const double later = (al.calmHours + 1.0) * 3600.0;
+    d.lastAttack[4] = d.lastAttack[5] = d.lastAttack[6] = d.lastAttack[7] = later;  // alli se acaba de atacar
+    DecayAlert(d, later, 3600.0, al);
+    CHECK(d.alert[0] < 0.5 && d.alert[4] < 0.5 && d.alert[0] < d.alert[4]);
+    CHECK(std::fabs(d.alert[4] - 0.5 * std::exp(-al.decayPerHour)) < 1e-12);
+
+    // Rendicion y revancha: una capital suprema o un planeta coraza; una fragata no.
+    Anomaly capital;
+    capital.kind = AnomalyKind::AlienShip;
+    capital.shipClass = ShipClassId::SupremeCapital;
+    Anomaly frigateShip = capital;
+    frigateShip.shipClass = ShipClassId::Frigate;
+    CHECK(TriggersSurrender(capital) && TriggersSurrender(planet) && !TriggersSurrender(frigateShip));
+    SpeciesState r;
+    std::vector<Anomaly> fleet(2);
+    fleet[0].kind = AnomalyKind::AlienShip;
+    fleet[0].hull = fleet[0].maxHull = 100.0;
+    fleet[0].shieldCharge = fleet[0].shieldMax = 10.0;
+    fleet[1].kind = AnomalyKind::AlienStation;
+    fleet[1].hull = fleet[1].maxHull = 500.0;
+    BeginSurrender(r, 1000.0, al);
+    CHECK(Surrendered(r, 1000.0) && Surrendered(r, 1000.0 + al.surrenderHours * 3600.0 - 1.0));
+    CHECK(!EndSurrender(r, fleet, 2000.0, al) && fleet[0].boost == 1.0);
+    CHECK(EndSurrender(r, fleet, 1000.0 + al.surrenderHours * 3600.0, al));
+    CHECK(!Surrendered(r, 1.0e9) && r.revenges == 1);
+    CHECK(fleet[0].boost == 1.5 && fleet[0].maxHull == 150.0 && fleet[0].hull == 150.0 && fleet[0].shieldMax == 15.0);
+    CHECK(fleet[1].maxHull == 500.0 && fleet[1].boost == 1.0);  // las estaciones no son la flota
+    CHECK(RevengeBoost(r, al) == 1.5);
+    CHECK(!EndSurrender(r, fleet, 1.0e9, al));  // una sola vez
+
+    // ---- En la sesion ----
+    auto engine = MakeEngine(rules, 7);
+    GameSession g(*engine, rules, 7, GameModeId::Peaceful);
+    g.Step(0.05, {});
+    const auto find = [&](int id) -> Anomaly* {
+        for (Anomaly& a : g.Anomalies())
+            if (a.id == id) return &a;
+        return nullptr;
+    };
+    CHECK(g.Species().alert.size() == engine->GetWorld().extents.size());
+    // Un bastion de nivel 2 lleva la vida de la tabla, y su nivel sale en la ficha.
+    const int fort = g.SpawnAnomaly(AnomalyKind::AlienStation, Stance::Hostile, 3000.0, 2);
+    CHECK(find(fort) && find(fort)->stationLevel == 2 && find(fort)->maxHull == 30.0 * frigate);
+    const std::optional<TargetInfo> info = g.Resolve({Kind::Anomaly, g.NearestSystem(), fort});
+    CHECK(info && info->detail.find("nivel 2") != std::string::npos);
+    // Atacarla sube la alerta de su region.
+    const int here = g.NearestSystem();
+    CHECK(g.SystemAlert(here) == 0.0);
+    g.StrikeAnomaly(fort, DamageType::Nuclear, frigate * 2.0);
+    CHECK(g.SystemAlert(here) > 0.0 && g.SystemAlert(here) < 0.1);
+
+    // Destruir un hangar militar extiende la alerta a 20 sistemas o mas.
+    const int hangar = g.SpawnAnomaly(AnomalyKind::AlienStation, Stance::Hostile, 3000.0, kHangarLevel);
+    CHECK(find(hangar) && find(hangar)->maxHull == StationHull(ar, kHangarLevel));
+    g.StrikeAnomaly(hangar, DamageType::Nuclear, 1.0e15);
+    CHECK(find(hangar)->hull <= 0.0);
+    int alerted = 0;
+    for (const double v : g.Species().alert) alerted += v > 0.0 ? 1 : 0;
+    CHECK(alerted >= std::min(al.hangarSpread, static_cast<int>(g.Species().alert.size())));  // la galaxia de prueba es pequena
+    CHECK(!g.Surrender());
+
+    // Una capital suprema destruida: rendicion temporal; al acabar, +50 %.
+    const int boss = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 5000.0, 0, static_cast<int>(ShipClassId::SupremeCapital));
+    CHECK(find(boss) && find(boss)->shipClass == ShipClassId::SupremeCapital && find(boss)->maxHull == ShipClassOf(ShipClassId::SupremeCapital, ShipVariant::Normal).hull * ar.referenceHull);
+    const int escort = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 6000.0);
+    const double escortHull = find(escort)->maxHull;
+    g.StrikeAnomaly(boss, DamageType::Nuclear, 1.0e15);
+    CHECK(g.Surrender());
+    g.Step(0.05, {});
+    CHECK(g.Surrender() && !find(escort)->pursuing);
+    // Partida guardada a mitad de la rendicion: alerta, rendicion y niveles vuelven igual.
+    {
+        const std::string text = WriteSave(g.Snapshot());
+        const std::optional<SaveData> read = ReadSave(text);
+        CHECK(read.has_value());
+        if (read) {
+            CHECK(read->world.species.alert == g.Species().alert && read->world.species.lastAttack == g.Species().lastAttack);
+            CHECK(read->world.species.surrenderUntil == g.Species().surrenderUntil && read->world.species.revengePending && read->world.species.revenges == 0);
+            for (const Anomaly& a : read->world.anomalies)
+                if (a.id == fort) CHECK(a.stationLevel == 2);
+            CHECK(WriteSave(*read) == text);
+        }
+    }
+    g.Species().surrenderUntil = g.SimTime();  // se acaba ya
+    g.Step(0.05, {});
+    CHECK(!g.Surrender() && g.Species().revenges == 1);
+    CHECK(find(escort)->boost == 1.5 && std::fabs(find(escort)->maxHull - escortHull * 1.5) < 1e-6);
+    const int fresh = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 7000.0);
+    CHECK(find(fresh)->boost == 1.5);
+    {
+        const std::optional<SaveData> read = ReadSave(WriteSave(g.Snapshot()));
+        CHECK(read && read->world.species.revenges == 1);
+        if (read)
+            for (const Anomaly& a : read->world.anomalies)
+                if (a.id == escort) CHECK(a.boost == 1.5);
+    }
+
+    // Una partida sin planeta coraza (anterior a la fase F) lo recupera al cargarse, si su galaxia tiene.
+    {
+        SaveData old = g.Snapshot();
+        const bool had = std::any_of(old.world.anomalies.begin(), old.world.anomalies.end(), [](const Anomaly& a) { return IsArmorPlanet(a); });
+        old.world.anomalies.erase(std::remove_if(old.world.anomalies.begin(), old.world.anomalies.end(), [](const Anomaly& a) { return IsArmorPlanet(a); }), old.world.anomalies.end());
+        GameSession loaded(*engine, rules, 7, GameModeId::Peaceful);
+        CHECK(loaded.Restore(old));
+        const bool has = std::any_of(loaded.Anomalies().begin(), loaded.Anomalies().end(), [](const Anomaly& a) { return IsArmorPlanet(a); });
+        CHECK(has == had);
+        CHECK(loaded.Species().revenges == 1);
+    }
+
+    // El planeta coraza en vuelo: inmovil, te ve desde lejos y dispara dentro de su percepcion.
+    GameSession n(*engine, rules, 7, GameModeId::Normal);
+    n.Step(0.05, {});
+    const int egg = n.SpawnAnomaly(AnomalyKind::AlienStation, Stance::Hostile, 1.0e5, kArmorPlanetLevel);
+    const Anomaly* p = nullptr;
+    for (const Anomaly& a : n.Anomalies())
+        if (a.id == egg) p = &a;
+    CHECK(p && IsArmorPlanet(*p) && p->radius == ar.armorPlanetRadius);
+    if (p) {
+        const Vec3d still = p->offset;
+        CHECK(std::fabs(Length(n.AnomalyPosition(*p) - n.Ship().position) - (1.0e5 + ar.armorPlanetRadius)) < 1.0);
+        for (int i = 0; i < 10; ++i) n.Step(0.05, {});
+        for (const Anomaly& a : n.Anomalies())
+            if (a.id == egg) {
+                CHECK(Length(a.offset - still) == 0.0 && a.discovered);
+            }
+        bool warned = false, fired = false;
+        for (const std::string& line : n.Log()) warned = warned || line.find("planeta coraza") != std::string::npos;
+        for (const Projectile& pr : n.Projectiles()) fired = fired || pr.owner == egg;
+        CHECK(warned && fired);
     }
 }
 
@@ -2567,10 +3650,10 @@ static void TestShields() {
         const std::optional<SaveData> read = ReadSave(WriteSave(g.Snapshot()));
         CHECK(read.has_value());
         if (read) {
-            const DefenseState& e = read->ship.defense;
+            const DefenseState& e = read->Ship()->ship.defense;
             CHECK(e.field == ShieldKind::EM && !e.fieldOn && e.shieldTier[1] == 3 && e.charge[3] == 123.25);
             CHECK(e.heat == 77.5 && e.water == 12.5 && e.nitrogen == 3.75 && e.coolantTier[2] == 2 && !e.coolantOn[1] && e.coolantOn[0]);
-            for (const Anomaly& a : read->anomalies)
+            for (const Anomaly& a : read->world.anomalies)
                 if (a.id == id) CHECK(a.shieldCharge == 42.5 && a.shieldMax > 0.0);
         }
     }
@@ -2726,27 +3809,22 @@ static void TestSolidStructures() {
 }
 
 // Junto a una estacion se maniobra hasta su escotilla: a tiempo real, sin salir despedida, sin
-// atravesarla y sin romperse al rozarla. Sobre todo en un cinturon, donde la mina va a 60 km/s.
+// atravesarla y sin romperse al rozarla. Sobre todo la central, que orbita su estrella.
 static void TestStationManeuver() {
     Balance rules;
     auto engine = MakeEngine(rules, 7);
-    for (const bool belt : {true, false}) {
+    {
         GameSession g(*engine, rules, 7, GameModeId::Normal);
         g.Conversation().Stop();
         g.Step(0.05, {});
-        g.MarkScanned(0);
-        const TargetRef site = belt ? TargetRef{Kind::Belt, 0, 0} : FirstPlanet(g, 0, 1);
-        CHECK(g.JumpTo(site, g.Resolve(site)->arrival));
-        Run(g, 0.5);
-        CHECK(g.DeployMining(site));
-        const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+        const TargetRef station = PlaceStation(g);
         for (int i = 0; i < 200; ++i) g.Step(0.05, {});
         CHECK(g.JumpTo(station, 5.0));
         CHECK(g.Dock(station, true));
         for (int i = 0; i < 40; ++i) g.Step(0.05, {});
         g.Undock();
         const auto away = [&] { return Length(g.Ship().position - g.Resolve(station)->position); };
-        const double radius = GameSession::StationRadius(StationKind::Mining);
+        const double radius = GameSession::StationRadius(StationKind::Power);
         double farthest = 0, nearest = 1e300, fastest = 0;
         const struct { double throttle; float yaw, pitch; double seconds; } moves[] = {
             {-0.3, 0, 0, 3}, {0, 0, 0, 3}, {1.0, 0, 0, 3}, {0.5, 0.5f, 0, 4}, {0.5, 0, 0.5f, 4}, {1.0, 0, 0, 6}, {-1.0, 0, 0, 4}, {0, 0, 0, 4}};
@@ -2777,6 +3855,24 @@ static void TestStationManeuver() {
         const GameSession::DockPort port = g.Port(*g.Stations().Find(station.index));
         const Vec3d side = g.Ship().position + g.Ship().orientation.ToMatrix().TransformDirection(CurrentShipDesign().dockPort * 0.001);
         CHECK(Length(side - (port.position + port.normal * 0.12)) < 0.05);  // de costado, con el ducto
+
+        // Con la compuerta en la panza (la nave glTF, bajo el puente): se tumba hasta que la panza
+        // mira a la escotilla, con la proa de lado, y el ducto sale de la panza.
+        g.Undock();
+        for (int i = 0; i < 40; ++i) g.Step(0.05, {});
+        auto belly = std::make_shared<ShipDesign>(CurrentShipDesign());
+        belly->dockPort = {0, 30, 450};
+        belly->dockNormal = {0, 1, 0};  // abajo es +Y
+        SetShipDesign(belly);
+        CHECK(g.Dock(station));
+        for (int i = 0; i < 600 && !g.Docked(); ++i) g.Step(0.05, {});
+        CHECK(g.Docked());
+        const GameSession::DockPort bellyPort = g.Port(*g.Stations().Find(station.index));
+        const Mat4d turn = g.Ship().orientation.ToMatrix();
+        CHECK(Length(g.Ship().position + turn.TransformDirection(belly->dockPort * 0.001) - (bellyPort.position + bellyPort.normal * 0.12)) < 0.05);
+        CHECK(Dot(turn.TransformDirection(Vec3d{0, 1, 0}), bellyPort.normal) < -0.99);
+        CHECK(std::fabs(Dot(game::Heading(g.Ship()), bellyPort.normal)) < 0.01);
+        SetShipDesign(nullptr);
     }
 }
 static void TestHullZones() {
@@ -2859,20 +3955,382 @@ static void TestHullZones() {
 
     // Se guarda.
     const std::optional<SaveData> back2 = ReadSave(WriteSave(g.Snapshot()));
-    CHECK(back2.has_value() && ZoneLost(back2->ship.zones, nacelle) && back2->ship.zones[0] == 1.0);
+    CHECK(back2.has_value() && ZoneLost(back2->Ship()->ship.zones, nacelle) && back2->Ship()->ship.zones[0] == 1.0);
 
     // Atracada se rehace; en la central sin atracar, solo se reparan las que siguen ahi.
-    const TargetRef site{Kind::Belt, 0, 0};
-    g.MarkScanned(0);
-    CHECK(g.JumpTo(site, g.Resolve(site)->arrival));
-    Run(g, 0.5);
-    CHECK(g.DeployMining(site));
-    const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+    const TargetRef station = PlaceStation(g);
     for (int i = 0; i < 200; ++i) g.Step(0.05, {});
     CHECK(g.JumpTo(station, 5.0));
     CHECK(g.Dock(station, true));
     for (int i = 0; i < 20; ++i) g.Step(0.05, {});
     CHECK(!ZoneLost(g.Ship().zones, nacelle));
+}
+
+// Fase D: los alienigenas tienen casco por zonas, sacadas del nombre de sus piezas, y el modo
+// cinematica sigue el golpe.
+static void TestAlienZones() {
+    int uploads = 0;
+    const GameAssets assets = BuildGameAssets([&](const MeshData&) { return static_cast<MeshId>(++uploads); });
+    const auto zoneOf = [&](AlienModel model, const char* name, int sign) {
+        const ModelAsset& m = *AlienModelAsset(assets, model);
+        for (std::size_t i = 0; i < m.parts.size(); ++i)
+            if (m.parts[i].name == name && (sign == 0 || (m.parts[i].position.x < 0.0f) == (sign < 0))) return assets.alienPartZones[static_cast<std::size_t>(model)][i];
+        return -1;
+    };
+    const auto idx = [](HullZone z) { return static_cast<int>(z); };
+    // Las piezas, por su nombre.
+    CHECK(zoneOf(AlienModel::HostileShip, "cuerpo", 0) == idx(HullZone::Spine));
+    CHECK(zoneOf(AlienModel::HostileShip, "ojo", 0) == idx(HullZone::Core));
+    CHECK(zoneOf(AlienModel::HostileShip, "cuchilla", -1) == idx(HullZone::PortNacelle));
+    CHECK(zoneOf(AlienModel::HostileShip, "filo", 1) == idx(HullZone::StarboardNacelle));
+    CHECK(zoneOf(AlienModel::NeutralShip, "disco", 0) == idx(HullZone::Spine));
+    CHECK(zoneOf(AlienModel::NeutralShip, "aro", 0) == idx(HullZone::WarpRing));
+    CHECK(zoneOf(AlienModel::NeutralShip, "centro", 0) == idx(HullZone::Core));
+    CHECK(zoneOf(AlienModel::HostileStation, "nucleo", 0) == idx(HullZone::Core));
+    CHECK(zoneOf(AlienModel::HostileStation, "corazon", 0) == idx(HullZone::Bridge));
+    CHECK(zoneOf(AlienModel::HostileStation, "anillo", 0) == idx(HullZone::WarpRing));
+    std::set<int> arms;
+    {
+        const ModelAsset& station = *assets.hostileStation;
+        for (std::size_t i = 0; i < station.parts.size(); ++i)
+            if (station.parts[i].name == "radio") arms.insert(assets.alienPartZones[static_cast<std::size_t>(AlienModel::HostileStation)][i]);
+    }
+    CHECK(arms.size() == 6 && *arms.begin() == idx(HullZone::Hold1));
+    for (int m = 0; m < kAlienModelCount; ++m) CHECK(assets.alienZones[static_cast<std::size_t>(m)] && assets.alienPartZones[static_cast<std::size_t>(m)].size() == AlienModelAsset(assets, static_cast<AlienModel>(m))->parts.size());
+
+    // Su forma: solo tiene las zonas de sus piezas, con sus nombres.
+    const ZoneLayout& hostile = *assets.alienZones[static_cast<std::size_t>(AlienModel::HostileShip)];
+    CHECK(ZonePresent(hostile, idx(HullZone::PortNacelle)) && ZonePresent(hostile, idx(HullZone::Core)) && ZonePresent(hostile, idx(HullZone::Spine)));
+    CHECK(!ZonePresent(hostile, idx(HullZone::Bow)) && !ZonePresent(hostile, idx(HullZone::WarpRing)));
+    CHECK(ZoneLabel(&hostile, idx(HullZone::PortNacelle), true) == "la cuchilla de babor");
+    CHECK(ZoneLabel(&hostile, idx(HullZone::Core), true) == "el ojo");
+    CHECK(ZoneLabel(nullptr, idx(HullZone::Bow), true) == "la proa");  // la nave, como siempre
+    // La trayectoria decide: de frente por la punta de cada cuchilla; desde atras, el cuerpo.
+    CHECK(ProjectileImpact(hostile, {-220, 0, 3000}, {-220, 0, -3000}).zone == idx(HullZone::PortNacelle));
+    CHECK(ProjectileImpact(hostile, {220, 0, 3000}, {220, 0, -3000}).zone == idx(HullZone::StarboardNacelle));
+    CHECK(ProjectileImpact(hostile, {0, 0, -3000}, {0, 0, 3000}).zone == idx(HullZone::Spine));
+    CHECK(NearestZone(hostile, Vec3d{0, 0, -60}) == idx(HullZone::Core) || NearestZone(hostile, Vec3d{0, 0, -60}) == idx(HullZone::Spine));
+    // La nave sigue con su forma de siempre.
+    CHECK(ProjectileImpact({0, 0, 3000}, {0, 0, -3000}).zone == idx(HullZone::Bow));
+
+    // Sin registrar las zonas, los alienigenas solo tienen su casco entero, como antes.
+    Balance rules;
+    auto engine = MakeEngine(rules, 7);
+    GameSession g(*engine, rules, 7, GameModeId::Peaceful);
+    g.Conversation().Stop();
+    g.Step(0.05, {});
+    const int bare = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 20.0);
+    CHECK(bare >= 0 && !g.DamageAnomalyZone(bare, idx(HullZone::PortNacelle), 10.0));
+
+    RegisterAlienZones(assets);
+    const auto find = [&](int id) -> Anomaly* {
+        for (Anomaly& a : g.Anomalies())
+            if (a.id == id) return &a;
+        return nullptr;
+    };
+    const int id = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 30.0);
+    Anomaly* a = find(id);
+    if (!a) return;
+    // Dron, corveta o fragata: sin los .gltf, su modelo es la maqueta hostil, con las mismas zonas.
+    const int shipModel = AlienModelOf(*a);
+    CHECK(shipModel == static_cast<int>(ClassModel(a->shipClass, true)));
+    CHECK(ZonesOf(*a) == assets.alienZones[static_cast<std::size_t>(shipModel)].get() && AlienModelAsset(assets, static_cast<AlienModel>(shipModel)) == assets.hostileShip);
+    const double full = a->maxHull;
+    const int port = idx(HullZone::PortNacelle);
+    // Media cuchilla: no se suelta, pero brilla.
+    CHECK(g.DamageAnomalyZone(id, port, full * kZoneToughness * 0.5));
+    a = find(id);
+    CHECK(std::fabs(a->zones[static_cast<std::size_t>(port)] - 0.5) < 1e-9);
+    CHECK(std::fabs(a->hull - full * (1.0 - kZoneToughness * 0.5)) < 1e-6);
+    CHECK(a->zoneHeat[static_cast<std::size_t>(port)] > 0.5);
+    CHECK(g.LostPieces().empty());
+    CHECK(g.LastStrike().anomaly == id && g.LastStrike().zone == port && g.LastStrike().serial == 1);
+    // La otra mitad, y algo mas: se suelta, y lo que sobra pasa al ojo.
+    g.DamageAnomalyZone(id, port, full * kZoneToughness * 0.6);
+    a = find(id);
+    CHECK(ZoneLost(a->zones, port));
+    CHECK(g.LostPieces().size() == 1 && g.LostPieces()[0].model == shipModel && g.LostPieces()[0].zone == port);
+    CHECK(g.Log().back().find("cuchilla de babor") != std::string::npos);
+    CHECK(a->zones[static_cast<std::size_t>(HullZone::Core)] < 1.0 && a->zones[static_cast<std::size_t>(HullZone::StarboardNacelle)] == 1.0);
+    const Vec3d start = g.LostPieces()[0].absolute - (g.AnomalyPosition(*a) + g.GetWorld().origin);
+    for (int i = 0; i < 40; ++i) g.Step(0.05, {});
+    a = find(id);
+    CHECK(Length(g.LostPieces()[0].absolute - (g.AnomalyPosition(*a) + g.GetWorld().origin)) > Length(start));
+    CHECK(a->zoneHeat[static_cast<std::size_t>(port)] < 0.9);
+    // Lo que ya no tiene no se suelta otra vez: el golpe entra hasta el ojo.
+    const double eye = a->zones[static_cast<std::size_t>(HullZone::Core)];
+    g.DamageAnomalyZone(id, port, full * 0.01);
+    a = find(id);
+    CHECK(g.LostPieces().size() == 1 && a->zones[static_cast<std::size_t>(HullZone::Core)] < eye);
+
+    // En la capa: la cuchilla perdida no se dibuja en la nave, sino suelta; lo danado se ve.
+    GameLayer layer(g, assets, 1, 2, Color{0.1f, 0.05f, 0.15f, 1.0f});
+    engine->AddLayer(&layer);
+    layer.SetHullDetail(2);
+    {
+        Camera camera;
+        camera.SetViewport(1600, 900, 800.0f, kNearPlaneKm);
+        const Vec3d at = g.AnomalyPosition(*a);
+        camera.SetPosition(at + Vec3d{0, -0.4, -2.0});
+        camera.SetOrientation(Quatf::Cast(CameraLooking(Vec3d{0, 0.4, 2.0})));
+        std::set<MeshId> blades;
+        const ModelAsset& model = *assets.hostileShip;
+        for (std::size_t i = 0; i < model.parts.size(); ++i)
+            if (assets.alienPartZones[static_cast<std::size_t>(shipModel)][i] == port) blades.insert(model.parts[i].mesh);
+        FramePacket packet;
+        engine->Build(camera, 1.0, packet);
+        int onAlien = 0, damaged = 0;
+        const std::uint32_t tag = static_cast<std::uint32_t>(id) + 4096u;
+        for (const MeshInstance& m : packet.meshes) {
+            if ((m.id & 0xFF000000u) != 0x70000000u || ((m.id - 0x70000000u) >> 8) != tag) continue;
+            ++onAlien;
+            CHECK(blades.count(m.mesh) == 0);
+            damaged += m.damage > 0.0f ? 1 : 0;
+        }
+        CHECK(onAlien > 0 && damaged > 0);
+        // Y la cuchilla, suelta, con sus piezas.
+        const Vec3d piece = g.LostPieces()[0].absolute - g.GetWorld().origin;
+        camera.SetPosition(piece + Vec3d{0, -0.2, -1.0});
+        camera.SetOrientation(Quatf::Cast(CameraLooking(Vec3d{0, 0.2, 1.0})));
+        FramePacket loosePacket;
+        engine->Build(camera, 1.0, loosePacket);
+        int loose = 0;
+        for (const MeshInstance& m : loosePacket.meshes)
+            if ((m.id & 0xFF000000u) == 0x77000000u) {
+                ++loose;
+                CHECK(blades.count(m.mesh) == 1);
+            }
+        CHECK(loose == static_cast<int>(blades.size()));
+    }
+
+    // La espina a 0 la apaga: no se mueve por si misma ni dispara.
+    g.DamageAnomalyZone(id, idx(HullZone::Spine), full * kZoneToughness / kCriticalHit * 1.01);
+    a = find(id);
+    CHECK(a && a->hull > 0.0 && a->disabled);
+    CHECK(g.Log().back().find("apagada") != std::string::npos);
+    a->velocity = Vec3d{};
+    const Vec3d still = a->offset;
+    for (int i = 0; i < 20; ++i) g.Step(0.05, {});
+    a = find(id);
+    CHECK(a && Length(a->offset - still) < 1e-9);
+
+    // Se guarda: zonas y apagada.
+    const std::optional<SaveData> back = ReadSave(WriteSave(g.Snapshot()));
+    CHECK(back.has_value());
+    if (back) {
+        bool found = false;
+        for (const Anomaly& b : back->world.anomalies)
+            if (b.id == id) {
+                found = true;
+                CHECK(b.disabled && ZoneLost(b.zones, port) && std::fabs(b.zones[static_cast<std::size_t>(HullZone::Core)] - a->zones[static_cast<std::size_t>(HullZone::Core)]) < 1e-6);
+            }
+        CHECK(found);
+    }
+
+    // El nucleo a 0 la destruye, aunque le quede casco.
+    const int kills = g.Kills();
+    const int other = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 40.0);
+    g.DamageAnomalyZone(other, idx(HullZone::Core), find(other)->maxHull * kZoneToughness / kCriticalHit * 1.01);
+    CHECK(!find(other) || find(other)->hull <= 0.0);
+    CHECK(g.Kills() == kills + 1);
+
+    // Una neutral atacada pasa a su modelo hostil, y en el caen las zonas.
+    const int calm = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Neutral, 50.0);
+    CHECK(ZonesOf(*find(calm)) == assets.alienZones[static_cast<std::size_t>(ClassModel(find(calm)->shipClass, false))].get());
+    CHECK(g.ShootAnomaly(calm, {220, 0, 3000}, {220, 0, -3000}, find(calm)->maxHull * 0.05) == idx(HullZone::StarboardNacelle));
+    CHECK(find(calm)->stance == Stance::Hostile && find(calm)->zones[static_cast<std::size_t>(HullZone::StarboardNacelle)] < 1.0);
+
+    // Un misil de verdad cae en una zona que su modelo tiene, sea cual sea su rumbo.
+    {
+        const int far = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 3000.0);
+        find(far)->yaw = 1.1f;
+        // El misil sale hacia delante: las que la prueba ha puesto cerca, fuera de su camino.
+        for (Anomaly& b : g.Anomalies())
+            if (b.id != far && Length(g.AnomalyPosition(b) - g.Ship().position) < 200.0) b.offset += Vec3d{4000.0, 0, 0};
+        const int serial = g.LastStrike().serial;
+        const TargetRef enemy{Kind::Anomaly, g.NearestSystem(), far};
+        CHECK(g.Fire(WeaponKind::Missile, enemy));
+        for (int i = 0; i < 1200 && !g.Projectiles().empty(); ++i) g.Step(0.1, {});
+        CHECK(g.LastStrike().serial == serial + 1 && g.LastStrike().anomaly == far);
+        CHECK(ZonePresent(hostile, g.LastStrike().zone));
+    }
+
+    // Modo cinematica: apagado, no hay toma; encendido, tras un impacto la camara rodea el blanco.
+    Vec3d eyePos;
+    Quatd look;
+    CHECK(!g.Cinematic() && !g.CinematicShot(eyePos, look));
+    g.SetCinematic(true);
+    CHECK(g.Cinematic() && g.Log().back().find("cinemática") != std::string::npos);
+    const int shot = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 60.0);
+    g.DamageAnomalyZone(shot, port, find(shot)->maxHull * 0.05);
+    CHECK(g.CinematicView() && g.CinematicShot(eyePos, look));
+    {
+        const Anomaly& b = *find(shot);
+        const Vec3d hit = g.AnomalyPosition(b) + Quatd::FromAxisAngle({0, 1, 0}, static_cast<double>(b.yaw)).ToMatrix().TransformDirection(g.LastStrike().point * 0.001);
+        const Vec3d forward = look.ToMatrix().TransformDirection(Vec3d{0, 0, 1});
+        CHECK(Dot(forward, Normalize(hit - eyePos)) > 0.999);
+        CHECK(look.ToMatrix().TransformDirection(Vec3d{0, -1, 0}).y < 0.0);  // sin dar la vuelta
+        const double distance = Length(hit - eyePos);
+        CHECK(distance >= rules.cinematic.minimum && distance < 5.0);
+        // Gira con el tiempo real, y el tiempo del juego va mas despacio.
+        const double before = g.SimTime();
+        g.Step(0.5, {});
+        const double slow = g.SimTime() - before;
+        Vec3d moved;
+        CHECK(g.CinematicShot(moved, look));
+        CHECK(Length(moved - eyePos) > 0.01);
+        CHECK(std::fabs(g.StrikeAge() - 0.5) < 1e-9);
+        for (int i = 0; i < 20; ++i) g.Step(0.5, {});
+        CHECK(!g.CinematicView() && !g.CinematicShot(moved, look));  // pasada la toma, vuelve la camara de siempre
+        const double before2 = g.SimTime();
+        g.Step(0.5, {});
+        CHECK(slow < (g.SimTime() - before2) * 0.5);
+    }
+    g.SetCinematic(false);
+    CHECK(!g.Cinematic());
+
+    // La camara que mira: +Z hacia donde se pide y sin alabeo.
+    for (const Vec3d& d : {Vec3d{0, 0, 1}, Vec3d{1, 0, 0}, Vec3d{-0.3, 0.8, -0.5}, Vec3d{0.2, -0.9, 0.1}}) {
+        const Quatd q = CameraLooking(d);
+        CHECK(Dot(q.ToMatrix().TransformDirection(Vec3d{0, 0, 1}), Normalize(d)) > 0.9999);
+        CHECK(std::fabs(q.ToMatrix().TransformDirection(Vec3d{1, 0, 0}).y) < 1e-9);
+    }
+
+    for (int m = 0; m < kAlienModelCount; ++m) SetAlienZones(static_cast<AlienModel>(m), nullptr);  // el resto de pruebas, como antes
+}
+
+// Fase E: naves alienigenas por clase y torretas humanas cuadradas, de sus .gltf, con las maquetas de
+// respaldo.
+static void TestCombatModels() {
+    int uploads = 0;
+    const MeshUpload upload = [&](const MeshData&) { return static_cast<MeshId>(++uploads); };
+    const auto idx = [](HullZone z) { return static_cast<int>(z); };
+
+    // Que modelo le toca a cada nave: dron, corveta y fragata tienen el suyo, hostil o neutral.
+    Anomaly a;
+    a.kind = AnomalyKind::AlienShip;
+    a.stance = Stance::Hostile;
+    a.shipClass = ShipClassId::Corvette;
+    CHECK(AlienModelOf(a) == static_cast<int>(AlienModel::HostileCorvette));
+    a.stance = Stance::Neutral;
+    a.shipClass = ShipClassId::Frigate;
+    CHECK(AlienModelOf(a) == static_cast<int>(AlienModel::NeutralFrigate));
+    a.shipClass = ShipClassId::Drone;
+    CHECK(AlienModelOf(a) == static_cast<int>(AlienModel::NeutralDrone));
+    a.shipClass = ShipClassId::Cruiser;  // sin modelo propio: la maqueta
+    CHECK(AlienModelOf(a) == static_cast<int>(AlienModel::NeutralShip));
+    a.kind = AnomalyKind::AlienStation;
+    CHECK(AlienModelOf(a) == static_cast<int>(AlienModel::NeutralStation));
+
+    // Cada arma humana tiene su torreta; las bahias de un mismo tamano comparten lanzador.
+    for (int k = 0; k < static_cast<int>(ShipModuleKind::Count); ++k) {
+        const ShipModuleKind kind = static_cast<ShipModuleKind>(k);
+        CHECK((TurretModelName(kind) != nullptr) == (IsHumanWeapon(kind) || kind == ShipModuleKind::PointDefensePlatform));
+    }
+    CHECK(std::string(TurretModelName(ShipModuleKind::BayLight25)) == TurretModelName(ShipModuleKind::BayLight50));
+    CHECK(std::string(TurretModelName(ShipModuleKind::CoilgunLight)) != TurretModelName(ShipModuleKind::CoilgunHeavy));
+
+    // Sin archivos: las maquetas de siempre, y las armas con la malla de la torreta.
+    GameAssets assets = BuildGameAssets(upload);
+    for (int i = 0; i < kAlienClassModelCount; ++i) CHECK(assets.hostileClassShips[static_cast<std::size_t>(i)] == assets.hostileShip && assets.neutralClassShips[static_cast<std::size_t>(i)] == assets.neutralShip);
+    for (const ModelRef& m : assets.moduleModels) CHECK(m == nullptr);
+    std::string log;
+    LoadCombatModels(assets, "no_existe/", upload, nullptr, &log);
+    CHECK(assets.hostileClassShips[0] == assets.hostileShip && log.find("maqueta") != std::string::npos);
+
+    // La version neutral: mismas mallas, piel verdosa y cristales turquesa.
+    const ModelRef neutral = NeutralColors(*assets.hostileShip);
+    CHECK(neutral->parts.size() == assets.hostileShip->parts.size());
+    for (std::size_t i = 0; i < neutral->parts.size(); ++i) {
+        const ModelPart& h = assets.hostileShip->parts[i];
+        const ModelPart& n = neutral->parts[i];
+        CHECK(n.mesh == h.mesh && n.position.z == h.position.z);
+        CHECK(n.color.g > n.color.r && h.color.r > h.color.g);
+    }
+
+    // Con los .gltf junto al ejecutable.
+    std::error_code ignored;
+    if (!GltfSupported() || !std::filesystem::exists("modelos/alien_dron.gltf", ignored) || !std::filesystem::exists("modelos/torretas.gltf", ignored)) {
+        std::printf("  (sin modelos/alien_*.gltf o torretas.gltf: se salta)\n");
+        return;
+    }
+    log.clear();
+    LoadCombatModels(assets, "modelos/", upload, nullptr, &log);
+    CHECK(log.empty());
+    if (!log.empty()) std::printf("  %s", log.c_str());
+    for (int i = 0; i < kAlienClassModelCount; ++i) {
+        const ShipClassId id = static_cast<ShipClassId>(i);
+        const ModelRef& hostile = assets.hostileClassShips[static_cast<std::size_t>(i)];
+        const ModelRef& calm = assets.neutralClassShips[static_cast<std::size_t>(i)];
+        CHECK(hostile && hostile != assets.hostileShip && calm && calm != hostile);
+        if (!hostile || !calm) continue;
+        CHECK(AlienModelAsset(assets, ClassModel(id, true)) == hostile && AlienModelAsset(assets, ClassModel(id, false)) == calm);
+        // La eslora de su clase (la variante que les da AssignShipClass), de proa a popa.
+        float low = 1e30f, high = -1e30f;
+        bool closed = true;
+        for (const ModelPart& p : hostile->parts) {
+            closed = closed && p.collision && !p.collision->vertices.empty();
+            if (!p.collision) continue;
+            for (const MeshVertex& v : p.collision->vertices) {
+                low = std::min(low, v.position.z + p.position.z);
+                high = std::max(high, v.position.z + p.position.z);
+            }
+        }
+        CHECK(closed);
+        const double length = ShipClassOf(id, id == ShipClassId::Frigate ? ShipVariant::Light : ShipVariant::Normal).length * 1000.0;
+        CHECK(std::fabs((high - low) - length) < length * 0.03);
+        CHECK(std::fabs(high + low) < length * 0.03);  // origen a media eslora
+        // Sus zonas, por el nombre de sus piezas: todas tienen cuerpo, nucleo y dos cuchillas.
+        const std::size_t m = static_cast<std::size_t>(ClassModel(id, true));
+        CHECK(assets.alienPartZones[m].size() == hostile->parts.size());
+        const ZoneLayout& zones = *assets.alienZones[m];
+        for (HullZone z : {HullZone::Spine, HullZone::Core, HullZone::PortNacelle, HullZone::StarboardNacelle}) CHECK(ZonePresent(zones, idx(z)));
+        CHECK(ZonePresent(zones, idx(HullZone::Bridge)) == (id != ShipClassId::Drone));
+        CHECK(ZonePresent(zones, idx(HullZone::WarpRing)) == (id == ShipClassId::Frigate));
+        CHECK(!ZonePresent(zones, idx(HullZone::Bow)) && !ZonePresent(zones, idx(HullZone::Hold1)));
+        CHECK(ZoneLabel(&zones, idx(HullZone::Core), true) == (id == ShipClassId::Drone ? "el ojo" : "el núcleo"));
+        // La cuchilla de babor esta a babor (-X), y la neutral tiene las mismas zonas.
+        for (std::size_t p = 0; p < hostile->parts.size(); ++p)
+            if (assets.alienPartZones[m][p] == idx(HullZone::PortNacelle)) CHECK(hostile->parts[p].position.x < 0.0f);
+        CHECK(assets.alienPartZones[static_cast<std::size_t>(ClassModel(id, false))] == assets.alienPartZones[m]);
+        // De frente por la punta de la cuchilla de estribor, la trayectoria da en ella.
+        Vec3f tip{};
+        for (std::size_t p = 0; p < hostile->parts.size(); ++p)
+            if (assets.alienPartZones[m][p] == idx(HullZone::StarboardNacelle) && hostile->parts[p].position.x > tip.x) tip = hostile->parts[p].position;
+        const int hit = ProjectileImpact(zones, {tip.x, tip.y, length}, {tip.x, tip.y, tip.z}).zone;
+        CHECK(hit == idx(HullZone::StarboardNacelle));
+        if (hit != idx(HullZone::StarboardNacelle)) std::printf("  clase %d: zona %d en (%.0f, %.0f, %.0f)\n", i, hit, tip.x, tip.y, tip.z);
+    }
+
+    // Torretas: una por arma, sobre su base (el -Y sale del casco), con los canones hacia +Z.
+    const auto reach = [](const ModelAsset& model) {
+        float r = 0.0f;
+        for (const ModelPart& p : model.parts) r = std::max(r, Length(p.position) + p.radius);
+        return r;
+    };
+    for (int k = 0; k < static_cast<int>(ShipModuleKind::Count); ++k) {
+        const ShipModuleKind kind = static_cast<ShipModuleKind>(k);
+        const ModelRef& model = assets.moduleModels[static_cast<std::size_t>(k)];
+        CHECK((model != nullptr) == (TurretModelName(kind) != nullptr));
+        if (!model) continue;
+        const std::string prefix = std::string(TurretModelName(kind)) + "_";
+        for (const ModelPart& p : model->parts) {
+            CHECK(p.name.rfind(prefix, 0) == 0);
+            CHECK(p.position.y < 0.0f);
+        }
+    }
+    const auto weapon = [&](ShipModuleKind kind) { return *assets.moduleModels[static_cast<std::size_t>(kind)]; };
+    for (const auto& [light, heavy] : {std::pair{ShipModuleKind::CoilgunLight, ShipModuleKind::CoilgunHeavy}, std::pair{ShipModuleKind::RailSpinalLight, ShipModuleKind::RailSpinalHeavy},
+                                       std::pair{ShipModuleKind::Rail360Light, ShipModuleKind::Rail360Heavy}, std::pair{ShipModuleKind::BayLight10, ShipModuleKind::BayHeavy50},
+                                       std::pair{ShipModuleKind::NuclearLight, ShipModuleKind::NuclearHeavy}})
+        CHECK(reach(weapon(heavy)) > reach(weapon(light)) * 1.4f);
+    // La ligera cabe en la base de torreta de la nave, como la bahia de drones (26 m de radio).
+    for (ShipModuleKind kind : {ShipModuleKind::CoilgunLight, ShipModuleKind::Rail360Light, ShipModuleKind::BayLight10, ShipModuleKind::NuclearLight, ShipModuleKind::PointDefensePlatform})
+        for (const ModelPart& p : weapon(kind).parts)
+            if (p.name.find("zocalo") != std::string::npos) CHECK(std::hypot(p.position.x, p.position.z) < 1.0f && p.radius < 30.0f);
+    for (const ModelPart& p : weapon(ShipModuleKind::CoilgunLight).parts)
+        if (p.name.find("canones") != std::string::npos) CHECK(p.position.z > 15.0f);
+    CHECK(reach(weapon(ShipModuleKind::RailSpinalLight)) > reach(weapon(ShipModuleKind::Rail360Light)));  // la espinal es la mas larga
 }
 
 static std::string Base64(const std::string& bytes) {
@@ -3149,8 +4607,8 @@ static void TestShipModules() {
         int moduleTurrets = 0;
         for (const WeaponMount& m : g.Ship().weapons) moduleTurrets += m.slot == 0 && m.kind == WeaponKind::Turret ? 1 : 0;
         CHECK(moduleTurrets == 1);
-        const int armorZone = maquette.slots[5].zone;
-        CHECK(g.InstallModule(5, ShipModuleKind::ArmorPlate, &why));
+        const int armorZone = maquette.slots[3].zone;  // la 5 y la 6 son las bahias de drones de serie
+        CHECK(g.InstallModule(3, ShipModuleKind::ArmorPlate, &why));
         CHECK(std::fabs(ZoneHardness(g.Ship(), armorZone) - (1.0 + kArmorShare)) < 1e-9);
         CHECK(g.SetImpulseEngine(3, &why) && g.Ship().loadout.engine == 3);
 
@@ -3158,8 +4616,8 @@ static void TestShipModules() {
         const std::optional<SaveData> saved = ReadSave(WriteSave(g.Snapshot()));
         CHECK(saved.has_value());
         if (saved) {
-            CHECK(saved->ship.loadout.engine == 3);
-            CHECK(saved->ship.loadout.modules[6] == ShipModuleKind::Storage && saved->ship.loadout.modules[0] == ShipModuleKind::Turret);
+            CHECK(saved->Ship()->ship.loadout.engine == 3);
+            CHECK(saved->Ship()->ship.loadout.modules[6] == ShipModuleKind::Storage && saved->Ship()->ship.loadout.modules[0] == ShipModuleKind::Turret);
             GameSession h(*engine, rules, 7, GameModeId::Normal);
             CHECK(h.Restore(*saved));
             int turrets = 0;
@@ -3178,12 +4636,7 @@ static void TestShipModules() {
         GameSession g(*engine, rules, 7, GameModeId::Normal);
         g.Conversation().Stop();
         g.Step(0.05, {});
-        g.MarkScanned(0);
-        const TargetRef site{Kind::Belt, 0, 0};
-        CHECK(g.JumpTo(site, g.Resolve(site)->arrival));
-        Run(g, 0.5);
-        CHECK(g.DeployMining(site));
-        const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+        const TargetRef station = PlaceStation(g);
         for (int i = 0; i < 200; ++i) g.Step(0.05, {});
         CHECK(g.JumpTo(station, 5.0));
         CHECK(g.Dock(station, true));
@@ -3217,7 +4670,7 @@ static void TestShipModules() {
         g.Step(0.05, {});
         CHECK(g.Ship().pieces.size() == design->pieces.size());
         const int nacelle = static_cast<int>(HullZone::StarboardNacelle);
-        for (int i = 0; i < 4; ++i) g.ShootHull({150, 0, -3000}, {150, 0, 3000}, 45.0);  // por detras, al escape de estribor
+        for (int i = 0; i < 4; ++i) g.ShootHull({150, 0, -3000}, {150, 0, 3000}, 45.0 * kCombatScale);  // por detras, al escape de estribor
         int lostHere = 0;
         for (std::size_t i = 0; i < design->pieces.size(); ++i) lostHere += design->pieces[i].zone == nacelle && PieceLost(g.Ship(), static_cast<int>(i)) ? 1 : 0;
         CHECK(lostHere >= 1);
@@ -3227,7 +4680,7 @@ static void TestShipModules() {
         CHECK(single);
         // Se guarda.
         const std::optional<SaveData> saved = ReadSave(WriteSave(g.Snapshot()));
-        CHECK(saved && saved->ship.pieces.size() == design->pieces.size());
+        CHECK(saved && saved->Ship()->ship.pieces.size() == design->pieces.size());
 
         // En la capa: la pieza arrancada no se dibuja.
         GameLayer layer(g, assets, 1, 2, Color{0.1f, 0.05f, 0.15f, 1.0f});
@@ -3270,6 +4723,18 @@ static void TestThrustersAndLight() {
     CHECK(withoutGas < withGas * 0.5);
     CHECK(MakeShip(rules).cargo.Get(Resource::Gas) == rules.ship.startGas);
 
+    // Motores de iones: sin gas, la mitad de velocidad maxima; con gas, empujar lo gasta.
+    {
+        ShipState a = MakeShip(rules), b = MakeShip(rules);
+        b.cargo.Add(Resource::Gas, -b.cargo.Get(Resource::Gas));
+        CHECK(std::fabs(TopSpeed(b, DriveMode::Impulse, rules.drive) - 0.5 * TopSpeed(a, DriveMode::Impulse, rules.drive)) < 1e-9);
+        a.throttle = 1.0;
+        a.holding = false;
+        const double before = a.cargo.Get(Resource::Gas);
+        for (int i = 0; i < 20; ++i) StepDrive(a, rules, 1.0, 1.0, 1.0);
+        CHECK(a.cargo.Get(Resource::Gas) < before);
+    }
+
     SetShipDesign(nullptr);
     auto engine = MakeEngine(rules, 7);
     GameSession g(*engine, rules, 7, GameModeId::Normal);
@@ -3311,12 +4776,598 @@ static void TestThrustersAndLight() {
     CHECK(lit);
 }
 
-int main() {
+// Armamento humano (fase B): catalogo, reglas de montaje, costes, misiles, defensa puntual y bahias de serie.
+static void TestHumanArmament() {
+    Balance rules;
+    SetShipDesign(nullptr);  // la maqueta: huecos 0 a 5 exteriores, 4 y 5 son las bahias de serie
+    const ArmamentRules& arm = rules.armament;
+
+    // El catalogo: 14 armas, una por cada modulo de arma, todas por fuera y con su masa real.
+    CHECK(static_cast<int>(ShipModuleKind::Count) - static_cast<int>(kFirstHumanWeapon) == kHumanWeaponCount);
+    for (int k = static_cast<int>(kFirstHumanWeapon); k < static_cast<int>(ShipModuleKind::Count); ++k) {
+        const ShipModuleKind kind = static_cast<ShipModuleKind>(k);
+        const HumanWeaponSpec* w = HumanWeaponOf(arm, kind);
+        CHECK(w != nullptr && IsHumanWeapon(kind));
+        if (!w) continue;
+        CHECK(ModuleSpec(kind).slot == SlotKind::External && ModuleSpec(kind).metal == w->mass && w->mass >= 0.2 && w->mass <= 1.7);
+        if (w->type == ArmType::MissileBay || w->type == ArmType::NuclearMissile) CHECK(w->damageType == DamageType::Explosive || w->damageType == DamageType::Nuclear);
+        else CHECK(w->damageType == DamageType::Kinetic && w->capacity == 0);
+    }
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::Turret) == nullptr && !IsHumanWeapon(ShipModuleKind::DroneBay));
+    // La pesada es mas de todo que la ligera del mismo tipo.
+    for (int t = 0; t < kHumanWeaponCount; t += 2) {
+        if (t >= 6 && t < 12) continue;  // las bahias van en otro orden
+        CHECK(arm.weapons[t + 1].heavy && !arm.weapons[t].heavy && arm.weapons[t + 1].damage > arm.weapons[t].damage && arm.weapons[t + 1].mass > arm.weapons[t].mass);
+    }
+    // Bahias de 10, 25 y 50 misiles; el nuclear, uno solo.
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::BayLight10)->capacity == 10 && HumanWeaponOf(arm, ShipModuleKind::BayLight25)->capacity == 25 && HumanWeaponOf(arm, ShipModuleKind::BayLight50)->capacity == 50);
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::BayHeavy50)->capacity == 50 && HumanWeaponOf(arm, ShipModuleKind::NuclearLight)->capacity == 1);
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::NuclearLight)->damageType == DamageType::Nuclear && HumanWeaponOf(arm, ShipModuleKind::BayLight10)->damageType == DamageType::Explosive);
+    // Coilgun: debil y rapida. Railgun: mas potente y mas lenta. La 360 es peor que la espinal en todo.
+    const HumanWeaponSpec& coil = *HumanWeaponOf(arm, ShipModuleKind::CoilgunLight);
+    const HumanWeaponSpec& spinal = *HumanWeaponOf(arm, ShipModuleKind::RailSpinalLight);
+    const HumanWeaponSpec& r360 = *HumanWeaponOf(arm, ShipModuleKind::Rail360Light);
+    CHECK(spinal.damage > coil.damage && r360.damage > coil.damage && spinal.cooldown > coil.cooldown && r360.cooldown > coil.cooldown);
+    CHECK(spinal.damage > r360.damage && spinal.range > r360.range && spinal.speed > r360.speed && spinal.damage / spinal.cooldown > r360.damage / r360.cooldown && spinal.aimError < r360.aimError);
+    // Costes: W, Re, Co y Nb para las de riel; Pt, Pd e Ir para el misil explosivo; U y Th para el nuclear.
+    CHECK(MissingElements(ElementStock{}, coil.elements, 4).find("W") != std::string::npos);
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::BayLight10)->missile[0].z == 78 && HumanWeaponOf(arm, ShipModuleKind::BayLight10)->missile[1].z == 46 && HumanWeaponOf(arm, ShipModuleKind::BayLight10)->missile[2].z == 77);
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::NuclearLight)->missile[0].z == 92 && HumanWeaponOf(arm, ShipModuleKind::NuclearLight)->missile[1].z == 90);
+    CHECK(HumanWeaponOf(arm, ShipModuleKind::NuclearLight)->missileEnergy > HumanWeaponOf(arm, ShipModuleKind::BayLight10)->missileEnergy);
+
+    // Planos: uno por tipo y tamano; las bahias de 10, 25 y 50 comparten el suyo.
+    CHECK(BlueprintId(*HumanWeaponOf(arm, ShipModuleKind::BayLight10)) == BlueprintId(*HumanWeaponOf(arm, ShipModuleKind::BayLight50)));
+    CHECK(BlueprintId(*HumanWeaponOf(arm, ShipModuleKind::BayLight10)) != BlueprintId(*HumanWeaponOf(arm, ShipModuleKind::BayHeavy10)));
+    {
+        ShipLoadout l;
+        const int id = BlueprintId(coil);
+        CHECK(!HasBlueprint(l, id));
+        GrantBlueprint(l, id);
+        CHECK(HasBlueprint(l, id) && !HasBlueprint(l, id + 1));
+        CHECK(BlueprintEnergy(arm, id + 1) == BlueprintEnergy(arm, id) * arm.blueprintHeavy);
+    }
+
+    // Reglas de montaje: las pesadas, solo en cascos pesados; la espinal, solo en algunas clases y solo una.
+    std::string why;
+    const HumanWeaponSpec& heavyCoil = *HumanWeaponOf(arm, ShipModuleKind::CoilgunHeavy);
+    CHECK(!MountAllowed(arm, heavyCoil, ShipClassId::Frigate, ShipVariant::Light, 0, &why) && why.find("pesada") != std::string::npos);
+    CHECK(MountAllowed(arm, heavyCoil, ShipClassId::Frigate, ShipVariant::Heavy, 0));
+    CHECK(MountAllowed(arm, coil, ShipClassId::Drone, ShipVariant::Light, 0));
+    CHECK(MountAllowed(arm, spinal, ShipClassId::Frigate, ShipVariant::Light, 0));
+    CHECK(!MountAllowed(arm, spinal, ShipClassId::Corvette, ShipVariant::Normal, 0, &why) && why.find("clase") != std::string::npos);
+    CHECK(!MountAllowed(arm, spinal, ShipClassId::Freighter, ShipVariant::Normal, 0));
+    CHECK(!MountAllowed(arm, spinal, ShipClassId::Frigate, ShipVariant::Light, 1, &why) && why.find("una") != std::string::npos);
+    CHECK(MountAllowed(arm, r360, ShipClassId::Corvette, ShipVariant::Normal, 1));  // la 360 va en cualquiera
+
+    // Defensa puntual: tantos puntos como huecos x 5 (30 en la fragata ligera); las plataformas suman.
+    CHECK(DefensePoints(arm, ShipClassId::Frigate, ShipVariant::Light) == 30);
+    CHECK(DefensePoints(arm, ShipClassId::Superfreighter, ShipVariant::Normal) == 500);
+    CHECK(PointDefenseRate(arm, 0, 0) == 0.0 && PointDefenseRate(arm, 30, 2) > PointDefenseRate(arm, 30, 0) && PointDefenseRate(arm, 30, 1) > PointDefenseRate(arm, 10, 0));
+
+    // Los escudos tambien tienen opinion sobre el dano nuevo: el plasma para el explosivo, el EM casi no.
+    CHECK(kDamageTypeCount == 6 && std::string(Name(DamageType::Explosive)) == "Explosivo" && std::string(Name(DamageType::Nuclear)) == "Nuclear");
+    CHECK(rules.defense.shields[static_cast<int>(ShieldKind::Plasma)].absorb[static_cast<int>(DamageType::Explosive)] > rules.defense.shields[static_cast<int>(ShieldKind::EM)].absorb[static_cast<int>(DamageType::Explosive)]);
+    CHECK(rules.defense.shields[static_cast<int>(ShieldKind::Love)].absorb[static_cast<int>(DamageType::Nuclear)] == 1.0);
+    {
+        DefenseState d = MakeDefense(rules.defense, rules.thermal);
+        d.field = ShieldKind::Plasma;
+        d.shieldTier[1] = 1;
+        d.charge[1] = 1.0e9;
+        const HitResult hit = AbsorbHit(d, rules.defense, DamageType::Explosive, 1000.0, false, true, 0.0);
+        CHECK(std::fabs(hit.field - 800.0) < 1e-9 && std::fabs(hit.hull - 200.0) < 1e-9);
+    }
+
+    // Los elementos se pagan enteros o no se pagan.
+    {
+        ElementStock stock;
+        stock.Add(74, 1000.0);
+        CHECK(!PayElements(stock, coil.elements, 4) && stock.Get(74) == 1000.0);
+        for (const ElementCost& c : coil.elements) stock.Add(c.z, c.kg);
+        CHECK(PayElements(stock, coil.elements, 4) && stock.Get(74) == 1000.0 && stock.Get(75) == 0.0);
+        RefundElements(stock, coil.elements, 4, 0.5);
+        CHECK(stock.Get(75) == coil.elements[1].kg * 0.5);
+        CHECK(ElementCostText(coil.elements, 4).find("Re") != std::string::npos);
+    }
+
+    auto engine = MakeEngine(rules, 7);
+
+    // En la nave: sale con las dos bahias de serie en los huecos 4 y 5, que se mueven pero no se sacan.
+    {
+        GameSession g(*engine, rules, 7, GameModeId::Peaceful);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        CHECK(g.Ship().loadout.starterBays == 2);
+        CHECK(g.Ship().loadout.modules[4] == ShipModuleKind::DroneBay && g.Ship().loadout.modules[5] == ShipModuleKind::DroneBay);
+        CHECK(g.Ship().loadout.ammo.size() == g.Ship().loadout.modules.size() && g.Ship().loadout.cooldown.size() == g.Ship().loadout.modules.size());
+        g.SetCreative(true);
+        CHECK(!g.InstallModule(4, ShipModuleKind::None, &why) && why.find("serie") != std::string::npos);  // ni en creativo
+        CHECK(!g.InstallModule(5, ShipModuleKind::Turret, &why));
+        CHECK(g.Ship().loadout.modules[4] == ShipModuleKind::DroneBay);
+        // Cambiar de hueco si, y siguen siendo dos.
+        CHECK(g.MoveModule(4, 2, &why));
+        CHECK(g.Ship().loadout.modules[4] == ShipModuleKind::None && g.Ship().loadout.modules[2] == ShipModuleKind::DroneBay);
+        CHECK(WorkingModules(g.Ship(), ShipModuleKind::DroneBay) == 2);
+        CHECK(!g.MoveModule(5, 2, &why) && why.find("ocupado") != std::string::npos);
+        CHECK(!g.MoveModule(0, 1, &why));                // una torreta no se mueve gratis
+        CHECK(!g.MoveModule(2, 6, &why));                // a una bahia interior, no
+        CHECK(!g.MoveModule(2, 99, &why));
+        CHECK(!g.InstallModule(2, ShipModuleKind::None, &why));
+        // Una bahia de mas si se puede quitar; y si se pierde una de serie, volver a montarla es gratis.
+        CHECK(g.InstallModule(4, ShipModuleKind::DroneBay, &why));
+        CHECK(g.InstallModule(4, ShipModuleKind::None, &why));
+    }
+
+    // Montar un arma pide plano, elementos y la clase adecuada; todo atracado en una estacion propia.
+    {
+        GameSession g(*engine, rules, 7, GameModeId::Normal);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        const TargetRef station = PlaceStation(g);
+        for (int i = 0; i < 200; ++i) g.Step(0.05, {});
+        CHECK(g.JumpTo(station, 5.0));
+        CHECK(g.Dock(station, true));
+        g.Step(0.05, {});
+        CHECK(g.CanRefit());
+        g.Ship().cargo.Add(Resource::Metal, 1000.0 - g.Ship().cargo.Get(Resource::Metal));
+        const double metal = g.Ship().cargo.Get(Resource::Metal);
+
+        CHECK(!g.InstallModule(2, ShipModuleKind::CoilgunLight, &why) && why.find("Plano") != std::string::npos);
+        CHECK(!g.FabricateBlueprint(BlueprintId(coil), &why) && why.find("origami") != std::string::npos);  // esta es una central
+        GrantBlueprint(g.Ship().loadout, BlueprintId(coil));
+        CHECK(!g.InstallModule(2, ShipModuleKind::CoilgunLight, &why) && why.find("Faltan elementos") != std::string::npos && why.find("W") != std::string::npos);
+        CHECK(g.Ship().loadout.modules[2] == ShipModuleKind::None);
+        for (const ElementCost& c : coil.elements) g.Ship().elements.Add(c.z, c.kg * 1.5);
+        CHECK(g.InstallModule(2, ShipModuleKind::CoilgunLight, &why));
+        CHECK(std::fabs(g.Ship().cargo.Get(Resource::Metal) - (metal - coil.mass)) < 1e-9);  // su masa real, no 260
+        CHECK(std::fabs(g.Ship().elements.Get(74) - coil.elements[0].kg * 0.5) < 1e-9);
+        // Quitarla devuelve la mitad del metal y de los elementos.
+        CHECK(g.InstallModule(2, ShipModuleKind::None, &why));
+        CHECK(std::fabs(g.Ship().cargo.Get(Resource::Metal) - (metal - coil.mass * 0.5)) < 1e-9);
+        CHECK(std::fabs(g.Ship().elements.Get(74) - coil.elements[0].kg * 1.0) < 1e-9);  // 0,5 que sobraron + la mitad de lo pagado
+
+        // Si se pierde una bahia de serie, volver a montarla no cuesta nada.
+        g.Ship().loadout.modules[4] = ShipModuleKind::None;
+        const double beforeBay = g.Ship().cargo.Get(Resource::Metal);
+        CHECK(g.InstallModule(4, ShipModuleKind::DroneBay, &why));
+        CHECK(g.Ship().cargo.Get(Resource::Metal) == beforeBay);
+        CHECK(!g.InstallModule(4, ShipModuleKind::None, &why));  // y de nuevo no se saca
+
+        // La pesada no entra en una fragata ligera aunque haya plano y elementos.
+        GrantBlueprint(g.Ship().loadout, BlueprintId(heavyCoil));
+        for (const ElementCost& c : heavyCoil.elements) g.Ship().elements.Add(c.z, c.kg);
+        CHECK(!g.InstallModule(2, ShipModuleKind::CoilgunHeavy, &why) && why.find("pesada") != std::string::npos);
+
+        // La espinal si entra (una fragata la admite), pero solo una.
+        GrantBlueprint(g.Ship().loadout, BlueprintId(spinal));
+        for (const ElementCost& c : spinal.elements) g.Ship().elements.Add(c.z, c.kg * 2.5);
+        CHECK(g.InstallModule(0, ShipModuleKind::RailSpinalLight, &why));
+        CHECK(!g.InstallModule(1, ShipModuleKind::RailSpinalLight, &why) && why.find("una") != std::string::npos);
+
+        // Las armas van por fuera.
+        CHECK(!g.InstallModule(6, ShipModuleKind::CoilgunLight, &why));
+
+        // Misiles: la bahia se monta y se llena a fuerza de energia, metal y elementos.
+        const HumanWeaponSpec& bay = *HumanWeaponOf(arm, ShipModuleKind::BayLight10);
+        GrantBlueprint(g.Ship().loadout, BlueprintId(bay));
+        CHECK(g.InstallModule(3, ShipModuleKind::BayLight10, &why));
+        CHECK(g.Ship().loadout.ammo[3] == 0);
+        CHECK(g.ManufactureMissiles(3, 1, &why) == 0 && why.find("Faltan elementos") != std::string::npos);
+        for (const ElementCost& c : bay.missile) g.Ship().elements.Add(c.z, c.kg * 4.0);  // da para cuatro
+        const double energy = g.Ship().energy;
+        const double metalBefore = g.Ship().cargo.Get(Resource::Metal);
+        CHECK(g.ManufactureMissiles(3, 6, &why) == 4);   // fabrica los que alcanzan
+        CHECK(g.Ship().loadout.ammo[3] == 4);
+        CHECK(std::fabs(energy - g.Ship().energy - 4.0 * bay.missileEnergy) < 1e-9);
+        CHECK(std::fabs(metalBefore - g.Ship().cargo.Get(Resource::Metal) - 4.0 * bay.missileMass) < 1e-9);
+        CHECK(g.Ship().elements.Get(78) < 1e-9);
+        CHECK(g.ManufactureMissiles(3, 0, &why) == 0);  // sin elementos
+        CHECK(g.ManufactureMissiles(0, 1, &why) == 0 && why.find("bahía") != std::string::npos);  // eso es una railgun
+        // Desmontar la bahia pierde sus misiles.
+        CHECK(g.InstallModule(3, ShipModuleKind::None, &why) && g.Ship().loadout.ammo[3] == 0);
+
+        // Defensa puntual: aparte de las torretas; hasta 30 puntos en la fragata ligera, cobrados en metal.
+        CHECK(g.PointDefenseCapacity() == 30 && g.PointDefenseRate() == 0.0);
+        const double beforePoints = g.Ship().cargo.Get(Resource::Metal);
+        CHECK(g.SetPointDefense(10, &why) && g.Ship().loadout.pointDefense == 10);
+        CHECK(std::fabs(beforePoints - g.Ship().cargo.Get(Resource::Metal) - 10.0 * arm.pointMass) < 1e-9);
+        CHECK(!g.SetPointDefense(31, &why) && !g.SetPointDefense(10, &why));
+        CHECK(std::fabs(g.PointDefenseRate() - 10.0 * arm.pointRate) < 1e-9);
+        // Y una plataforma en un hueco de torreta clasica suma lo suyo.
+        CHECK(g.InstallModule(3, ShipModuleKind::PointDefensePlatform, &why));
+        CHECK(std::fabs(g.PointDefenseRate() - (10.0 * arm.pointRate + arm.platformRate)) < 1e-9);
+        CHECK(g.SetPointDefense(0, &why) && g.Ship().loadout.pointDefense == 0);
+    }
+
+    // Planos en creativo: gratis y en cualquier sitio; no se repiten.
+    {
+        GameSession g(*engine, rules, 7, GameModeId::Peaceful);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        CHECK(!g.FabricateBlueprint(0, &why));
+        g.SetCreative(true);
+        CHECK(!g.FabricateBlueprint(-1, &why) && !g.FabricateBlueprint(kBlueprintCount, &why));
+        CHECK(g.FabricateBlueprint(0, &why) && HasBlueprint(g.Ship().loadout, 0));
+        CHECK(!g.FabricateBlueprint(0, &why) && why.find("Ya") != std::string::npos);
+    }
+
+    // Disparar: la railgun espinal solo sale con el blanco en el eje; el misil gasta uno y es guiado y derribable.
+    {
+        Balance wide = rules;
+        wide.armament.weapons[2].proximity = 2000.0;  // la railgun espinal ligera: mira de 2000 km a 5e4 km, ~0,04 rad
+        auto world = MakeEngine(wide, 7);
+        GameSession g(*world, wide, 7, GameModeId::Peaceful);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        g.SetCreative(true);
+        const TargetRef enemy = FindShip(g, Stance::Hostile);
+        CHECK(enemy.kind == Kind::Anomaly);
+        CHECK(g.JumpTo(enemy, 5.0e4));
+        g.Step(0.05, {});
+        CHECK(g.InstallModule(0, ShipModuleKind::RailSpinalLight, &why));
+        CHECK(g.InstallModule(1, ShipModuleKind::CoilgunLight, &why));
+        CHECK(g.InstallModule(2, ShipModuleKind::BayLight10, &why));
+        CHECK(g.InstallModule(3, ShipModuleKind::NuclearLight, &why));
+        g.SetCreative(false);
+
+        CHECK(!g.FireModule(2, enemy, &why) && why.find("sin misiles") != std::string::npos);
+        CHECK(!g.FireModule(0, TargetRef{}, &why) && why.find("Sin blanco") != std::string::npos);
+        CHECK(!g.FireModule(6, enemy, &why));  // una bahia interior no tiene arma
+        g.Ship().loadout.ammo[2] = 10;
+        g.Ship().loadout.ammo[3] = 1;
+
+        // Misil explosivo: guiado, tipo de dano nuevo, gasta uno y recarga.
+        CHECK(g.FireModule(2, enemy, &why));
+        CHECK(g.Projectiles().size() == 1 && g.Projectiles()[0].guided && g.Projectiles()[0].type == DamageType::Explosive && g.Projectiles()[0].kind == WeaponKind::Missile);
+        CHECK(g.Projectiles()[0].damage == HumanWeaponOf(wide.armament, ShipModuleKind::BayLight10)->damage);
+        CHECK(g.Ship().loadout.ammo[2] == 9);
+        CHECK(!g.FireModule(2, enemy, &why) && why.find("recargando") != std::string::npos);
+        // El nuclear es de un solo uso: sale y la bahia queda vacia.
+        CHECK(g.FireModule(3, enemy, &why));
+        CHECK(g.Projectiles().back().type == DamageType::Nuclear && g.Projectiles().back().guided);
+        CHECK(g.Ship().loadout.ammo[3] == 0);
+        CHECK(g.ManufactureMissiles(3, 1, &why) == 0);  // y fabricar otro pide estar atracada
+        // Cuando el tiempo corre, vuelven a cargar (las bahias llevan su recarga).
+        for (int i = 0; i < 400 && g.Ship().loadout.cooldown[2] > 0.0; ++i) Run(g, 0.1);
+        CHECK(g.Ship().loadout.cooldown[2] <= 0.0);
+
+        // La coilgun es cinetica y no guiada. Sale girada o no: no necesita el eje.
+        CHECK(g.FireModule(1, enemy, &why));
+        CHECK(g.Projectiles().back().type == DamageType::Kinetic && !g.Projectiles().back().guided);
+
+        // La espinal: de costado no sale; con el blanco en el eje, si. El proyectil lleva el eje del casco.
+        const std::optional<TargetInfo> info = g.Resolve(enemy);
+        CHECK(info.has_value());
+        const Vec3d toward = Normalize(info->position - g.Ship().position);
+        FaceTo(g.Ship(), Cross(toward, Vec3d{0, 1, 0}));
+        CHECK(!g.FireModule(0, enemy, &why) && why.find("eje") != std::string::npos);
+        const double heat = g.Ship().defense.heat;
+        FaceTo(g.Ship(), toward);
+        CHECK(g.FireModule(0, enemy, &why));
+        CHECK(g.Projectiles().back().type == DamageType::Kinetic && g.Ship().defense.heat > heat);
+        CHECK(Length(g.Projectiles().back().velocity) > 2.0e4);
+        // FireAll incluye las armas humanas listas, sin llenar el registro de quejas.
+        const std::size_t logBefore = g.Log().size();
+        g.Ship().loadout.cooldown[2] = 0.0;
+        g.Ship().loadout.cooldown[1] = 0.0;
+        g.FireAll(enemy);
+        CHECK(g.Ship().loadout.ammo[2] == 8);
+        (void)logBefore;
+    }
+
+    // Se guarda: misiles, planos, defensa puntual y las armas montadas; y una partida sin esas lineas sigue cargando.
+    {
+        GameSession g(*engine, rules, 7, GameModeId::Peaceful);
+        g.Conversation().Stop();
+        g.Step(0.05, {});
+        g.SetCreative(true);
+        CHECK(g.InstallModule(0, ShipModuleKind::BayHeavy25, &why) == false);  // pesada: no en la fragata ligera
+        CHECK(g.InstallModule(0, ShipModuleKind::BayLight25, &why));
+        CHECK(g.InstallModule(1, ShipModuleKind::PointDefensePlatform, &why));
+        CHECK(g.MoveModule(4, 2, &why));
+        CHECK(g.FabricateBlueprint(BlueprintId(coil), &why));
+        CHECK(g.SetPointDefense(12, &why));
+        CHECK(g.ManufactureMissiles(0, 17, &why) == 17);
+        const std::string text = WriteSave(g.Snapshot());
+        const std::optional<SaveData> saved = ReadSave(text);
+        CHECK(saved.has_value());
+        if (saved) {
+            const ShipLoadout& l = saved->Ship()->ship.loadout;
+            CHECK(l.modules[0] == ShipModuleKind::BayLight25 && l.modules[1] == ShipModuleKind::PointDefensePlatform && l.modules[2] == ShipModuleKind::DroneBay);
+            CHECK(l.ammo[0] == 17 && l.pointDefense == 12 && l.starterBays == 2 && HasBlueprint(l, BlueprintId(coil)));
+            GameSession h(*engine, rules, 7, GameModeId::Peaceful);
+            CHECK(h.Restore(*saved));
+            CHECK(h.Ship().loadout.ammo[0] == 17 && h.Ship().loadout.pointDefense == 12 && HasBlueprint(h.Ship().loadout, BlueprintId(coil)));
+            CHECK(h.Ship().loadout.modules[0] == ShipModuleKind::BayLight25);
+        }
+        // Las lineas nuevas van en el archivo (una version anterior las ignora).
+        CHECK(text.find("\nmunicion ") != std::string::npos && text.find("\narmamento ") != std::string::npos);
+    }
+}
+
+// ---- Partida dorada --------------------------------------------------------------------------
+// Una partida corta con paso fijo y ordenes fijas (viajar, minar, maniobrar, atracar, combatir) cuyo
+// guardado final se compara con tests/data/partida_dorada.txt. Vigila que un cambio de estructura no
+// cambie el comportamiento. Si el cambio es querido: epsilon_game_tests.exe --regenerar-dorada
+static bool gRegenerateGolden = false;
+
+static std::string PlayGolden() {
+    Balance rules;
+    auto engine = MakeEngine(rules, 11);
+    GameSession g(*engine, rules, 11, GameModeId::Normal);
+    g.Conversation().Stop();
+    const double dt = 1.0 / 60.0;
+    const auto run = [&](int steps, const ShipControls& controls = {}) {
+        for (int i = 0; i < steps; ++i) g.Step(dt, controls);
+    };
+    run(30);
+    g.MarkScanned(0);
+
+    // Viaje en crucero al primer planeta, con el piloto.
+    const TargetRef planet = FirstPlanet(g, 0);
+    using C = CommandType;
+    g.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));
+    g.Apply(Order(C::Autopilot, planet));
+    for (int i = 0; i < 20000 && g.Autopilot(); ++i) g.Step(dt, {});
+
+    // Drones a la superficie y de vuelta.
+    g.Apply(Order(C::DeployDrones, planet));
+    run(900);
+    g.Apply(Order(C::RecallDrones));
+    run(300);
+
+    // Mando a mano: sale de la orbita, gira, acelera y frena.
+    ShipControls turn;
+    turn.turnYaw = 0.004f;
+    turn.turnPitch = -0.002f;
+    turn.throttleChange = 0.35;
+    run(120, turn);
+    run(120);
+    ShipControls brake;
+    brake.manualBrake = true;
+    run(1, brake);
+    run(120);
+
+    // Una central junto a la estrella: desplegar, atracar y soltar.
+    const TargetRef star{Kind::Star, 0, 0};
+    g.Ship().heatShieldTier = std::max(g.Ship().heatShieldTier, YieldOf(g.GetWorld().systems[0]->StarAt(0)).requiredTier);
+    g.JumpTo(star, g.Resolve(star)->arrival);
+    run(30);
+    g.Apply(Order(C::DeployPower, star));
+    if (!g.Stations().All().empty()) {
+        const TargetRef station{Kind::Station, 0, g.Stations().All().back().id};
+        if (const std::optional<TargetInfo> info = g.Resolve(station)) g.JumpTo(station, info->arrival);  // a tiro del haz
+        g.Apply(Order(C::Dock, station, 1));
+        run(120);
+        g.Apply(Order(C::Interact, station));  // recoge lo producido
+        g.Apply(Order(C::Undock));
+        run(120);
+    }
+
+    // Combate: un hostil delante, y todo lo que este listo contra el.
+    const int enemy = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 30000.0);
+    const TargetRef foe{Kind::Anomaly, g.NearestSystem(), enemy};
+    g.Apply(Order(C::SetShield, static_cast<int>(ShieldKind::EM)));
+    for (int i = 0; i < 1200; ++i) {
+        if (i % 20 == 0) g.Apply(Order(C::FireAll, foe));
+        g.Step(dt, {});
+    }
+    return WriteSave(g.Snapshot());
+}
+
+// Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
+// mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
+static void TestTimeStamps() {
+    Balance rules;
+    const auto make = [&] {
+        StationNetwork net(rules.stations);
+        Inventory cargo;
+        StarYield yield;
+        yield.energyPerHour = 5.0;
+        yield.matterPerHour = 0.5;
+        StationSite site;
+        CHECK(net.Deploy(StationKind::Power, site, "Central", yield, cargo) > 0);
+        return net;
+    };
+    StationNetwork often = make(), once = make(), plain = make();
+    // Mil pasos de 36 s, uno solo de 10 h y el metodo de siempre: lo mismo.
+    for (int i = 1; i <= 1000; ++i) often.ProduceUntil(500.0 + 36.0 * i, 500.0);
+    once.ProduceUntil(500.0 + 36000.0, 500.0);
+    plain.Produce(10.0);
+    const Station& a = often.All().front();
+    const Station& b = once.All().front();
+    const Station& c = plain.All().front();
+    CHECK(c.storedAntimatter > 0.0 && c.stored.Get(Resource::StellarMatter) > 0.0);
+    CHECK(std::abs(a.storedAntimatter - c.storedAntimatter) < 1e-9 * c.storedAntimatter);
+    CHECK(std::abs(b.storedAntimatter - c.storedAntimatter) < 1e-9 * c.storedAntimatter);
+    CHECK(std::abs(a.stored.Get(Resource::StellarMatter) - c.stored.Get(Resource::StellarMatter)) < 1e-9);
+    CHECK(std::abs(a.angle - c.angle) < 1e-9 && std::abs(b.angle - c.angle) < 1e-9);
+    // Un reloj anterior al sello no produce ni lo mueve: el tiempo de una estacion no retrocede.
+    const double stored = b.storedAntimatter;
+    once.ProduceUntil(1000.0, 0.0);
+    CHECK(once.All().front().storedAntimatter == stored && once.All().front().producedUntil == 36500.0);
+
+    // La alerta: lo mismo en muchos pasos que en uno, y que con DecayAlert.
+    SpeciesState many, single, old;
+    for (SpeciesState* s : {&many, &single, &old}) {
+        ResizeSpecies(*s, 4);
+        s->alert[2] = 0.8;
+    }
+    for (int i = 1; i <= 100; ++i) DecayAlertUntil(many, 36.0 * i, 0.0, rules.alert);
+    DecayAlertUntil(single, 3600.0, 0.0, rules.alert);
+    DecayAlert(old, 3600.0, 3600.0, rules.alert);
+    CHECK(old.alert[2] < 0.8 && old.alert[2] > 0.0);
+    CHECK(std::abs(many.alert[2] - old.alert[2]) < 1e-9 && std::abs(single.alert[2] - old.alert[2]) < 1e-12);
+    CHECK(many.alert[0] == 0.0);
+    DecayAlertUntil(single, 100.0, 0.0, rules.alert);  // hacia atras, nada
+    CHECK(std::abs(single.alert[2] - old.alert[2]) < 1e-12);
+}
+
+// Las ordenes como datos (GameSession::Apply) y el paso fijo (StepFixed): fase 0 de docs/multijugador.md.
+static void TestOrdersAndFixedStep() {
+    using C = CommandType;
+    Balance rules;
+    auto engine = MakeEngine(rules, 5);
+    {
+        GameSession g(*engine, rules, 5, GameModeId::Peaceful);
+        g.Step(0.05, {});
+        // Una orden hace lo mismo que el metodo al que llama, y dice si pudo.
+        CHECK(g.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))));
+        CHECK(g.Ship().mode == DriveMode::Cruise);
+        CHECK(!g.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Hyper))));  // aun por descubrir
+        ShipCommand throttle = Order(C::SetThrottle);
+        throttle.amount = 0.5;
+        CHECK(g.Apply(throttle) && g.Ship().throttle == 0.5);
+        CHECK(g.Apply(Order(C::HoldPosition)) && g.Ship().throttle == 0.0);
+        const TargetRef planet = FirstPlanet(g, 0);
+        CHECK(g.Apply(Order(C::Autopilot, planet)) && g.Autopilot() && *g.Autopilot() == planet);
+        CHECK(g.Apply(Order(C::CancelAutopilot)) && !g.Autopilot());
+        CHECK(!g.Apply(Order(C::Autopilot, TargetRef{})));
+        CHECK(g.Apply(Order(C::Cinematic, 1)) && g.Cinematic());
+        CHECK(g.Apply(Order(C::Coolant, static_cast<int>(CoolantKind::Water), 0)) && !g.Ship().defense.coolantOn[0]);
+
+        // Lo que no es un valor de su enumeracion se rechaza sin tocar nada: puede venir de la red.
+        CHECK(!g.Apply(Order(C::SetDrive, 99)) && g.Ship().mode == DriveMode::Cruise);
+        CHECK(!g.Apply(Order(C::SetDrive, -1)));
+        CHECK(!g.Apply(Order(C::Fire, planet, 99)));
+        CHECK(!g.Apply(Order(C::SetShield, static_cast<int>(ShieldKind::Count))));
+        CHECK(!g.Apply(Order(C::Coolant, 99, 1)));
+        CHECK(!g.Apply(ShipCommand{}));
+        const CommandResult unknown = g.Apply(Order(C::InstallModule, 9999, 0));
+        CHECK(!unknown && !unknown.why.empty());
+
+        // El taller explica por que no: sin atracar no se monta nada.
+        const CommandResult refit = g.Apply(Order(C::InstallModule, static_cast<int>(ShipModuleKind::Turret), 0));
+        CHECK(!refit && !refit.why.empty());
+        // Sin blanco no dispara nada, y lo dice con la cuenta.
+        const CommandResult fired = g.Apply(Order(C::FireAll, TargetRef{}));
+        CHECK(!fired && fired.count == 0);
+    }
+
+    // Paso fijo: con fotogramas de 1/60 exactos es lo mismo que Step.
+    const auto save = [](const GameSession& g) { return WriteSave(g.Snapshot()); };
+    ShipControls turn;
+    turn.turnYaw = 0.00390625f;  // 2^-8: se puede partir en cuatro sin redondeo
+    turn.throttleChange = 0.25;
+    // Cada sesion con su motor: avanzan a la vez y no deben compartir mundo.
+    auto engineA = MakeEngine(rules, 5), engineB = MakeEngine(rules, 5), engineC = MakeEngine(rules, 5);
+    GameSession a(*engineA, rules, 5, GameModeId::Peaceful), b(*engineB, rules, 5, GameModeId::Peaceful), c(*engineC, rules, 5, GameModeId::Peaceful);
+    const Vec3d headingStart = Heading(a.Ship());
+    for (int i = 0; i < 120; ++i) {
+        a.Step(GameSession::kFixedStep, turn);
+        CHECK(b.StepFixed(GameSession::kFixedStep, turn) == 1);
+    }
+    CHECK(save(a) == save(b));
+    CHECK(Length(Heading(a.Ship()) - headingStart) > 1e-3);  // el giro llego
+
+    // A 240 fotogramas por segundo da un paso de cada cuatro, y el giro de los cuatro no se pierde.
+    ShipControls quarter = turn;
+    quarter.turnYaw = turn.turnYaw / 4.0f;
+    int steps = 0;
+    for (int i = 0; i < 480; ++i) steps += c.StepFixed(GameSession::kFixedStep / 4.0, quarter);
+    CHECK(steps == 120);
+    CHECK(save(a) == save(c));
+
+    // Sin tiempo no hay paso; el freno pedido entre dos pasos espera al siguiente.
+    CHECK(c.StepFixed(0.0, {}) == 0);
+    ShipControls brake;
+    brake.manualBrake = true;
+    CHECK(c.Ship().throttle > 0.0);
+    CHECK(c.StepFixed(GameSession::kFixedStep / 4.0, brake) == 0 && c.Ship().throttle > 0.0);
+    CHECK(c.StepFixed(GameSession::kFixedStep, {}) == 1 && c.Ship().throttle == 0.0);
+    // Un tiron de varios segundos no se recupera entero.
+    CHECK(c.StepFixed(5.0, {}) <= 8);
+}
+
+// Compara dos guardados linea a linea. Los numeros, con una tolerancia relativa: un cambio de orden en
+// una suma no es un cambio de comportamiento. La linea de la suma de control no cuenta.
+static int GoldenDifferences(const std::string& expected, const std::string& actual) {
+    std::istringstream a(expected), b(actual);
+    std::string la, lb;
+    int line = 0, differences = 0;
+    while (true) {
+        const bool ha = static_cast<bool>(std::getline(a, la)), hb = static_cast<bool>(std::getline(b, lb));
+        if (!ha && !hb) break;
+        ++line;
+        if (!la.empty() && la.back() == '\r') la.pop_back();
+        if (!lb.empty() && lb.back() == '\r') lb.pop_back();
+        bool same = ha == hb;
+        if (same && la.rfind("suma ", 0) == 0 && lb.rfind("suma ", 0) == 0) continue;
+        if (same && la != lb) {
+            std::istringstream ta(la), tb(lb);
+            std::string wa, wb;
+            while (same) {
+                const bool ga = static_cast<bool>(ta >> wa), gb = static_cast<bool>(tb >> wb);
+                if (!ga || !gb) {
+                    same = ga == gb;
+                    break;
+                }
+                if (wa == wb) continue;
+                char* ea = nullptr;
+                char* eb = nullptr;
+                const double va = std::strtod(wa.c_str(), &ea), vb = std::strtod(wb.c_str(), &eb);
+                same = *ea == '\0' && *eb == '\0' && std::abs(va - vb) <= 1e-6 * std::max({1.0, std::abs(va), std::abs(vb)});
+            }
+        }
+        if (same) continue;
+        if (++differences <= 6) std::printf("  Linea %d:\n    dorada: %.150s\n    ahora:  %.150s\n", line, ha ? la.c_str() : "(falta)", hb ? lb.c_str() : "(falta)");
+    }
+    return differences;
+}
+
+static void TestGoldenGame() {
+    const std::string first = PlayGolden();
+    // Dos veces seguidas debe dar exactamente lo mismo: sin eso, la comparacion no vale nada.
+    CHECK(first == PlayGolden());
+    CHECK(first.find("\nestacion ") != std::string::npos);  // la partida llego a desplegar la central
+    CHECK(first.find("\nbase 1 0\n") != std::string::npos);   // y a atracar en ella
+
+    const std::string path = std::string(EPSILON_TEST_DATA) + "/partida_dorada.txt";  // .txt: los .sav no se suben (.gitignore)
+    if (gRegenerateGolden) {
+        std::filesystem::create_directories(FilePath(EPSILON_TEST_DATA));
+        std::ofstream out(FilePath(path), std::ios::binary | std::ios::trunc);
+        out << first;
+        std::printf("  Partida dorada regenerada: %s\n", path.c_str());
+        return;
+    }
+    std::ifstream in(FilePath(path), std::ios::binary);
+    CHECK(static_cast<bool>(in));
+    if (!in) {
+        std::printf("  Falta %s: ejecute epsilon_game_tests.exe --regenerar-dorada\n", path.c_str());
+        return;
+    }
+    std::ostringstream stored;
+    stored << in.rdbuf();
+    const int differences = GoldenDifferences(stored.str(), first);
+    CHECK(differences == 0);
+    if (differences > 0) {
+        const std::string now = std::string(EPSILON_TEST_DATA) + "/partida_dorada.ahora.txt";
+        std::ofstream out(FilePath(now), std::ios::binary | std::ios::trunc);
+        out << first;
+        std::printf("  %d lineas distintas. La partida de ahora queda en %s\n  Si el cambio es querido: epsilon_game_tests.exe --regenerar-dorada\n", differences, now.c_str());
+    }
+}
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--regenerar-dorada") gRegenerateGolden = true;
+    const bool onlyGolden = argc > 1 && std::string(argv[1]) == "--solo-dorada";  // la comprobacion rapida de una reorganizacion
+    if (gRegenerateGolden || onlyGolden) {
+        std::printf("[ Partida dorada ]\n");
+        TestGoldenGame();
+        if (onlyGolden) std::printf("\n%d comprobaciones, %d fallos\n", gChecks, gFailures);
+        return gFailures == 0 ? 0 : 1;
+    }
     const struct { const char* name; void (*fn)(); } tests[] = {
+        {"Partida dorada", TestGoldenGame},
+        {"Ordenes y paso fijo", TestOrdersAndFixedStep},
+        {"Sellos de tiempo", TestTimeStamps},
+        {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},
         {"Dano estructural", TestStructuralDamage},
         {"Zonas del casco", TestHullZones},
+        {"Zonas alienigenas y cinematica", TestAlienZones},
+        {"Modelos de combate (fase E)", TestCombatModels},
         {"Maniobra junto a una estacion", TestStationManeuver},
         {"Choques con naves y estaciones", TestSolidStructures},
         {"Escudos", TestShields},
@@ -3325,6 +5376,7 @@ int main() {
         {"Combate", TestCombat},
         {"Fuego enemigo", TestIncoming},
         {"Combate guardado", TestCombatSave},
+        {"Niveles de estacion y alerta (fase F)", TestStationLevelsAndAlert},
         {"Motores por descubrir", TestDriveUnlock},
         {"Alabeo", TestRoll},
         {"Menu de sistemas", TestAtlas},
@@ -3339,6 +5391,8 @@ int main() {
         {"Reglas de estaciones", TestStationRules},
         {"Anomalias", TestAnomalies},
         {"Partida completa", TestFullLoop},
+        {"Animacion de la origami", TestOrigamiAnimation},
+        {"Origami y drones mineros", TestShipyardAndDrones},
         {"Peligros", TestHazards},
         {"Modelos y capa", TestModels},
         {"Manejo", TestHandling},
@@ -3349,7 +5403,9 @@ int main() {
         {"Analisis de astros", TestAstroScan},
         {"Sensores al dia", TestLiveContacts},
         {"Eje del warp", TestWarpAxis},
+        {"Clases de nave", TestShipClasses},
         {"Unidades", TestUnits},
+        {"Elementos", TestElementInventory},
         {"Configuracion", TestSettings},
         {"Salir de una estrella", TestLeaveStar},
         {"Descubrimiento", TestDiscovery},
@@ -3357,8 +5413,10 @@ int main() {
         {"Coste de la curvatura", TestWarpCost},
         {"Viaje con curvatura", TestWarpRoute},
         {"Escaner", TestScanner},
+        {"Primera estructura y eco frio", TestColdEcho},
         {"Modos y derrota", TestModes},
         {"Dialogos", TestDialogue},
+        {"Tutorial guiado", TestTutorialGuide},
     };
     for (const auto& t : tests) {
         std::printf("[ %s ]\n", t.name);

@@ -1,6 +1,7 @@
 #include "epsilon/Models.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -565,9 +566,226 @@ bool LoadGltfMarkers(const std::string& path, std::vector<ImportedMarker>& out, 
     return true;
 }
 
+namespace {
+
+// Valor de un canal en el instante t: lineal (el giro, por el camino corto), escalon o la parte de
+// valor de un spline cubico. count es 3 (traslacion, escala) o 4 (giro).
+void SampleChannel(const cgltf_animation_sampler& s, float t, int count, float* out) {
+    const cgltf_accessor* input = s.input;
+    const cgltf_accessor* output = s.output;
+    const cgltf_size n = input->count;
+    if (n == 0) return;
+    const bool cubic = s.interpolation == cgltf_interpolation_type_cubic_spline;
+    const auto value = [&](cgltf_size k, float* v) { cgltf_accessor_read_float(output, cubic ? k * 3 + 1 : k, v, static_cast<cgltf_size>(count)); };
+    float t0 = 0, t1 = 0;
+    cgltf_accessor_read_float(input, 0, &t0, 1);
+    if (t <= t0 || n == 1) return value(0, out);
+    cgltf_accessor_read_float(input, n - 1, &t1, 1);
+    if (t >= t1) return value(n - 1, out);
+    cgltf_size lo = 0, hi = n - 1;  // busqueda binaria del tramo
+    while (hi - lo > 1) {
+        const cgltf_size mid = (lo + hi) / 2;
+        float tm = 0;
+        cgltf_accessor_read_float(input, mid, &tm, 1);
+        (tm <= t ? lo : hi) = mid;
+    }
+    float ta = 0, tb = 0, a[4] = {}, b[4] = {};
+    cgltf_accessor_read_float(input, lo, &ta, 1);
+    cgltf_accessor_read_float(input, hi, &tb, 1);
+    value(lo, a);
+    if (s.interpolation == cgltf_interpolation_type_step) {
+        for (int i = 0; i < count; ++i) out[i] = a[i];
+        return;
+    }
+    value(hi, b);
+    const float u = tb > ta ? (t - ta) / (tb - ta) : 0.0f;
+    if (count == 4 && a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0.0f)
+        for (float& c : b) c = -c;
+    float len = 0;
+    for (int i = 0; i < count; ++i) {
+        out[i] = a[i] + (b[i] - a[i]) * u;
+        len += out[i] * out[i];
+    }
+    if (count == 4 && len > 0.0f)
+        for (int i = 0; i < 4; ++i) out[i] /= std::sqrt(len);
+}
+
+// Giro de una matriz 3x3 (fila, columna) sin escala.
+Quatf QuatOf(const float r[3][3]) {
+    Quatf q;
+    const float trace = r[0][0] + r[1][1] + r[2][2];
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (r[2][1] - r[1][2]) / s;
+        q.y = (r[0][2] - r[2][0]) / s;
+        q.z = (r[1][0] - r[0][1]) / s;
+    } else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
+        const float s = std::sqrt(1.0f + r[0][0] - r[1][1] - r[2][2]) * 2.0f;
+        q.w = (r[2][1] - r[1][2]) / s;
+        q.x = 0.25f * s;
+        q.y = (r[0][1] + r[1][0]) / s;
+        q.z = (r[0][2] + r[2][0]) / s;
+    } else if (r[1][1] > r[2][2]) {
+        const float s = std::sqrt(1.0f + r[1][1] - r[0][0] - r[2][2]) * 2.0f;
+        q.w = (r[0][2] - r[2][0]) / s;
+        q.x = (r[0][1] + r[1][0]) / s;
+        q.y = 0.25f * s;
+        q.z = (r[1][2] + r[2][1]) / s;
+    } else {
+        const float s = std::sqrt(1.0f + r[2][2] - r[0][0] - r[1][1]) * 2.0f;
+        q.w = (r[1][0] - r[0][1]) / s;
+        q.x = (r[0][2] + r[2][0]) / s;
+        q.y = (r[1][2] + r[2][1]) / s;
+        q.z = 0.25f * s;
+    }
+    return q.Normalized();
+}
+
+// Inversa de una matriz afin de cgltf (columnas), con escala y giro.
+void InverseAffine(const float* m, float* out) {
+    float a[3][3];
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) a[r][c] = m[c * 4 + r];
+    const float det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    const float k = std::fabs(det) > 1e-20f ? 1.0f / det : 0.0f;
+    float inv[3][3];
+    inv[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * k;
+    inv[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * k;
+    inv[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * k;
+    inv[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * k;
+    inv[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * k;
+    inv[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * k;
+    inv[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * k;
+    inv[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * k;
+    inv[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * k;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) out[c * 4 + r] = inv[r][c];
+        out[12 + r] = -(inv[r][0] * m[12] + inv[r][1] * m[13] + inv[r][2] * m[14]);
+        out[r * 4 + 3] = 0.0f;
+    }
+    out[15] = 1.0f;
+}
+
+void MultiplyAffine(const float* a, const float* b, float* out) {  // out = a * b, columnas
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r) {
+            float sum = 0;
+            for (int k = 0; k < 4; ++k) sum += a[k * 4 + r] * b[c * 4 + k];
+            out[c * 4 + r] = sum;
+        }
+}
+
+}  // namespace
+
+bool LoadGltfAnimation(const std::string& path, const std::string& name, ModelAnimation& out, double fps, std::string* error) {
+    cgltf_options options{};
+    cgltf_data* data = nullptr;
+    cgltf_result result = cgltf_parse_file(&options, path.c_str(), &data);
+    if (result == cgltf_result_success) result = cgltf_load_buffers(&options, data, path.c_str());
+    if (result != cgltf_result_success) {
+        if (error) *error = "cgltf no pudo leer " + path + " (codigo " + std::to_string(static_cast<int>(result)) + ")";
+        cgltf_free(data);
+        return false;
+    }
+    const cgltf_animation* anim = nullptr;
+    for (cgltf_size i = 0; i < data->animations_count; ++i)
+        if (name.empty() || (data->animations[i].name && name == data->animations[i].name)) {
+            anim = &data->animations[i];
+            break;
+        }
+    if (!anim) {
+        if (error) *error = "sin la animacion \"" + name + "\" en " + path;
+        cgltf_free(data);
+        return false;
+    }
+
+    // Las partes, en el mismo orden que LoadGltf: una por primitiva de triangulos de cada nodo con malla.
+    out = ModelAnimation{};
+    out.name = anim->name ? anim->name : "";
+    std::vector<const cgltf_node*> partNodes;
+    for (cgltf_size n = 0; n < data->nodes_count; ++n) {
+        const cgltf_node& node = data->nodes[n];
+        if (!node.mesh) continue;
+        for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
+            if (node.mesh->primitives[pi].type != cgltf_primitive_type_triangles) continue;
+            std::string partName = node.name ? node.name : (node.mesh->name ? node.mesh->name : "parte");
+            if (node.mesh->primitives_count > 1) partName += "_" + std::to_string(pi);
+            out.parts.push_back(partName);
+            partNodes.push_back(&node);
+        }
+    }
+    std::vector<std::array<float, 16>> restInverse(partNodes.size());
+    for (std::size_t p = 0; p < partNodes.size(); ++p) {
+        float world[16];
+        cgltf_node_transform_world(partNodes[p], world);
+        InverseAffine(world, restInverse[p].data());
+    }
+
+    float duration = 0;
+    for (cgltf_size c = 0; c < anim->samplers_count; ++c) {
+        const cgltf_accessor* input = anim->samplers[c].input;
+        if (input && input->count > 0) {
+            float t = 0;
+            cgltf_accessor_read_float(input, input->count - 1, &t, 1);
+            duration = std::max(duration, t);
+        }
+    }
+    out.duration = duration;
+    const int count = std::max(2, static_cast<int>(std::ceil(duration * fps)) + 1);
+    out.step = duration / static_cast<double>(count - 1);
+    out.samples.assign(static_cast<std::size_t>(count), std::vector<PartMotion>(partNodes.size()));
+
+    for (int k = 0; k < count; ++k) {
+        const float t = static_cast<float>(out.step * k);
+        for (cgltf_size c = 0; c < anim->channels_count; ++c) {
+            const cgltf_animation_channel& ch = anim->channels[c];
+            cgltf_node* node = ch.target_node;
+            if (!node || !ch.sampler) continue;
+            node->has_matrix = false;
+            if (ch.target_path == cgltf_animation_path_type_translation) {
+                SampleChannel(*ch.sampler, t, 3, node->translation);
+                node->has_translation = true;
+            } else if (ch.target_path == cgltf_animation_path_type_rotation) {
+                SampleChannel(*ch.sampler, t, 4, node->rotation);
+                node->has_rotation = true;
+            } else if (ch.target_path == cgltf_animation_path_type_scale) {
+                SampleChannel(*ch.sampler, t, 3, node->scale);
+                node->has_scale = true;
+            }
+        }
+        for (std::size_t p = 0; p < partNodes.size(); ++p) {
+            float world[16], delta[16];
+            cgltf_node_transform_world(partNodes[p], world);
+            MultiplyAffine(world, restInverse[p].data(), delta);
+            // Mismo cambio de ejes que las mallas: C = diag(1, -1, -1), y el delta pasa a C * D * C.
+            const float sign[3] = {1.0f, -1.0f, -1.0f};
+            float r[3][3];
+            for (int row = 0; row < 3; ++row)
+                for (int col = 0; col < 3; ++col) r[row][col] = delta[col * 4 + row] * sign[row] * sign[col];
+            // Quita la escala que pudiera quedar, columna a columna.
+            for (int col = 0; col < 3; ++col) {
+                const float len = std::sqrt(r[0][col] * r[0][col] + r[1][col] * r[1][col] + r[2][col] * r[2][col]);
+                if (len > 1e-9f)
+                    for (int row = 0; row < 3; ++row) r[row][col] /= len;
+            }
+            PartMotion& m = out.samples[static_cast<std::size_t>(k)][p];
+            m.rotation = QuatOf(r);
+            m.offset = {delta[12], -delta[13], -delta[14]};
+        }
+    }
+    cgltf_free(data);
+    return true;
+}
+
 #else
 
 bool GltfSupported() { return false; }
+
+bool LoadGltfAnimation(const std::string& path, const std::string&, ModelAnimation&, double, std::string* error) {
+    if (error) *error = "Motor compilado sin cgltf: no se puede leer " + path;
+    return false;
+}
 
 bool LoadGltf(const std::string& path, std::vector<ImportedPart>&, std::string* error) {
     if (error) *error = "Motor compilado sin cgltf: no se puede leer " + path;
@@ -580,6 +798,28 @@ bool LoadGltfMarkers(const std::string& path, std::vector<ImportedMarker>&, std:
 }
 
 #endif
+
+void ModelAnimation::Pose(double t, std::vector<PartMotion>& out) const {
+    out.assign(parts.size(), PartMotion{});
+    if (samples.empty()) return;
+    const double at = step > 0.0 ? std::clamp(t, 0.0, duration) / step : 0.0;
+    const std::size_t a = std::min(static_cast<std::size_t>(at), samples.size() - 1);
+    const std::size_t b = std::min(a + 1, samples.size() - 1);
+    const float u = static_cast<float>(at - static_cast<double>(a));
+    for (std::size_t p = 0; p < parts.size(); ++p) {
+        const PartMotion& m0 = samples[a][p];
+        const PartMotion& m1 = samples[b][p];
+        Quatf q1 = m1.rotation;
+        if (m0.rotation.x * q1.x + m0.rotation.y * q1.y + m0.rotation.z * q1.z + m0.rotation.w * q1.w < 0.0f) q1 = {-q1.x, -q1.y, -q1.z, -q1.w};
+        Quatf q;
+        q.x = m0.rotation.x + (q1.x - m0.rotation.x) * u;
+        q.y = m0.rotation.y + (q1.y - m0.rotation.y) * u;
+        q.z = m0.rotation.z + (q1.z - m0.rotation.z) * u;
+        q.w = m0.rotation.w + (q1.w - m0.rotation.w) * u;
+        out[p].rotation = q.Normalized();
+        out[p].offset = m0.offset + (m1.offset - m0.offset) * u;
+    }
+}
 
 ModelPart MakeSpritePart(const std::string& name, MeshId unitQuad, TextureId texture, float widthMetres, float heightMetres) {
     ModelPart part;

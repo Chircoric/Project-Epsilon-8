@@ -24,8 +24,24 @@ cbuffer SphereCB : register(b0, space3) {
     float uNearZ;
     float uTime;
     float uStarBoost;    // las estrellas superan 1 para que el bloom las haga brillar
-    float uSpherePad;
+    float uDetail;       // calidad de la luz: 3 = ultra
+    float4 uAmbient;     // luz de la nebulosa que llega por todos lados (0 fuera de ella)
 };
+
+// Oren-Nayar: la luz sobre un suelo rugoso. Un planeta de roca o de tierra no es plastico: hacia el
+// borde no se apaga tanto como dice Lambert y devuelve mas luz hacia donde viene el sol.
+float OrenNayar(float3 n, float3 l, float3 v, float sigma) {
+    const float cosI = dot(n, l), cosR = dot(n, v);
+    if (cosI <= 0.0) return 0.0;
+    const float s2 = sigma * sigma;
+    const float A = 1.0 - 0.5 * s2 / (s2 + 0.33);
+    const float B = 0.45 * s2 / (s2 + 0.09);
+    const float3 li = l - n * cosI, vr = v - n * cosR;
+    const float cosPhi = dot(li, vr) * rsqrt(max(dot(li, li) * dot(vr, vr), 1e-8));
+    const float thetaI = acos(saturate(cosI)), thetaR = acos(saturate(max(cosR, 0.0)));
+    const float alpha = max(thetaI, thetaR), beta = min(thetaI, thetaR);
+    return cosI * (A + B * max(cosPhi, 0.0) * sin(alpha) * tan(min(beta, 1.5)));
+}
 
 static const uint kStride = 208;
 static const float kAtmosphere = 0.13;  // grueso maximo de la atmosfera visible, en radios
@@ -242,7 +258,7 @@ Surface Terrestrial(float3 n, float seed, float detail, float3 ocean, float3 lan
     // La altura de las cimas da los bultos de dentro; la densidad, el escalon del borde.
     const float3 tops = (t1 * (f1.y - field.y) + t2 * (f2.y - field.y)) / e * 0.006 + (t1 * (f1.x - cloud) + t2 * (f2.x - cloud)) / e * 0.004;
     // Las nubes finas dejan ver el suelo y son grises; las espesas, blancas, con la base en sombra.
-    const float3 white = lerp(float3(0.58, 0.61, 0.66), float3(0.86, 0.87, 0.89), smoothstep(0.15, 0.95, cloud)) * (0.84 + 0.16 * saturate(field.y * 2.0 + 0.5));
+    const float3 white = lerp(float3(0.58, 0.61, 0.66), float3(0.80, 0.81, 0.83), smoothstep(0.15, 0.95, cloud)) * (0.84 + 0.16 * saturate(field.y * 2.0 + 0.5));
     s.albedo = lerp(s.albedo, white, cloud * 0.92);
     s.slope = lerp(s.slope, tops, cloud);
     s.gloss *= 1.0 - cloud;
@@ -483,12 +499,18 @@ float4 SkyBand(float edge, float2 plane, float3 u, float3 v, float4 viewToBody, 
     const float3 outward = normalize(u * toward.x + v * toward.y);
     const float3 inBody = RotateByQuat(viewToBody, outward);
     const float wobble = 0.72 + 0.55 * Fbm(inBody * 4.0 + seed + float3(uTime * 0.05, 0, 0), 3.0);  // nunca un aro perfecto
-    const float height = max(edge - 1.0, 0.0) / (kAtmosphere * thickness * wobble);
+    // El aire se ve de canto como un filo fino que se apaga deprisa hacia el espacio (la densidad cae
+    // en exponencial con la altura). En el lado de noche no hay nada; junto a la linea de sombra la
+    // luz del sol ha cruzado tanto aire que llega rojiza.
+    const float height = max(edge - 1.0, 0.0) / (kAtmosphere * 0.45 * thickness * wobble);
     if (height >= 1.0) return float4(0, 0, 0, 0);
     const bool sunlit = dot(sun, sun) > 0.5;
-    const float day = sunlit ? smoothstep(-0.35, 0.55, dot(outward, sun)) : 1.0;
-    const float falloff = (1.0 - height) * (1.0 - height) * exp(-height * 4.5);
-    return float4(atmosphere.rgb * (0.6 + day * 0.9), saturate(falloff * day * atmosphere.a * 1.5));
+    const float facing = sunlit ? dot(outward, sun) : 1.0;
+    const float day = sunlit ? smoothstep(-0.20, 0.45, facing) : 1.0;
+    const float dusk = sunlit ? smoothstep(-0.20, 0.05, facing) * (1.0 - smoothstep(0.05, 0.35, facing)) : 0.0;
+    const float falloff = exp(-height * 5.0) * (1.0 - height);
+    const float3 hue = lerp(atmosphere.rgb, float3(1.0, 0.48, 0.20) * max(atmosphere.r, max(atmosphere.g, atmosphere.b)), dusk * 0.7);
+    return float4(hue * (0.35 + day * 0.4), saturate(falloff * day * atmosphere.a * 0.75));
 }
 
 struct PsOut {
@@ -618,17 +640,71 @@ PsOut PSSphere(VsOut i) {
     // Con aire, la luz se reparte y la sombra entra suave. Sin aire, el polvo devuelve la luz como la
     // Luna (Lommel-Seeliger): el disco no se oscurece hacia el borde y la sombra corta en seco; el
     // relieve hace el resto.
+    // En los dos casos la luz cae con el coseno hacia la linea de sombra: es lo que hace que un
+    // planeta se vea como una bola y no como un disco. Y nada llega a saturar en blanco: el mundo
+    // mas claro se queda por debajo de 1, con sitio para que su relieve se distinga.
     const float shade = lit ? dot(shading, light.xyz) : 1.0;
+    const bool ultra = uDetail >= 2.5 && kind <= 3;
     float diffuse;
+    float3 sunlight = tintA.rgb;
+    // Aire: grueso optico hacia arriba. Con mas camino, mas se apaga y mas se tiñe la luz; el
+    // color del aire es el que se dispersa (azul en un mundo como la Tierra), asi que lo que pasa
+    // se vuelve rojizo.
+    const float tau = ultra && !airless ? atmosphere.a * (kind == 1 ? 0.55 : 0.45) : 0.0;
+    const float3 airHue = atmosphere.rgb / max(max(atmosphere.r, max(atmosphere.g, atmosphere.b)), 1e-3);
+    const float3 extinction = 0.35 + 0.65 * airHue;
+    float3 sunPass = float3(1, 1, 1);
+    if (tau > 0.0 && lit) sunPass = exp(-extinction * tau * min(1.0 / max(facing + 0.08, 0.04), 14.0));
     if (airless) {
-        const float lommel = 2.0 * saturate(shade) / (saturate(shade) + max(dot(shading, toEye), 0.05));
-        diffuse = lerp(saturate(shade), lommel, 0.5) * smoothstep(-0.02, 0.06, facing);
+        const float lambert = saturate(shade);
+        const float lommel = 2.0 * lambert / (lambert + max(dot(shading, toEye), 0.05));
+        // En ultra, roca rugosa (Oren-Nayar) en lugar del Lambert liso.
+        const float base = ultra && lit ? OrenNayar(shading, light.xyz, toEye, 0.75) : lambert;
+        diffuse = lerp(base, lommel, 0.3) * smoothstep(-0.02, 0.06, facing) * 0.9;
+    } else if (ultra && lit && kind == 0) {
+        // Mundo con aire en ultra: suelo rugoso donde no hay agua; la luz que entra la tiñe el aire
+        // (sunPass), asi que el atardecer sale solo, sin pintarlo encima.
+        const float rough = OrenNayar(shading, light.xyz, toEye, 0.6);
+        const float smooth = saturate(shade);
+        const float wrap = saturate((facing + 0.06) / 1.06);
+        diffuse = lerp(rough, smooth, surface.gloss) * 0.95 + (wrap - saturate(facing)) * 0.25;
+        sunlight *= sunPass;
     } else {
-        diffuse = smoothstep(-0.06, 0.32, facing) * saturate(facing + 0.25) * clamp(0.55 + 0.45 * shade / max(facing, 0.2), 0.0, 1.4);
+        // El aire lleva algo de luz mas alla de la linea de sombra, y alli la tiñe de atardecer.
+        const float wrap = saturate((facing + 0.10) / 1.10);
+        diffuse = min(pow(wrap, 1.15) * clamp(0.55 + 0.45 * shade / max(facing, 0.2), 0.0, 1.25), 1.0) * 0.92;
+        if (lit) {
+            const float dusk = (1.0 - smoothstep(-0.05, 0.38, facing)) * saturate(atmosphere.a * 1.6);
+            sunlight *= lerp(float3(1.0, 1.0, 1.0), float3(1.0, 0.60, 0.36), dusk);
+        }
+        // Un gigante es gas hasta donde alcanza la vista: su borde se oscurece.
+        if (kind == 1) diffuse *= 0.58 + 0.42 * pow(mu, 0.6);
+        if (tau > 0.0) sunlight *= lerp(float3(1, 1, 1), sunPass, 0.6);
     }
-    float3 color = surface.albedo * (0.025 + diffuse * 1.12 * tintA.rgb) + surface.emission;
-    // El sol se refleja en el agua: un brillo concentrado donde el angulo es el justo.
-    if (surface.gloss > 0.0 && lit && facing > 0.0) {
+    // Dentro de una nebulosa el gas brilla por todos lados: el lado de noche se tiñe de su color en
+    // vez de quedar negro.
+    // Tenue: la nebulosa ilumina mucho menos que un sol. Lo justo para adivinar el lado de noche.
+    const float3 ambient = 0.012 + uAmbient.rgb * 0.10 * (0.75 + 0.25 * mu);
+    float3 color = surface.albedo * (ambient + diffuse * sunlight) + surface.emission;
+    if (ultra && surface.gloss > 0.0) {
+        // Mar en ultra: refleja el cielo segun Fresnel (mas espejo cuanto mas de canto) y el sol
+        // deja un brillo de microfacetas (GGX) que se ensancha con el oleaje.
+        const float fresnel = 0.02 + 0.98 * pow(1.0 - mu, 5.0);
+        const float day = lit ? smoothstep(-0.1, 0.3, facing) : 1.0;
+        const float3 skyColor = atmosphere.rgb * atmosphere.a * 0.55 * day + uAmbient.rgb * 0.15;
+        color = lerp(color, skyColor, fresnel * surface.gloss * 0.85);
+        if (lit && facing > 0.0) {
+            const float3 halfway = normalize(light.xyz + toEye);
+            const float a2 = 0.13 * 0.13 * 0.13 * 0.13;
+            const float nh = saturate(dot(shading, halfway));
+            const float dd = nh * nh * (a2 - 1.0) + 1.0;
+            const float ggx = a2 / (3.14159 * dd * dd);
+            const float vh = saturate(dot(toEye, halfway));
+            const float f = 0.02 + 0.98 * pow(1.0 - vh, 5.0);
+            color += tintA.rgb * sunPass * ggx * f * 0.25 * saturate(facing) / max(mu, 0.15) * surface.gloss;
+        }
+    } else if (surface.gloss > 0.0 && lit && facing > 0.0) {
+        // El sol se refleja en el agua: un brillo concentrado donde el angulo es el justo.
         const float3 halfway = normalize(light.xyz + toEye);
         const float glint = pow(saturate(dot(shading, halfway)), 160.0) * 0.9 + pow(saturate(dot(shading, halfway)), 20.0) * 0.05;
         color += tintA.rgb * glint * surface.gloss * smoothstep(0.0, 0.2, facing);
@@ -639,13 +715,27 @@ PsOut PSSphere(VsOut i) {
     if (light2.w > 0.0) {
         const float facing2 = dot(normal, light2.xyz);
         const float shade2 = dot(shading, light2.xyz);
-        const float diffuse2 = airless ? saturate(shade2) * smoothstep(-0.02, 0.06, facing2) : smoothstep(-0.06, 0.32, facing2) * saturate(facing2 + 0.25);
-        color += surface.albedo * diffuse2 * 1.12 * light2.w * tintB.rgb;
+        const float diffuse2 = airless ? saturate(shade2) * smoothstep(-0.02, 0.06, facing2) * 0.9 : pow(saturate((facing2 + 0.10) / 1.10), 1.15) * 0.95;
+        color += surface.albedo * diffuse2 * light2.w * tintB.rgb;
         rimFacing = max(rimFacing, facing2 * light2.w);
     }
 
+    // Perspectiva aerea (ultra): entre el suelo y el ojo hay aire. Apaga el suelo y le suma la luz
+    // del sol que el aire desvia hacia nosotros, mucho mas hacia el borde, donde el camino es largo.
+    // Es lo que quita el aspecto de bola pintada: los colores se lavan hacia el limbo.
+    if (tau > 0.0) {
+        const float path = min(1.0 / max(mu, 0.05), 12.0);
+        const float3 viewPass = exp(-extinction * tau * path * 0.5);
+        const float day = lit ? smoothstep(-0.18, 0.35, facing) : 1.0;
+        const float cosSun = lit ? dot(rayView, light.xyz) : 0.0;
+        const float phase = 0.75 * (1.0 + cosSun * cosSun);
+        const float3 inscatter = airHue * 0.26 * (1.0 - viewPass) * day * phase * lerp(float3(1, 1, 1), sunPass, 0.5) * tintA.rgb;
+        color = color * viewPass + inscatter;
+    }
+
     const float rim = 1.0 - mu;
-    color += atmosphere.rgb * atmosphere.a * (rim * rim * 1.1 + rim * 0.15 + rim * rim * rim * rim * rim * 1.4) * saturate(rimFacing + 0.35);
+    // El aire visto de canto: mas camino, mas luz dispersada. Solo donde le da el sol.
+    color += atmosphere.rgb * atmosphere.a * (rim * rim * 0.32 + rim * 0.05 + rim * rim * rim * rim * rim * 0.38) * saturate(rimFacing * 1.3 + 0.05) * (tau > 0.0 ? 0.25 : 0.55);
 
     const float3 position = sphere.xyz + surfacePoint * sphere.w;
 

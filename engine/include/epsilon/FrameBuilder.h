@@ -37,6 +37,7 @@ struct FrameInput {
     float fogDistance = 0;
     Color fogColor;
     Vec3f fogOrigin;
+    float fogScale = 0;  // km de la baldosa de ruido de la nube; 0 = niebla de siempre
     bool fogRampOn = false;
     std::array<Color, 4> fogRamp{};
     float fogTone = 0;
