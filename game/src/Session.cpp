@@ -78,7 +78,7 @@ double NebulaDensity(const Vec3d& absolute) {
 GameSession::GameSession(Engine& engine, const Balance& rules, std::uint32_t seed, GameModeId mode)
     : engine_(engine), rules_(rules), world_(rules, seed, mode), bubble_(seed) {
     fleet_.emplace_back();
-    crews_.emplace_back();
+    players_.emplace_back();
     Use(0);
     vessel_->id = nextVessel_++;
     vessel_->ship = MakeShip(rules);
@@ -107,9 +107,16 @@ void GameSession::PlaceInSystem(int system) {
     vessel_->ship.warpHeading = toStar;
 }
 
-void GameSession::Say(const std::string& text, Audience) {
-    pilot_->log.push_back(text);
-    while (pilot_->log.size() > kMaxLog) pilot_->log.pop_front();
+void GameSession::Say(const std::string& text, Audience audience) {
+    const auto push = [&](PlayerState& p) {
+        p.log.push_back(text);
+        while (p.log.size() > kMaxLog) p.log.pop_front();
+    };
+    if (audience == Audience::Player) return push(*pilot_);
+    // A la tripulacion de la nave en curso, o a todos.
+    const int mine = IndexOf(*vessel_);
+    for (PlayerState& p : players_)
+        if (audience == Audience::Everyone || p.vessel == mine) push(p);
 }
 
 double GameSession::Visibility() const {
@@ -335,7 +342,7 @@ std::optional<TargetInfo> GameSession::Resolve(const TargetRef& t) const {
                 info.velocity = VelocityOf(v);
                 info.radius = rules_.ship.radius;
                 info.arrival = rules_.ship.radius * 3.0 + 2.0;
-                info.name = "Nave " + std::to_string(v.id) + " (" + crews_[i].name + ")";
+                info.name = "Nave " + std::to_string(v.id) + " (" + players_[static_cast<std::size_t>(PrimaryOf(static_cast<int>(i)))].name + ")";
                 info.detail = "Aliada, casco " + Fixed(100.0 * v.ship.hull / rules_.ship.hull, 0) + " %";
                 return info;
             }
@@ -560,7 +567,7 @@ bool GameSession::CanDeployShipyard(std::string* why) const {
     };
     const World& w = engine_.GetWorld();
     if (!vessel_->ship.stationAboard) return fail("La estación origami ya está desplegada.");
-    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return fail("Ahora no se puede soltar la estación.");
+    if (vessel_->phase != GamePhase::Flying || AnyOnFoot()) return fail("Ahora no se puede soltar la estación.");
     if (vessel_->dockPhase != DockPhase::None) return fail("Suelte antes la nave de la estación.");
     // La estacion no orbita: se queda quieta junto al planeta, como la nave cuando frena con Espacio.
     if (vessel_->orbiting) return fail("Salga de la órbita y quede quieta (Espacio) para soltar la estación.");
@@ -1259,16 +1266,16 @@ SaveData GameSession::Snapshot() const {
     }
 
     // El jugador es el de la nave del foco. Los de las demas naves se piden con SnapshotPlayer.
-    d.player = SnapshotPlayer(focus_);
+    d.player = SnapshotPlayer(focusPlayer_);
     return d;
 }
 
 PlayerSave GameSession::SnapshotPlayer(int index) const {
-    const PlayerState& from = crews_[static_cast<std::size_t>(index)];
+    const PlayerState& from = players_[static_cast<std::size_t>(index)];
     PlayerSave p;
     p.id = from.id;
     p.name = from.name;
-    p.ship = fleet_[static_cast<std::size_t>(index)].id;
+    p.ship = fleet_[static_cast<std::size_t>(from.vessel)].id;
     p.tutorialStep = from.dialogue.Active() ? from.dialogue.Step() : 1000000;  // terminado o apagado
     p.cursorUsed = from.cursorUsed;
     p.analysisUsed = from.analysisUsed;
@@ -1318,12 +1325,13 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     // Las naves: una por cada una del mundo, con un jugador en blanco. El foco, en la de quien carga.
     const bool cinematic = pilot_->cinematic, firstPerson = pilot_->firstPerson;
     fleet_.clear();
-    crews_.clear();
+    players_.clear();
     focus_ = 0;
     nextVessel_ = 1;
     for (std::size_t i = 0; i < d.world.ships.size(); ++i) {
         fleet_.emplace_back();
-        crews_.emplace_back();
+        players_.emplace_back();
+        players_.back().vessel = static_cast<int>(i);  // un jugador por nave; los demas entran con AddPlayer
         if (&d.world.ships[i] == mine) focus_ = static_cast<int>(i);
         nextVessel_ = std::max(nextVessel_, d.world.ships[i].id + 1);
     }
@@ -1333,7 +1341,8 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     }
 
     // El jugador que carga; los de las demas naves saben lo mismo que el, hasta que carguen lo suyo.
-    Use(focus_);
+    focusPlayer_ = focus_;
+    UsePlayer(focusPlayer_);
     pilot_->id = d.player.id;
     pilot_->name = d.player.name;
     pilot_->analysisUsed = d.player.analysisUsed;
@@ -1351,9 +1360,9 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     pilot_->firstPerson = firstPerson;
     pilot_->dialogue.Start(MakeTutorial());
     pilot_->dialogue.Resume(d.player.tutorialStep);
-    for (std::size_t i = 0; i < crews_.size(); ++i) {
+    for (std::size_t i = 0; i < players_.size(); ++i) {
         if (static_cast<int>(i) == focus_) continue;
-        PlayerState& other = crews_[i];
+        PlayerState& other = players_[i];
         other.id = "local-" + std::to_string(fleet_[i].id);
         other.name = "Piloto " + std::to_string(fleet_[i].id);
         other.known = pilot_->known;
@@ -1370,7 +1379,7 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
         if (ModeInfo(world_.mode).permadeath && static_cast<int>(i) == focus_) ResetCampaign();
         else Respawn();
     }
-    Use(focus_);
+    UsePlayer(focusPlayer_);
     return true;
 }
 
@@ -1456,7 +1465,7 @@ void GameSession::Respawn() {
     vessel_->droneSite.reset();
     vessel_->droneYield = 0.0;
     CancelScan();
-    pilot_->onFoot = false;
+    BoardAll();
     bubble_.lostPieces.clear();
     bubble_.projectiles.clear();
 
@@ -1513,7 +1522,7 @@ void GameSession::ResetCampaign() {
     vessel_->autopilot.reset();
     vessel_->orbiting.reset();
     vessel_->dockPhase = DockPhase::None;
-    pilot_->onFoot = false;
+    BoardAll();
     vessel_->exploring = -1;
     vessel_->homeStation = -1;
     vessel_->respawnPending = false;
@@ -1529,7 +1538,7 @@ void GameSession::LoseShip() {
     vessel_->orbiting.reset();
     vessel_->dockPhase = DockPhase::None;
     vessel_->dockWanted = -1;
-    pilot_->onFoot = false;
+    BoardAll();
     vessel_->exploring = -1;
     CancelScan();
     vessel_->ship.speed = 0;
@@ -1750,7 +1759,7 @@ const Station* GameSession::DockedStation() const {
 }
 
 bool GameSession::Dock(const TargetRef& target, bool instant) {
-    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
+    if (vessel_->phase != GamePhase::Flying || AnyOnFoot()) return false;
     if (target.kind != Kind::Station || !world_.stations.Find(target.index) || !Resolve(target)) {
         Say("Solo se puede atracar en una estación propia.");
         return false;
@@ -1788,6 +1797,7 @@ void GameSession::BeginDock(const TargetRef& target) {
 }
 
 void GameSession::Undock() {
+    if (AnyOnFoot()) return Say("Hay tripulación a pie en la estación: la nave no suelta amarras.");
     if (vessel_->dockPhase == DockPhase::None || !vessel_->orbiting) return;
     LeaveOrbit();
 }
@@ -1895,17 +1905,20 @@ int GameSession::StationFrame() const {
 bool GameSession::Disembark() {
     const Station* s = DockedStation();
     if (!s || !Docked() || pilot_->onFoot) {
-        Say("Hay que estar atracada para bajar.");
+        Say("Hay que estar atracada para bajar.", Audience::Player);
         return false;
     }
-    bubble_.deckKind = s->kind;
-    bubble_.deck = MakeDeck(bubble_.deckKind);
+    // La cubierta y su gente se montan cuando baja el primero; los demas bajan a la misma.
+    if (!AnyOnFoot()) {
+        bubble_.deckKind = s->kind;
+        bubble_.deck = MakeDeck(bubble_.deckKind);
+        bubble_.crew = MakeCrew(bubble_.deck, body_, rules_.foot.crew, bubble_.fx);
+    }
     pilot_->avatar = {};
     pilot_->avatar.position = bubble_.deck.spawn;
     pilot_->avatar.yaw = 1.5707963;  // de espaldas a la esclusa
-    bubble_.crew = MakeCrew(bubble_.deck, body_, rules_.foot.crew, bubble_.fx);
     pilot_->onFoot = true;
-    Say("A pie en " + s->name + ".");
+    Say("A pie en " + s->name + ".", Audience::Player);
     return true;
 }
 
@@ -1919,20 +1932,45 @@ bool GameSession::CanBoard() const {
 bool GameSession::Board(bool anywhere) {
     if (!pilot_->onFoot) return false;
     if (!anywhere && !CanBoard()) {
-        Say("La esclusa está lejos.");
+        Say("La esclusa está lejos.", Audience::Player);
         return false;
     }
     pilot_->onFoot = false;
-    bubble_.crew.clear();
-    Say("De vuelta a bordo.");
+    if (!AnyOnFoot()) bubble_.crew.clear();  // la cubierta se recoge cuando sube el ultimo
+    Say("De vuelta a bordo.", Audience::Player);
     return true;
 }
 
-void GameSession::StepFoot(const FootControls& c, double realSeconds) {
-    pilot_->avatar.yaw += c.yaw;
-    pilot_->avatar.pitch = std::clamp(pilot_->avatar.pitch + c.pitch, -1.45, 1.45);
+// Alguien de la tripulacion de la nave en curso esta a pie. Mientras sea asi, la nave no suelta amarras.
+bool GameSession::AnyOnFoot() const {
+    const int mine = IndexOf(*vessel_);
+    for (const PlayerState& p : players_)
+        if (p.vessel == mine && p.onFoot) return true;
+    return false;
+}
+
+// Todos a bordo, sin pasar por la esclusa: la nave se ha perdido o se ha quedado sin estacion.
+void GameSession::BoardAll() {
+    const int mine = IndexOf(*vessel_);
+    bool any = false;
+    for (PlayerState& p : players_) {
+        if (p.vessel != mine || !p.onFoot) continue;
+        p.onFoot = false;
+        any = true;
+    }
+    if (any) bubble_.crew.clear();
+}
+
+// Los que estan a pie andan cada uno con su mando; la gente de la estacion, una vez por paso.
+void GameSession::StepCrewOnFoot(double realSeconds) {
+    const int mine = IndexOf(*vessel_);
+    for (PlayerState& p : players_) {
+        if (p.vessel != mine || !p.onFoot) continue;
+        p.avatar.yaw += p.footInput.yaw;
+        p.avatar.pitch = std::clamp(p.avatar.pitch + p.footInput.pitch, -1.45, 1.45);
+        if (realSeconds > 0.0) StepHumanoid(p.avatar, p.footInput.move, bubble_.deck.area, body_, rules_.foot.gravity, realSeconds);
+    }
     if (realSeconds <= 0.0) return;
-    StepHumanoid(pilot_->avatar, c.move, bubble_.deck.area, body_, rules_.foot.gravity, realSeconds);
     for (Person& p : bubble_.crew) StepPerson(p, bubble_.deck, body_, rules_.foot.gravity, realSeconds, bubble_.fx);
 }
 
@@ -2122,7 +2160,7 @@ OrbitReport GameSession::OrbitNow() const {
 void GameSession::UpdateFocus(double realSeconds) {
     const World& w = engine_.GetWorld();
     double wanted = 1.0;
-    if (pilot_->onFoot) {
+    if (AnyOnFoot()) {
         wanted = 1.0 / std::max(world_.timeScale, 1.0);  // una persona vive a tiempo real
     } else if (vessel_->phase != GamePhase::Flying) {
         wanted = rules_.world.wreckTime;
@@ -2245,7 +2283,7 @@ std::vector<Vec3d> GameSession::PredictedPath() const {
 // apunta y con la gravedad de aqui. Junto a una estacion, en su marco y con sus topes.
 std::vector<Vec3d> GameSession::ManeuverPath(double realSeconds) const {
     std::vector<Vec3d> path;
-    if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || pilot_->onFoot || realSeconds <= 0.0) return path;
+    if (vessel_->phase != GamePhase::Flying || vessel_->orbiting || AnyOnFoot() || realSeconds <= 0.0) return path;
     constexpr int kSteps = 160;
     const double dt = realSeconds / kSteps;
     const double rate = world_.timeScale * bubble_.timeFocus;
@@ -2617,19 +2655,163 @@ int GameSession::IndexOfId(int id) const {
 
 bool GameSession::SetFocus(int index) {
     if (index < 0 || index >= static_cast<int>(fleet_.size())) return false;
-    focus_ = index;
-    Use(index);
+    return SetFocusPlayer(PrimaryOf(index));
+}
+
+bool GameSession::SetFocusPlayer(int player) {
+    if (player < 0 || player >= static_cast<int>(players_.size())) return false;
+    focusPlayer_ = player;
+    focus_ = players_[static_cast<std::size_t>(player)].vessel;
+    UsePlayer(player);
     return true;
+}
+
+void GameSession::Use(int index) { UsePlayer(PrimaryOf(index)); }
+
+void GameSession::UsePlayer(int player) {
+    pilot_ = &players_[static_cast<std::size_t>(player)];
+    vessel_ = &fleet_[static_cast<std::size_t>(pilot_->vessel)];
+}
+
+// Quien ocupa ese puesto en esa nave, o -1 si esta libre.
+int GameSession::HolderOf(int vessel, Seat seat) const {
+    for (std::size_t p = 0; p < players_.size(); ++p)
+        if (players_[p].vessel == vessel && (players_[p].seats & SeatBit(seat)) != 0) return static_cast<int>(p);
+    return -1;
+}
+
+// El jugador que habla por la nave cuando no importa cual: el piloto, o el primero que vaya a bordo.
+int GameSession::PrimaryOf(int vessel) const {
+    const int pilot = HolderOf(vessel, Seat::Pilot);
+    if (pilot >= 0) return pilot;
+    for (std::size_t p = 0; p < players_.size(); ++p)
+        if (players_[p].vessel == vessel) return static_cast<int>(p);
+    return 0;
+}
+
+// Otro jugador en una nave que ya tiene tripulacion. Se queda con los puestos de quien mas tenga, menos
+// el primero de ese: con dos, uno pilota y el otro lleva todo lo demas. Sabe lo que sabe la tripulacion.
+int GameSession::AddPlayer(const std::string& name, int vesselId) {
+    const int vessel = vesselId > 0 ? IndexOfId(vesselId) : focus_;
+    if (vessel < 0) return -1;
+    const std::size_t guideIndex = static_cast<std::size_t>(PrimaryOf(vessel));
+    players_.emplace_back();
+    PlayerState& guide = players_[guideIndex];
+    PlayerState& p = players_.back();
+    const int index = static_cast<int>(players_.size()) - 1;
+    p.id = "local-j" + std::to_string(index + 1);
+    p.name = name.empty() ? "Jugador " + std::to_string(index + 1) : name;
+    p.vessel = vessel;
+    p.seats = 0;
+    p.known = guide.known;
+    p.visited = guide.visited;
+    p.scanned = guide.scanned;
+    p.cursorUsed = p.analysisUsed = true;
+    // El reparto de puestos.
+    PlayerState* richest = nullptr;
+    int most = 1;
+    for (PlayerState& other : players_) {
+        if (&other == &p || other.vessel != vessel) continue;
+        int held = 0;
+        for (int s = 0; s < static_cast<int>(Seat::Count); ++s) held += (other.seats >> s) & 1u;
+        if (held > most) {
+            most = held;
+            richest = &other;
+        }
+    }
+    if (richest) {
+        bool first = true;
+        for (int s = 0; s < static_cast<int>(Seat::Count); ++s) {
+            const unsigned bit = 1u << s;
+            if ((richest->seats & bit) == 0) continue;
+            if (first) {
+                first = false;  // ese se lo queda
+                continue;
+            }
+            richest->seats &= ~bit;
+            p.seats |= bit;
+        }
+    }
+    UsePlayer(focusPlayer_);
+    return index;
+}
+
+// Ocupa un puesto libre de su nave.
+bool GameSession::TakeSeat(int player, Seat seat) {
+    if (player < 0 || player >= static_cast<int>(players_.size()) || seat == Seat::Count) return false;
+    PlayerState& p = players_[static_cast<std::size_t>(player)];
+    const int holder = HolderOf(p.vessel, seat);
+    if (holder == player) return true;
+    if (holder >= 0) return false;
+    p.seats |= SeatBit(seat);
+    return true;
+}
+
+bool GameSession::LeaveSeat(int player, Seat seat) {
+    if (player < 0 || player >= static_cast<int>(players_.size()) || seat == Seat::Count) return false;
+    PlayerState& p = players_[static_cast<std::size_t>(player)];
+    if ((p.seats & SeatBit(seat)) == 0) return false;
+    p.seats &= ~SeatBit(seat);
+    return true;
+}
+
+// Lo que descubre uno a bordo lo sabe toda la tripulacion: se juntan sistemas y astros analizados.
+void GameSession::SyncCrew(int vessel) {
+    std::vector<PlayerState*> crew;
+    for (PlayerState& p : players_)
+        if (p.vessel == vessel) crew.push_back(&p);
+    if (crew.size() < 2) return;
+    PlayerState& all = *crew.front();
+    for (std::size_t i = 1; i < crew.size(); ++i) {
+        PlayerState& p = *crew[i];
+        for (std::size_t s = 0; s < all.known.size() && s < p.known.size(); ++s) {
+            all.known[s] = all.known[s] || p.known[s];
+            all.visited[s] = all.visited[s] || p.visited[s];
+        }
+        all.scanned.insert(p.scanned.begin(), p.scanned.end());
+    }
+    for (std::size_t i = 1; i < crew.size(); ++i) {
+        PlayerState& p = *crew[i];
+        if (p.known != all.known) p.known = all.known;
+        if (p.visited != all.visited) p.visited = all.visited;
+        if (p.scanned.size() != all.scanned.size()) p.scanned = all.scanned;
+    }
+}
+
+const char* Name(Seat seat) {
+    switch (seat) {
+        case Seat::Pilot: return "pilotaje";
+        case Seat::Tactical: return "armas y escudos";
+        case Seat::Engineering: return "ingeniería";
+        default: return "ninguno";
+    }
+}
+
+// El puesto que hace falta para dar una orden. Count: cualquiera puede.
+Seat SeatOf(CommandType type) {
+    using T = CommandType;
+    switch (type) {
+        case T::SetDrive: case T::SetThrottle: case T::HoldPosition: case T::Autopilot: case T::CancelAutopilot:
+        case T::Orbit: case T::Dock: case T::Undock: case T::Aim: case T::Track: case T::StopTracking:
+            return Seat::Pilot;
+        case T::Fire: case T::FireAll: case T::FireModule: case T::SetShield: case T::ShieldOn: case T::CycleShield:
+            return Seat::Tactical;
+        case T::DeployPower: case T::DeployShipyard: case T::Interact: case T::UpgradeStation: case T::DeployDrones:
+        case T::RecallDrones: case T::ExtractElement: case T::StartScan: case T::CancelScan: case T::Coolant:
+        case T::InstallModule: case T::MoveModule: case T::ImpulseEngine: case T::Blueprint: case T::Missiles: case T::PointDefense:
+            return Seat::Engineering;
+        default: return Seat::Count;  // bajar a pie, subir, el tutorial, la camara: cosas de cada uno
+    }
 }
 
 // Otra nave en la flota, a km de la del foco, a su costado y parada, con un jugador nuevo que sabe lo
 // mismo que el del foco. Devuelve su id.
 int GameSession::AddVessel(double km) {
     const Vessel& origin = fleet_[static_cast<std::size_t>(focus_)];
-    const PlayerState& guide = crews_[static_cast<std::size_t>(focus_)];
+    const PlayerState& guide = players_[static_cast<std::size_t>(focusPlayer_)];
     const Vec3d side = origin.ship.orientation.ToMatrix().TransformDirection(Vec3d{1, 0, 0});
     fleet_.emplace_back();
-    crews_.emplace_back();
+    players_.emplace_back();
     Vessel& v = fleet_.back();
     v.id = nextVessel_++;
     v.ship = MakeShip(rules_);
@@ -2638,7 +2820,8 @@ int GameSession::AddVessel(double km) {
     v.ship.moveDirection = v.ship.warpHeading = Heading(origin.ship);
     v.nearestSystem = origin.nearestSystem;
     v.timeFocus = origin.timeFocus;
-    PlayerState& p = crews_.back();
+    PlayerState& p = players_.back();
+    p.vessel = static_cast<int>(fleet_.size()) - 1;
     p.id = "local-" + std::to_string(v.id);
     p.name = "Piloto " + std::to_string(v.id);
     p.known = guide.known;
@@ -2647,7 +2830,7 @@ int GameSession::AddVessel(double km) {
     p.cursorUsed = p.analysisUsed = true;
     // Fase 3a: mientras haya varias naves, ninguna sale de este sistema (ver LeashToFleet).
     fleetSystem_ = origin.nearestSystem;
-    Use(focus_);  // emplace_back no mueve las demas, pero la nave en curso se vuelve a fijar por si acaso
+    UsePlayer(focusPlayer_);  // emplace_back no mueve las demas, pero la nave en curso se vuelve a fijar por si acaso
     return v.id;
 }
 
@@ -2748,7 +2931,7 @@ bool GameSession::AimAtSolution(const TargetRef& target, WeaponKind kind) {
 }
 
 bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
-    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
+    if (vessel_->phase != GamePhase::Flying || AnyOnFoot()) return false;
     const std::string name = Name(kind);
     const Anomaly* a = target.kind == Kind::Anomaly ? FindAnomaly(target.index) : nullptr;
     if (!a || a->maxHull <= 0.0 || a->hull <= 0.0) {
@@ -2909,7 +3092,9 @@ void GameSession::Hurt(DamageType type, double amount, const std::string& source
         vessel_->hitDamage = 0.0;
         vessel_->hitShield = 0.0;
     } else {
-        pilot_->log.pop_back();
+        const int mine = IndexOf(*vessel_);
+        for (PlayerState& p : players_)
+            if (p.vessel == mine && !p.log.empty() && p.log.back().rfind(lead, 0) == 0) p.log.pop_back();
     }
     ++vessel_->hitStreak;
     vessel_->hitDamage += taken;
@@ -3059,7 +3244,7 @@ void GameSession::ShutDownShip(const std::string& reason) {
     vessel_->orbiting.reset();
     vessel_->dockPhase = DockPhase::None;
     vessel_->dockWanted = -1;
-    pilot_->onFoot = false;
+    BoardAll();
     vessel_->exploring = -1;
     CancelScan();
     vessel_->ship.speed = 0;
@@ -3348,7 +3533,7 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
         if (!quiet) Say(reason);
         return false;
     };
-    if (vessel_->phase != GamePhase::Flying || pilot_->onFoot) return false;
+    if (vessel_->phase != GamePhase::Flying || AnyOnFoot()) return false;
     if (slot < 0 || slot >= static_cast<int>(vessel_->ship.loadout.modules.size())) return fail("Esa ranura no existe.");
     const HumanWeaponSpec* w = HumanWeaponOf(rules_.armament, vessel_->ship.loadout.modules[static_cast<std::size_t>(slot)]);
     if (!w) return fail("Esa ranura no lleva un arma humana.");
@@ -4143,28 +4328,37 @@ void GameSession::UpdateContacts() {
 //   (el trabajo de la nave y lo que se mueve en la burbuja: drones, barrido, anomalias, combate)
 //   FinishVessel   calor, reparacion, sensores y, si no queda casco, la perdida
 void GameSession::Step(double realSeconds, const ShipControls& controls, float focalPixels) {
-    // El mando es el de la nave del foco; las demas siguen con lo que tengan ordenado.
-    std::vector<ShipControls> all(fleet_.size());
-    all[static_cast<std::size_t>(focus_)] = controls;
-    StepAll(realSeconds, all, focalPixels);
+    // El mando es el del jugador del foco; los demas siguen con lo que tengan ordenado.
+    std::vector<ShipControls> all(players_.size());
+    all[static_cast<std::size_t>(focusPlayer_)] = controls;
+    StepPlayers(realSeconds, all, focalPixels);
 }
 
 void GameSession::StepAll(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels) {
+    // Un mando por nave: es el de quien la pilota.
+    std::vector<ShipControls> all(players_.size());
+    for (std::size_t i = 0; i < fleet_.size() && i < controls.size(); ++i) all[static_cast<std::size_t>(PrimaryOf(static_cast<int>(i)))] = controls[i];
+    StepPlayers(realSeconds, all, focalPixels);
+}
+
+void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels) {
     const std::size_t count = fleet_.size();
-    // Pase lo que pase, al salir la nave en curso vuelve a ser la del foco.
+    // Pase lo que pase, al salir la nave y el jugador en curso vuelven a ser los del foco.
     struct Back {
         GameSession& s;
-        ~Back() { s.Use(s.focus_); }
+        ~Back() { s.UsePlayer(s.focusPlayer_); }
     } back{*this};
     std::vector<VesselStep> t(count);
     std::vector<StepClock> k(count);
     const auto use = [&](std::size_t i) { Use(static_cast<int>(i)); };
+    static const ShipControls none;
+    const auto input = [&](int player) -> const ShipControls& { return player >= 0 && static_cast<std::size_t>(player) < controls.size() ? controls[static_cast<std::size_t>(player)] : none; };
 
     // Modo cinematica: durante la toma de un impacto todo va mas despacio, pero solo si la estan
     // viendo todos los que comparten la burbuja. La toma dura en tiempo real.
     bool everyoneWatching = true;
-    for (std::size_t i = 0; i < count; ++i) {
-        use(i);
+    for (std::size_t p = 0; p < players_.size(); ++p) {
+        UsePlayer(static_cast<int>(p));
         pilot_->strikeAge += realSeconds;
         everyoneWatching = everyoneWatching && CinematicView();
     }
@@ -4192,16 +4386,24 @@ void GameSession::StepAll(double realSeconds, const std::vector<ShipControls>& c
         k[i].seconds = seconds;
         k[i].hours = seconds / 3600.0;
     }
+    UsePlayer(focusPlayer_);
     UpdateLostPieces(seconds, realSeconds);
 
     for (std::size_t i = 0; i < count; ++i) {
+        // Cada jugador de a bordo: su tutorial y, si va a pie, su mando de andar.
+        for (std::size_t p = 0; p < players_.size(); ++p) {
+            if (players_[p].vessel != static_cast<int>(i)) continue;
+            UsePlayer(static_cast<int>(p));
+            pilot_->dialogue.Update(*this, realSeconds);
+            pilot_->footInput = input(static_cast<int>(p)).foot;
+        }
         use(i);
-        pilot_->dialogue.Update(*this, realSeconds);
         vessel_->approach.reset();
         // El casco que se pierda en este paso sin pasar por WoundHull se reparte al final entre todas las zonas.
         t[i].hullStart = vessel_->ship.hull;
         vessel_->directedLoss = 0.0;
-        StepVessel(i < controls.size() ? controls[i] : ShipControls{}, k[i], t[i]);
+        // La nave la lleva quien ocupa el puesto de piloto; si esta libre, nadie.
+        StepVessel(input(HolderOf(static_cast<int>(i), Seat::Pilot)), k[i], t[i]);
     }
 
     AdvanceBubble(realSeconds, seconds, t, focalPixels);
@@ -4222,15 +4424,20 @@ void GameSession::StepAll(double realSeconds, const std::vector<ShipControls>& c
     }
     // Lo que se mueve en la burbuja. Sin ninguna nave en vuelo, se queda quieto, como siempre.
     if (anyone) {
-        Use(focus_);
+        UsePlayer(focusPlayer_);
         UpdateAnomalies(seconds);
         UpdateCombat(seconds);
     }
     for (std::size_t i = 0; i < count; ++i) {
         if (!alive[i]) continue;
+        for (std::size_t p = 0; p < players_.size(); ++p) {
+            if (players_[p].vessel != static_cast<int>(i)) continue;
+            UsePlayer(static_cast<int>(p));
+            TrackStrike();
+        }
         use(i);
-        TrackStrike();
         FinishVessel(k[i], t[i]);
+        SyncCrew(static_cast<int>(i));
     }
 }
 
@@ -4272,7 +4479,7 @@ void GameSession::StepVessel(const ShipControls& controls, const StepClock& k, V
     if (t.flying) {
         const bool steering = controls.turnYaw != 0.0f || controls.turnPitch != 0.0f || controls.turnRoll != 0.0f || controls.throttleChange != 0.0;
         if (vessel_->autopilot && steering) CancelAutopilot();
-        if (pilot_->onFoot) StepFoot(controls.foot, k.real);
+        if (AnyOnFoot()) StepCrewOnFoot(k.real);
         else if (vessel_->orbiting && (vessel_->ship.throttle != 0.0 || controls.throttleChange != 0.0)) LeaveOrbit();
 
         Steer(controls, k.real);
@@ -4287,7 +4494,7 @@ void GameSession::StepVessel(const ShipControls& controls, const StepClock& k, V
             if (!Resolve(*vessel_->orbiting)) {
                 vessel_->orbiting.reset();
                 vessel_->dockPhase = DockPhase::None;
-                if (pilot_->onFoot) Board(true);
+                BoardAll();
             } else {
                 // Una orbita asistida es una circunferencia exacta: no decae ni gasta.
                 const double angle = vessel_->orbitRate * k.seconds;
@@ -4482,14 +4689,45 @@ int GameSession::StepFixed(double realSeconds, const ShipControls& c, float foca
     return steps;
 }
 
+// La orden de un jugador. Si no ocupa el puesto que hace falta, no se cumple, y se le dice por que.
+CommandResult GameSession::ApplyAs(int player, const ShipCommand& command) {
+    if (player < 0 || player >= static_cast<int>(players_.size())) return {};
+    struct Back {
+        GameSession& s;
+        Vessel* vessel;
+        PlayerState* pilot;
+        ~Back() {
+            s.vessel_ = vessel;
+            s.pilot_ = pilot;
+        }
+    } back{*this, vessel_, pilot_};
+    UsePlayer(player);
+    const Seat seat = SeatOf(command.type);
+    if (seat != Seat::Count && (pilot_->seats & SeatBit(seat)) == 0) {
+        CommandResult refused;
+        const int holder = HolderOf(pilot_->vessel, seat);
+        refused.why = holder >= 0 ? std::string("Eso es del puesto de ") + Name(seat) + ", que lleva " + players_[static_cast<std::size_t>(holder)].name + "."
+                                  : std::string("Eso es del puesto de ") + Name(seat) + ", que está libre: ocúpalo primero.";
+        Say(refused.why, Audience::Player);
+        return refused;
+    }
+    return Execute(command);
+}
+
+CommandResult GameSession::Apply(const ShipCommand& command) { return ApplyAs(focusPlayer_, command); }
+
+// Una orden a una nave, venga de quien venga: la da quien ocupe el puesto que hace falta.
 CommandResult GameSession::ApplyTo(int vesselId, const ShipCommand& command) {
     const int index = IndexOfId(vesselId);
     if (index < 0) return {};
+    const Seat seat = SeatOf(command.type);
+    const int holder = seat == Seat::Count ? -1 : HolderOf(index, seat);
+    if (holder >= 0) return ApplyAs(holder, command);
     const Using other(*this, index);
-    return Apply(command);
+    return Execute(command);
 }
 
-CommandResult GameSession::Apply(const ShipCommand& c) {
+CommandResult GameSession::Execute(const ShipCommand& c) {
     using T = CommandType;
     CommandResult r;
     // Una orden puede venir de fuera: lo que no es un valor de su enumeracion se rechaza.

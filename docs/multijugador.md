@@ -261,7 +261,27 @@ Una sola burbuja; reloj según la regla 2 del §2.3.
 | 3a.6 | Diseño y clase **por nave** en lugar de globales. |
 | 3a.7 | Límite provisional: la segunda nave no puede salir del sistema de la primera (avisa y frena). Se quita en la fase 4. |
 
-### Fase 3b — Dos entradas sobre la misma nave
+### Fase 3b — Dos entradas sobre la misma nave — **hecha el 13-11-2026, salvo el segundo mando físico**
+
+Cómo quedó:
+
+- **Jugadores y naves, por separado.** `players_` sustituye a la lista paralela a la flota: cada `PlayerState` dice en qué nave va (`vessel`) y qué puestos ocupa (`seats`). Una nave tiene siempre al menos un jugador. El foco pasa a ser un **jugador** (`SetFocusPlayer`); `SetFocus(nave)` lleva a quien la pilota.
+- **Puestos (decisión 2c).** Tres: pilotaje, armas y escudos, ingeniería (`Seat`, y `SeatOf(orden)` dice cuál pide cada orden). Quien va solo los lleva todos; al entrar el segundo (`AddPlayer`), el primero se queda con el pilotaje y el otro con lo demás; un tercero se lleva uno de los dos del segundo; el cuarto entra sin puesto. `TakeSeat` solo ocupa un puesto libre; `LeaveSeat` lo suelta.
+- **Órdenes con autor.** `ApplyAs(jugador, orden)` rechaza la que pide un puesto que no es suyo y se lo explica solo a él; `Apply` es el jugador del foco y `ApplyTo(nave, orden)` la da quien ocupe el puesto. Bajar a pie, subir, el tutorial y la cámara no piden puesto.
+- **Mandos.** `StepPlayers(real, mandos)` lleva un mando por jugador. La nave obedece **solo** el de quien ocupa el pilotaje (sin piloto, a nadie), así que no hizo falta sumar giros de varios: el plan preveía mezclarlos para el reparto «todos pueden todo», que no es el elegido. Cada jugador a pie anda con su propio mando.
+- **Mensajes.** `Say` reparte ya de verdad: `Crew` a todos los de la nave, `Player` solo a quien toca, `Everyone` a todos.
+- **A pie.** Cada jugador baja y sube por su cuenta, a la misma cubierta. Mientras alguien de la tripulación está a pie, la nave no suelta amarras. Los compañeros que han bajado se dibujan.
+- **Conocimiento.** Lo que averigua uno (sistemas, astros analizados) lo sabe toda la tripulación al acabar el paso.
+- **Juego.** Consola: `jugador`, `jugador nuevo [nombre]`, `jugador ver <n>`, `jugador <n> <orden...>`, `puesto`, `puesto <pilotaje|armas|ingenieria>`, `puesto dejar <...>`. F3 pasa a ser el siguiente jugador.
+
+Lo que falta o es provisional:
+
+- **No hay segundo mando físico** (paso 3b.5): el segundo jugador solo se maneja por consola, con guiones o cambiando con F3. Un mando de juego de SDL3 queda pendiente.
+- **La interfaz no enseña los puestos**: quién lleva qué solo se ve con `jugador` y en el mensaje de rechazo.
+- **Los jugadores que entran con `AddPlayer` no se guardan**: al cargar hay un jugador por nave, con todos los puestos.
+- Las bajas, el botín y la toma cinematográfica de un disparo son de quien habla por la nave (el piloto), no de quien apretó el gatillo.
+- La cubierta a pie es una sola para toda la burbuja: dos tripulaciones a pie en estaciones distintas no caben todavía.
+- Apuntar y alinear el casco (`Aim`, `Track`) son del pilotaje, porque giran la nave; las torretas y los escudos, del puesto de armas.
 
 | Paso | Qué |
 |---|---|

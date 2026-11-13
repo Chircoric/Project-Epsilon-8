@@ -338,8 +338,24 @@ struct Vessel {
     int exploring = -1;
 };
 
+// Los puestos de una nave con varios jugadores (fase 3b de docs/multijugador.md). Cada orden pide uno
+// (SeatOf); quien va solo los ocupa todos. Un puesto libre lo puede ocupar cualquiera de a bordo.
+enum class Seat : int {
+    Pilot,        // motor, mando, rumbo, piloto automatico, orbita, atraque
+    Tactical,     // armas y escudos
+    Engineering,  // escaner, drones, estaciones, refrigerantes y taller
+    Count
+};
+inline constexpr unsigned SeatBit(Seat seat) { return 1u << static_cast<int>(seat); }
+inline constexpr unsigned kAllSeats = (1u << static_cast<int>(Seat::Count)) - 1u;
+const char* Name(Seat seat);
+Seat SeatOf(CommandType type);  // Seat::Count: no pide puesto (bajar a pie, el tutorial, la camara)
+
 // Un jugador: lo que sabe, lo que le han dicho y su cuerpo cuando va a pie.
 struct PlayerState {
+    int vessel = 0;              // la nave en la que va: indice en la flota
+    unsigned seats = kAllSeats;  // los puestos que ocupa en ella (bits de Seat)
+    FootControls footInput;      // su mando de andar en este paso
     std::string id = "local";    // su archivo en la partida: jugadores/<id>.sav
     std::string name = "Piloto";
     Dialogue dialogue;
@@ -399,6 +415,9 @@ public:
     // Con varias naves: un mando por nave, en el orden de la flota (las que falten, sin mando). El de
     // arriba le da el suyo a la nave del foco.
     void StepAll(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels = 800.0f);
+    // Y con varios jugadores: un mando por jugador, en su orden. La nave obedece el de quien ocupa el
+    // puesto de piloto; cada uno anda a pie con el suyo.
+    void StepPlayers(double realSeconds, const std::vector<ShipControls>& controls, float focalPixels = 800.0f);
 
     // ---- Flota (fase 3a de docs/multijugador.md): varias naves en el mismo mundo ----
     // Todo lo demas de esta clase (Ship(), Apply(), Contacts(), Route()...) habla de UNA nave: la del
@@ -408,7 +427,22 @@ public:
     bool SetFocus(int index);
     int VesselId() const { return vessel_->id; }
     const Vessel& VesselAt(int index) const { return fleet_[static_cast<std::size_t>(index)]; }
-    const PlayerState& PlayerAt(int index) const { return crews_[static_cast<std::size_t>(index)]; }
+    const PlayerState& PlayerAt(int index) const { return players_[static_cast<std::size_t>(index)]; }
+
+    // ---- Tripulacion (fase 3b): varios jugadores en la misma nave ----
+    // El jugador del foco es el que mira y maneja desde fuera: suyos son Log(), el tutorial, el cuerpo a
+    // pie y las ordenes de Apply(). SetFocus(nave) pasa a quien la pilota.
+    int PlayerCount() const { return static_cast<int>(players_.size()); }
+    int FocusPlayer() const { return focusPlayer_; }
+    bool SetFocusPlayer(int player);
+    // Otro jugador en una nave (0 = la del foco). Con dos, el primero pilota y el segundo lleva lo demas.
+    // Devuelve su indice, o -1 si la nave no existe.
+    int AddPlayer(const std::string& name = "", int vesselId = 0);
+    bool TakeSeat(int player, Seat seat);   // solo si esta libre
+    bool LeaveSeat(int player, Seat seat);
+    int SeatHolder(Seat seat) const { return HolderOf(pilot_->vessel, seat); }  // en la nave del foco; -1 = libre
+    // La orden de un jugador concreto: se cumple solo si ocupa el puesto que pide.
+    CommandResult ApplyAs(int player, const ShipCommand& command);
     int IndexOfVessel(int id) const { return IndexOfId(id); }  // -1 si no existe
     // Una nave mas, a km del costado de la del foco, parada, con su jugador. Devuelve su id. Mientras
     // haya varias, ninguna puede salir del sistema donde estan (limite provisional hasta las burbujas).
@@ -769,7 +803,6 @@ private:
     // La estacion propia mas cercana dentro de stationNear, o -1. Junto a ella la nave vuela en su
     // marco: la estacion la lleva consigo y su gravedad no la separa.
     int StationFrame() const;
-    void StepFoot(const FootControls& controls, double realSeconds);
     void UpdateAnomalies(double seconds);
     void UpdateCombat(double seconds);
     void StepProjectiles(double seconds);
@@ -851,11 +884,12 @@ private:
     WorldState world_;
     Bubble bubble_;
     // Las naves y sus jugadores (fase 3a: un jugador por nave, en el mismo orden). En deque: sus
-    // direcciones no cambian al anadir. vessel_ y pilot_ son la nave y el jugador EN CURSO: todo el
+    // direcciones no cambian al anadir. Cada jugador dice en que nave va (PlayerState::vessel); una nave
+    // tiene siempre al menos uno. vessel_ y pilot_ son la nave y el jugador EN CURSO: todo el
     // codigo de la sesion trabaja sobre ellos, y Use() los cambia. Fuera de Step son siempre los del
     // foco (focus_): la nave que se mira y se maneja desde fuera.
     std::deque<Vessel> fleet_;
-    std::deque<PlayerState> crews_;
+    std::deque<PlayerState> players_;
     Vessel* vessel_ = nullptr;
     PlayerState* pilot_ = nullptr;
     int focus_ = 0;
@@ -865,10 +899,16 @@ private:
     eps::Vec3d VelocityOf(const Vessel& v) const;  // en el mundo
     void LeashToFleet();
     void RestoreVessel(const ShipSave& v);
-    void Use(int index) {
-        vessel_ = &fleet_[static_cast<std::size_t>(index)];
-        pilot_ = &crews_[static_cast<std::size_t>(index)];
-    }
+    int focusPlayer_ = 0;  // el jugador del foco; focus_ es su nave
+    void Use(int index);         // la nave, con quien la pilota
+    void UsePlayer(int player);  // el jugador, con su nave
+    int HolderOf(int vessel, Seat seat) const;
+    int PrimaryOf(int vessel) const;
+    bool AnyOnFoot() const;
+    void BoardAll();
+    void StepCrewOnFoot(double realSeconds);
+    void SyncCrew(int vessel);
+    CommandResult Execute(const ShipCommand& command);  // la orden, ya comprobado quien la da
     int IndexOf(const Vessel& v) const;
     // Trabaja sobre otra nave mientras viva, y luego vuelve a la que estaba en curso.
     struct Using {

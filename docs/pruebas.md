@@ -156,6 +156,11 @@ Se escriben con F1 dentro del juego, o se pasan con `--cmd`. Cada uno deja su re
 | `nave nueva [km]` | Otra nave a tu costado (20 km si no se dice; nunca a menos de cuatro radios), parada, con su propio jugador. Queda como objetivo. Mientras haya más de una, ninguna puede salir del sistema |
 | `nave ver <id>` | Pasas a llevar esa nave: la cámara, la interfaz y las órdenes son las suyas. En el juego, **F2** pasa a la siguiente |
 | `nave <id> <orden...>` | Ejecuta cualquier comando con esa nave: `nave 2 motor crucero`, `nave 2 mando 40`, `nave 2 ir`. El objetivo es uno solo para toda la consola |
+| `jugador` | Lista los jugadores con su nave, sus puestos y si van a pie; el del asterisco eres tú |
+| `jugador nuevo [nombre]` | Otro jugador en tu nave. Con dos, el primero se queda con el pilotaje y el segundo con armas, escudos e ingeniería |
+| `jugador ver <n>` | Pasas a ser ese jugador: su nave, sus puestos, su registro, su tutorial. En el juego, **F3** pasa al siguiente |
+| `jugador <n> <orden...>` | Ejecuta cualquier comando como ese jugador: `jugador 2 escudo em`, `jugador 2 apie`. Si la orden pide un puesto que no lleva, se rechaza y se le dice por qué |
+| `puesto` | Tus puestos. `puesto <pilotaje\|armas\|ingenieria>` ocupa uno libre; `puesto dejar <...>` lo suelta. Sin nadie en el pilotaje, la nave no obedece ningún mando |
 
 Receta (dos naves a la vista): `--cmd "nave nueva 2.5" --cmd "plegar 0" --cmd "plegar 1" --cmd "plegar 2" --cmd "plegar 3"` deja la segunda a la derecha de la pantalla. Para verla moverse por su cuenta: `--cmd "nave 2 mando 40" --cmd-at 300 "nave 2 frenar"`.
 
