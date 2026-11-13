@@ -489,6 +489,9 @@ struct WorldRules {
     double dangerTime = 0.15;     // y en combate o con una colision encima
     double stationTime = 0.3;     // y junto a una estacion, para maniobrar
     double stationNear = 3000.0;  // km
+    // Una nave cuyo jugador se desconecta no sale del mundo hasta llevar este tiempo real sin combate:
+    // sin recibir ni hacer fuego y sin un hostil a tiro. Mientras, sigue ahi, parada y vulnerable.
+    double logoutCalm = 15.0;     // s reales
 };
 
 // Modo cinematica (propuesta): tras cada impacto del jugador en un blanco, la camara lo rodea

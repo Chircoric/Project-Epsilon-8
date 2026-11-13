@@ -164,7 +164,9 @@ struct CommandResult {
 };
 
 // Adrift: una zona roja ha apagado la nave. Va a la deriva, a oscuras, hasta la pantalla final.
-enum class GamePhase : int { Flying, Exploding, GameOver, Adrift };
+// Away: fuera del mundo mientras su jugador no esta conectado. Ni se mueve, ni se la ve, ni se le puede
+// disparar; vuelve donde estaba cuando el jugador entra otra vez.
+enum class GamePhase : int { Flying, Exploding, GameOver, Adrift, Away };
 
 enum class RoutePhase : int { None, Aligning, Cruising, Rounding, Braking };
 
@@ -305,6 +307,8 @@ struct Vessel {
     int homeStation = -1;      // la ultima estacion propia donde atraco: ahi reaparece si se pierde
     bool respawnPending = false;  // ha reaparecido en el sistema de su estacion y aun no ha podido atracar
     bool leashWarned = false;     // ya se le aviso de que no puede salir del sistema de la flota (fase 3a)
+    double combatAge = 1.0e9;     // s reales desde la ultima vez que estuvo en combate (recibir o hacer fuego, un hostil a tiro)
+    bool leaving = false;         // no le queda nadie conectado a bordo: saldra del mundo cuando lleve un rato sin combate
 
     // Danos, calor y perdida.
     int hitStreak = 0;
@@ -358,6 +362,7 @@ Seat SeatOf(CommandType type);  // Seat::Count: no pide puesto (bajar a pie, el 
 // Un jugador: lo que sabe, lo que le han dicho y su cuerpo cuando va a pie.
 struct PlayerState {
     int vessel = 0;              // la nave en la que va: indice en la flota
+    bool connected = true;       // false: se ha desconectado; su sitio le espera
     unsigned seats = kAllSeats;  // los puestos que ocupa en ella (bits de Seat)
     FootControls footInput;      // su mando de andar en este paso
     std::string id = "local";    // su archivo en la partida: jugadores/<id>.sav
@@ -537,6 +542,13 @@ public:
         replica_ = true;
     }
     bool Replica() const { return replica_; }
+    // Un jugador se desconecta o vuelve (el servidor). Al irse deja libres sus puestos. Si no queda nadie
+    // conectado a bordo, la nave se queda parada y sale del mundo cuando lleve WorldRules::logoutCalm
+    // segundos sin combate; hasta entonces sigue siendo vulnerable, para que desconectarse en mitad de un
+    // combate no salve a nadie. Al volver, la nave reaparece donde estaba.
+    void PlayerLeft(int player);
+    void PlayerBack(int player);
+    bool InCombat(int vessel) const;  // ha estado en combate hace menos de logoutCalm
     // El identificador y el nombre de un jugador cualquiera (el servidor, al entrar uno nuevo).
     void NamePlayer(int player, const std::string& id, const std::string& name) {
         players_[static_cast<std::size_t>(player)].id = SafePlayerId(id);
@@ -978,6 +990,8 @@ private:
     bool Here(const Vessel& v) const { return &bubbles_[static_cast<std::size_t>(v.bubble)] == bubble_; }  // en la burbuja en curso
     int EyeOf(int bubble) const;        // la nave que hace de camara del motor de esa burbuja; -1 si no tiene naves
     int CountIn(int bubble) const;
+    int ActiveIn(int bubble) const;     // las que estan en el mundo: sin contar las ausentes
+    int AboardConnected(int vessel) const;
     void StepBubble(int bubble, double realSeconds, const std::vector<ShipControls>& controls, float focalPixels);
     void Regroup();                     // las naves que salen de una burbuja o entran en otra
     int OpenBubble(const Bubble& from, const eps::Vec3d& absolute);  // -1 si no hay fabrica de motores

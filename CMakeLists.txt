@@ -115,6 +115,17 @@ if(EPSILON_BUILD_DEMOS AND TARGET epsilon_engine)
         game/src/GameLayer.cpp)
     target_include_directories(epsilon_game_logic PUBLIC game/include)
     target_link_libraries(epsilon_game_logic PUBLIC epsilon_engine)
+    # La red (docs/multijugador.md, fase 6) va sobre ENet, de vcpkg. Sin el, el juego compila igual y
+    # solo queda el transporte en memoria.
+    find_package(unofficial-enet CONFIG QUIET)
+    if(TARGET unofficial::enet::enet)
+        target_sources(epsilon_game_logic PRIVATE game/src/NetEnet.cpp)
+        target_link_libraries(epsilon_game_logic PUBLIC unofficial::enet::enet)
+        if(WIN32)
+            target_link_libraries(epsilon_game_logic PUBLIC ws2_32 winmm)  # los sockets de Windows, que ENet usa
+        endif()
+        target_compile_definitions(epsilon_game_logic PUBLIC EPSILON_WITH_ENET)
+    endif()
     if(MSVC)
         target_compile_options(epsilon_game_logic PRIVATE /W4 /permissive-)
     endif()
