@@ -73,6 +73,7 @@ out\build\x64-sdl-release\epsilon_game_tests.exe --solo-dorada
 | `--screenshot a.png` | Guarda el último fotograma. Requiere `--frames` |
 | `--size W H` | Tamaño de la ventana. Por defecto, 1600 × 900 |
 | `--no-vsync` | Sin sincronización vertical. **Imprescindible para medir FPS** |
+| `--loopback` | Servidor y cliente en el mismo proceso, unidos en memoria: la partida la simula un servidor a 1/60 s y lo que se ve es la réplica de un cliente (`docs/multijugador.md`, fase 5). Debe verse igual que sin la opción. La consola actúa sobre el servidor, así que `nave ver`, F2 y F3 no cambian la vista |
 | `--fixed-step` | La partida avanza a pasos fijos de 1/60 s (`GameSession::StepFixed`), como lo hará el servidor. Por encima de 60 FPS hay fotogramas sin paso: aún no se interpola |
 | `--mode N` | Salta el menú: 0 Pacífico, 1 Fácil, 2 Normal, 3 Difícil, 4 Realista |
 | `--no-tutorial` | Sin diálogos |

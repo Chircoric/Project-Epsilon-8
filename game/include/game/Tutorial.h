@@ -114,6 +114,27 @@ public:
     const std::string& LastCompleted() const { return lastCompleted_; }
     double SinceCompleted() const { return sinceCompleted_; }  // segundos reales
 
+    // Por donde va, sin los pasos (que son los mismos en todas partes): lo que el servidor le manda al
+    // cliente para que su copia ensene el mismo texto y el mismo objetivo.
+    struct State {
+        std::size_t step = 0, line = 0;
+        double typed = 0, shown = 0;
+        int completions = 0;
+        std::string lastCompleted;
+        double sinceCompleted = 1.0e9;
+        bool active = false;  // false: terminado o apagado; la copia lo apaga tambien
+    };
+    State GetState() const { return {step_, line_, typed_, shown_, completions_, lastCompleted_, sinceCompleted_, Active()}; }
+    void SetState(const State& s) {
+        step_ = s.step;
+        line_ = s.line;
+        typed_ = s.typed;
+        shown_ = s.shown;
+        completions_ = s.completions;
+        lastCompleted_ = s.lastCompleted;
+        sinceCompleted_ = s.sinceCompleted;
+    }
+
 private:
     void Advance(bool completed);
 

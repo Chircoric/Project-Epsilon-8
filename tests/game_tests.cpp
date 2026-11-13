@@ -17,6 +17,7 @@
 #include "game/Economy.h"
 #include "game/GameLayer.h"
 #include "game/GameModels.h"
+#include "game/Net.h"
 #include "game/SaveGame.h"
 #include "game/Session.h"
 #include "game/Settings.h"
@@ -5597,6 +5598,236 @@ static void TestBubbles() {
     CHECK(solo.NearestSystem() == 3 && solo.BubbleCount() == 1 && extra == 0);
 }
 
+// Servidor y cliente en el mismo proceso, unidos por el transporte en memoria (fase 5 de docs/multijugador.md).
+static void TestNet() {
+    using C = CommandType;
+    Balance rules;
+    const double dt = GameSession::kFixedStep;
+    const auto absolute = [](const GameSession& s) { return s.Ship().position + s.GetWorld().origin; };
+
+    // El servidor con su sesion; el cliente con la suya, que pasa a ser una replica; y, para comparar,
+    // la misma partida jugada directamente.
+    auto engineS = MakeEngine(rules, 9), engineR = MakeEngine(rules, 9), engineD = MakeEngine(rules, 9);
+    GameSession server(*engineS, rules, 9, GameModeId::Peaceful), replica(*engineR, rules, 9, GameModeId::Peaceful), direct(*engineD, rules, 9, GameModeId::Peaceful);
+    direct.SetPlayer("ana", "Ana");
+    GameServer host(server);
+    auto link = MakeMemoryLink();
+    host.Add(link.first);
+    Hello hello;
+    hello.id = "ana";
+    hello.name = "Ana";
+    GameClient client(replica, link.second, hello);
+    CHECK(replica.Replica() && !client.Ready() && host.Clients() == 0);
+    host.Update(0.0);
+    client.Update();
+    CHECK(client.Ready() && !client.Refused() && host.Clients() == 1);
+    CHECK(server.PlayerAt(0).id == "ana" && server.PlayerAt(0).name == "Ana");
+
+    // Un fotograma: el cliente manda su mando, el servidor da un paso y el cliente aplica lo que le llega.
+    const auto frame = [&](const ShipControls& controls) {
+        replica.Step(dt, controls);
+        host.Update(dt);
+        client.Update();
+        direct.Step(dt, controls);
+    };
+    const auto frames = [&](int count, const ShipControls& controls = {}) {
+        for (int i = 0; i < count; ++i) frame(controls);
+    };
+    frames(30);
+    CHECK(host.Tick() == 30 && client.Snapshots() == 31);
+    // La replica ve lo mismo que el servidor, en su propio mundo.
+    CHECK(Length(absolute(replica) - absolute(server)) < 1e-6);
+    CHECK(replica.SimTime() == server.SimTime() && replica.SimTime() > 0.0);
+    CHECK(replica.Contacts().size() == server.Contacts().size() && !replica.Contacts().empty());
+    CHECK(replica.Anomalies().size() == server.Anomalies().size());
+
+    // Una orden y un mando viajan al servidor; la replica no se toca hasta que vuelve la instantanea.
+    CHECK(replica.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))));
+    direct.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));
+    CHECK(replica.Ship().mode == DriveMode::Impulse && server.Ship().mode == DriveMode::Impulse);
+    frame({});
+    CHECK(server.Ship().mode == DriveMode::Cruise && replica.Ship().mode == DriveMode::Cruise);
+    replica.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Impulse)));
+    direct.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Impulse)));
+    ShipControls fly;
+    fly.throttleChange = 0.5;
+    fly.turnYaw = 0.00390625f;
+    const Vec3d heading = Heading(server.Ship());
+    frames(120, fly);
+    CHECK(server.Ship().throttle > 0.9 && replica.Ship().throttle == server.Ship().throttle);
+    CHECK(Length(Heading(server.Ship()) - heading) > 1e-3 && Length(Heading(replica.Ship()) - Heading(server.Ship())) < 1e-12);
+    CHECK(Length(absolute(replica) - absolute(server)) < 1e-6);
+    ShipControls brake;
+    brake.manualBrake = true;
+    frame(brake);
+    frames(60);
+    CHECK(server.Ship().throttle == 0.0 && replica.Ship().throttle == 0.0);
+
+    // Estaciones, registro y mundo: lo que hace el servidor llega entero.
+    const TargetRef star{Kind::Star, 0, 0};
+    for (GameSession* s : {&server, &direct}) {
+        s->Ship().heatShieldTier = 5;
+        s->MarkScanned(0);
+        s->JumpTo(star, s->Resolve(star)->arrival);
+    }
+    frames(30);
+    replica.Apply(Order(C::DeployPower, star));
+    direct.Apply(Order(C::DeployPower, star));
+    frames(30);
+    CHECK(server.Stations().All().size() == 1 && replica.Stations().All().size() == 1);
+    CHECK(replica.Stations().All().front().name == server.Stations().All().front().name);
+    CHECK(replica.Log() == server.Log() && !replica.Log().empty());
+    CHECK(replica.Scanned(star) && replica.Orbiting() && *replica.Orbiting() == star);
+    CHECK(Length(absolute(replica) - absolute(server)) < 1e-6);
+
+    // Y la partida del servidor es, numero a numero, la misma que jugada sin red.
+    CHECK(WriteSave(server.Snapshot()) == WriteSave(direct.Snapshot()));
+
+    // La instantanea ida y vuelta da los mismos bytes; una cortada o de otro tipo se rechaza.
+    {
+        const Packet packet = EncodeSnapshot(server.MakeSnapshot(0));
+        SnapshotData back;
+        CHECK(DecodeSnapshot(packet, back) && EncodeSnapshot(back) == packet);
+        CHECK(back.vessels.size() == 1 && back.players.size() == 1 && back.stations.size() == 1 && back.me == 0);
+        Packet cut(packet.begin(), packet.begin() + static_cast<std::ptrdiff_t>(packet.size() / 2));
+        SnapshotData broken;
+        CHECK(!DecodeSnapshot(cut, broken));
+        ShipCommand order;
+        CHECK(!DecodeCommand(packet, order) && TypeOf(packet) == MessageType::Snapshot && TypeOf({}) == MessageType{});
+        const ShipCommand sent = Order(C::Fire, star, 2);
+        CHECK(DecodeCommand(EncodeCommand(sent), order) && order.type == C::Fire && order.target == star && order.value == 2);
+        std::printf("  instantanea de una nave: %zu bytes\n", packet.size());
+    }
+
+    // El tutorial viaja por donde va: mismo paso y mismo texto en la replica; apagado alli, apagado aqui.
+    CHECK(server.Conversation().Active() && replica.Conversation().Active());
+    CHECK(replica.Conversation().Step() == server.Conversation().Step() && replica.Conversation().VisibleText() == server.Conversation().VisibleText());
+    CHECK(replica.Conversation().Objective() == server.Conversation().Objective());
+    server.Conversation().Stop();
+    direct.Conversation().Stop();
+    frame({});
+    CHECK(!replica.Conversation().Active() && !replica.Conversation().Reading());
+
+    // Un segundo jugador entra de tripulante: misma nave, con armas e ingenieria.
+    auto engineR2 = MakeEngine(rules, 9);
+    GameSession replica2(*engineR2, rules, 9, GameModeId::Peaceful);
+    auto link2 = MakeMemoryLink();
+    host.Add(link2.first);
+    Hello crew;
+    crew.id = "luis";
+    crew.name = "Luis";
+    crew.join = JoinAs::Crew;
+    GameClient client2(replica2, link2.second, crew);
+    const auto round = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            replica.Step(dt, {});
+            replica2.Step(dt, {});
+            host.Update(dt);
+            client.Update();
+            client2.Update();
+        }
+    };
+    round(5);
+    CHECK(client2.Ready() && host.Clients() == 2 && server.PlayerCount() == 2 && server.VesselCount() == 1);
+    CHECK(server.PlayerAt(1).id == "luis" && server.PlayerAt(1).vessel == 0);
+    CHECK(replica2.VesselId() == 1 && replica2.PlayerCount() == 2 && replica2.PlayerAt(replica2.FocusPlayer()).name == "Luis");
+    CHECK(replica2.SeatHolder(Seat::Pilot) != replica2.FocusPlayer() && replica2.SeatHolder(Seat::Tactical) == replica2.FocusPlayer());
+    const auto said = [](const GameSession& s, const std::string& text) {
+        for (const std::string& line : s.Log())
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    };
+    replica2.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));  // no pilota: se le rechaza a el
+    round(2);
+    CHECK(server.Ship().mode == DriveMode::Impulse && said(replica2, "pilotaje") && !said(replica, "pilotaje"));
+    replica2.Apply(Order(C::SetShield, static_cast<int>(ShieldKind::EM)));
+    round(2);
+    CHECK(server.Ship().defense.field == ShieldKind::EM && replica.Ship().defense.field == ShieldKind::EM && replica2.Ship().defense.field == ShieldKind::EM);
+    CHECK(said(replica, "Escudo") && said(replica2, "Escudo"));
+
+    // Un tercero entra con su propia nave: cada uno lleva la suya y ve la del otro.
+    auto engineR3 = MakeEngine(rules, 9);
+    GameSession replica3(*engineR3, rules, 9, GameModeId::Peaceful);
+    auto link3 = MakeMemoryLink();
+    host.Add(link3.first);
+    Hello own;
+    own.id = "eva";
+    own.name = "Eva";
+    own.join = JoinAs::OwnShip;
+    GameClient client3(replica3, link3.second, own);
+    const auto all = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            replica.Step(dt, {});
+            replica2.Step(dt, {});
+            replica3.Step(dt, {});
+            host.Update(dt);
+            client.Update();
+            client2.Update();
+            client3.Update();
+        }
+    };
+    all(20);
+    CHECK(client3.Ready() && server.VesselCount() == 2 && server.PlayerCount() == 3);
+    CHECK(replica3.VesselId() == 2 && replica3.VesselCount() == 2 && replica.VesselCount() == 2 && replica.VesselId() == 1);
+    const TargetRef second{Kind::Ship, 0, 2}, first{Kind::Ship, 0, 1};
+    CHECK(replica.Resolve(second).has_value() && replica3.Resolve(first).has_value() && !replica3.Resolve(second));
+    replica3.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));
+    all(2);
+    CHECK(server.VesselAt(1).ship.mode == DriveMode::Cruise && server.VesselAt(0).ship.mode == DriveMode::Impulse);
+    CHECK(replica3.Ship().mode == DriveMode::Cruise && replica.Ship().mode == DriveMode::Impulse);
+
+    // Si la segunda nave se va a otro sistema, cada cliente deja de recibir la burbuja del otro.
+    server.SetEngineFactory([&] { return MakeEngine(rules, 9); });
+    server.SetFocus(1);
+    server.MarkKnown(3);
+    const TargetRef far{Kind::Star, 3, 0};
+    CHECK(server.JumpTo(far, 1.0e8));
+    server.SetFocus(0);
+    all(30);
+    CHECK(server.BubbleCount() == 2);
+    CHECK(replica.VesselCount() == 1 && replica3.VesselCount() == 1 && replica3.VesselId() == 2 && replica.VesselId() == 1);
+    CHECK(replica3.NearestSystem() == 3 && replica.NearestSystem() == 0);
+    server.SetFocus(1);
+    const Vec3d there = absolute(server);
+    server.SetFocus(0);
+    CHECK(Length(absolute(replica3) - there) < 1e-3);
+    CHECK(!replica.Resolve(second));
+
+    // Quien no habla lo mismo, o quien ya esta dentro, no entra.
+    auto engineX = MakeEngine(rules, 9);
+    GameSession stranger(*engineX, rules, 9, GameModeId::Peaceful);
+    auto linkX = MakeMemoryLink();
+    host.Add(linkX.first);
+    Hello old;
+    old.id = "viejo";
+    old.protocol = kProtocolVersion + 1;
+    GameClient clientX(stranger, linkX.second, old);
+    host.Update(0.0);
+    clientX.Update();
+    CHECK(clientX.Refused() && !clientX.Ready() && clientX.Refusal().find("versión") != std::string::npos);
+    auto engineY = MakeEngine(rules, 9);
+    GameSession twin(*engineY, rules, 9, GameModeId::Peaceful);
+    auto linkY = MakeMemoryLink();
+    host.Add(linkY.first);
+    GameClient clientY(twin, linkY.second, hello);  // otra vez "ana", que sigue conectada
+    host.Update(0.0);
+    clientY.Update();
+    CHECK(clientY.Refused() && server.PlayerCount() == 3);
+    // De otra galaxia tampoco.
+    auto engineZ = MakeEngine(rules, 4);
+    GameSession alien(*engineZ, rules, 4, GameModeId::Peaceful);
+    auto linkZ = MakeMemoryLink();
+    host.Add(linkZ.first);
+    Hello other;
+    other.id = "otro";
+    other.join = JoinAs::Crew;
+    GameClient clientZ(alien, linkZ.second, other);
+    host.Update(0.0);
+    clientZ.Update();
+    CHECK(clientZ.Refused() && !clientZ.Ready());
+    std::printf("  enviado por el servidor: %.0f kB en %llu pasos\n", host.BytesSent() / 1024.0, static_cast<unsigned long long>(host.Tick()));
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -5835,6 +6066,7 @@ int main(int argc, char** argv) {
         {"Flota: dos naves", TestFleet},
         {"Tripulacion: dos jugadores en una nave", TestCrew},
         {"Burbujas: naves en sistemas distintos", TestBubbles},
+        {"Servidor y cliente en memoria", TestNet},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},
