@@ -100,7 +100,12 @@ void StationNetwork::Produce(double hours) {
 }
 
 void StationNetwork::ProduceUntil(double time, double from) {
+    ProduceUntil(time, from, [](const Station&) { return true; });
+}
+
+void StationNetwork::ProduceUntil(double time, double from, const std::function<bool(const Station&)>& accept) {
     for (Station& s : stations_) {
+        if (!accept(s)) continue;
         if (s.producedUntil < 0.0) s.producedUntil = std::min(from, time);
         if (time <= s.producedUntil) continue;
         ProduceOne(s, (time - s.producedUntil) / 3600.0);

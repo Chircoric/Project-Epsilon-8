@@ -231,8 +231,9 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
             std::string list = "Naves:";
             for (int i = 0; i < g.VesselCount(); ++i) {
                 const Vessel& v = g.VesselAt(i);
-                char line[96];
-                std::snprintf(line, sizeof(line), " %d%s (%s, casco %.0f %%)", v.id, i == g.Focus() ? "*" : "", v.phase == GamePhase::Flying ? Name(v.ship.mode) : "perdida", 100.0 * v.ship.hull / g.Rules().ship.hull);
+                char line[160];
+                std::snprintf(line, sizeof(line), " %d%s (%s, casco %.0f %%, burbuja %d, sistema %d, dia %.2f)", v.id, i == g.Focus() ? "*" : "", v.phase == GamePhase::Flying ? Name(v.ship.mode) : "perdida",
+                              100.0 * v.ship.hull / g.Rules().ship.hull, g.BubbleOf(i), v.nearestSystem, g.ClockOf(i) / 86400.0);
                 list += line;
             }
             return list;
@@ -847,6 +848,14 @@ int Run(Options options) {
             session.RefitToDesign();
             GameLayer layer(session, assets, SdlGpuBackend::kGlowTexture, SdlGpuBackend::kRingTexture, fog);
             engine.AddLayer(&layer);
+            // Una nave que sale del sistema donde hay otras se lleva su propia burbuja, con su mundo
+            // cargado: la sesion pide aqui un motor mas, igual que este (docs/multijugador.md, fase 4).
+            session.SetEngineFactory([&]() {
+                auto another = std::make_unique<Engine>(config, art);
+                another->Commands().Execute("desactivar cielo orbitas colisiones grano");
+                another->AddLayer(&layer);
+                return another;
+            });
 
             TargetRef target;
             Quatd viewOrbit;  // camara respecto a la nave, sin limites
@@ -1683,16 +1692,22 @@ int Run(Options options) {
                 const World& world = session.GetWorld();
                 const Vec3d absolute = ship.position + world.origin;
                 const Vec3f fogDrift(Vec3d{std::fmod(absolute.x / 3.0e8, 16.0), std::fmod(absolute.y / 3.0e8, 16.0), std::fmod(absolute.z / 3.0e8, 16.0)});
-                engine.SetFog(static_cast<float>(session.Visibility()), fog, fogDrift);
+                // Se dibuja el mundo de la burbuja donde esta la nave que se lleva, con los mismos ajustes.
+                Engine& view = session.ViewEngine();
+                if (&view != &engine) {
+                    view.Post() = engine.Post();
+                    view.Lod() = engine.Lod();
+                }
+                view.SetFog(static_cast<float>(session.Visibility()), fog, fogDrift);
                 {
                     // La nebulosa es una nube alrededor: la camara se mueve dentro de una baldosa de
                     // ruido de 12 veces la visibilidad tipica. Se cuenta en double para no temblar.
                     const double tile = rules.world.fogDistance * 12.0;
                     const Vec3d cameraAbsolute = camera.Position() + world.origin;
                     const auto wrap = [&](double v) { const double x = v / tile; return static_cast<float>(x - std::floor(x)); };
-                    engine.SetFogCloud(Vec3f{wrap(cameraAbsolute.x), wrap(cameraAbsolute.y), wrap(cameraAbsolute.z)}, static_cast<float>(tile));
+                    session.ViewEngine().SetFogCloud(Vec3f{wrap(cameraAbsolute.x), wrap(cameraAbsolute.y), wrap(cameraAbsolute.z)}, static_cast<float>(tile));
                 }
-                engine.SetFogRamp(NebulaRamp(), session.NebulaTone());
+                session.ViewEngine().SetFogRamp(NebulaRamp(), session.NebulaTone());
 
                 // Curvatura: cuanto mas cerca de c, mas se concentra el cielo por delante.
                 const double beta = std::min(ship.speed / kLightSpeed, 0.9999);
@@ -1747,7 +1762,7 @@ int Run(Options options) {
                 backend.SetPostEffectParams(reticleEffect, reticle);
                 backend.SetPostEffect(reticleEffect, alive && ui.screen == HudScreen::Playing && !session.OnFoot(), cursor ? 0.55f : 1.0f);
 
-                engine.Build(camera, ui.clock, packet);
+                session.ViewEngine().Build(camera, ui.clock, packet);
 
                 // La esfera de la ventana de analisis es la real, con su superficie y su giro.
                 packet.hasMiniature = false;

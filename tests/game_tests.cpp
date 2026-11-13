@@ -1,5 +1,7 @@
 // Pruebas del juego. Juegan partidas enteras sin ventana ni GPU.
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -5456,6 +5458,145 @@ static void TestCrew() {
     CHECK(g.FocusPlayer() == 5);
 }
 
+// Burbujas: las naves que no estan en el mismo sistema van cada una con su mundo cargado y su reloj
+// (fase 4 de docs/multijugador.md).
+static void TestBubbles() {
+    using C = CommandType;
+    Balance rules;
+    auto engine = MakeEngine(rules, 9);
+    GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+    int made = 0;
+    g.SetEngineFactory([&] {
+        ++made;
+        return MakeEngine(rules, 9);
+    });
+    Run(g, 0.5);
+    const TargetRef station = PlaceStation(g);
+    g.AddVessel(100.0);
+    Run(g, 1.0);
+    CHECK(g.BubbleCount() == 1 && g.BubbleOf(0) == g.BubbleOf(1) && made == 0);
+    const TargetRef other{Kind::Ship, 0, 2};
+    CHECK(g.Resolve(other).has_value());
+    const auto center = [&] {
+        const World& w = g.GetWorld();
+        return w.scene.WorldPosition(w.sectors[0]);
+    };
+    const auto absolute = [&](int index) {
+        const int back = g.Focus();
+        g.SetFocus(index);
+        const Vec3d where = g.Ship().position + g.GetWorld().origin;
+        g.SetFocus(back);
+        return where;
+    };
+    const auto logHas = [&](int player, const std::string& text) {
+        for (const std::string& line : g.PlayerAt(player).log)
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    };
+    const double extent = g.GetWorld().extents[0];
+
+    // La segunda sale del sistema: se lleva su burbuja, con otro motor, y sigue en el mismo sitio del universo.
+    CHECK(g.SetFocus(1));
+    g.Ship().position = center() + Vec3d{extent * 3.0, 0.0, 0.0};
+    const Vec3d placed = g.Ship().position + g.GetWorld().origin;
+    CHECK(g.SetFocus(0));
+    g.Step(0.05, {});
+    CHECK(g.BubbleCount() == 2 && g.BubbleOf(0) != g.BubbleOf(1) && made == 1);
+    CHECK(Length(absolute(1) - placed) < 1.0);
+    CHECK(!logHas(1, "ninguna puede salir"));  // ya no hay limite: hay fabrica de motores
+    CHECK(&g.ViewEngine() == engine.get());
+    CHECK(g.SetFocus(1) && &g.ViewEngine() != engine.get());  // llevando la segunda, se dibuja su mundo
+    CHECK(g.SetFocus(0));
+    Run(g, 1.0);
+    CHECK(!g.Resolve(other));  // en otra burbuja no se la ve
+    bool seen = false;
+    for (const Contact& c : g.Contacts()) seen = seen || c.target.kind == Kind::Ship;
+    CHECK(!seen);
+
+    // Cada burbuja lleva su reloj. La que viaja dilata y el suyo corre mas; el de la que se queda, no.
+    CHECK(g.ApplyTo(2, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))));
+    std::vector<ShipControls> controls(2);
+    controls[1].throttleChange = 1.0;
+    const double start0 = g.ClockOf(0), start1 = g.ClockOf(1);
+    double expected = 0.0;
+    for (int i = 0; i < 3000 && g.ClockOf(1) - start1 < (g.ClockOf(0) - start0) * 1.05 + 30.0; ++i) {
+        g.StepAll(1.0 / 60.0, controls);
+        expected += g.TimeFocus() * g.TimeScale() / 60.0 * g.VesselAt(0).exteriorFactor;
+    }
+    CHECK(g.ClockOf(1) - start1 > (g.ClockOf(0) - start0) * 1.05);
+    CHECK(std::abs(g.ClockOf(0) - start0 - expected) < 1e-6 * expected);  // la quieta, como si estuviera sola
+    CHECK(g.WorldTime() == g.ClockOf(1) && g.SimTime() == g.ClockOf(0));
+    // La central esta en el sistema de la primera: produce con su reloj, no con el mas adelantado.
+    const Station* power = g.Stations().Find(station.index);
+    CHECK(power && power->producedUntil == g.ClockOf(0));
+    const double stored = power ? power->storedAntimatter : 0.0;
+
+    // El guardado lleva el reloj de cada nave, y al cargar cada una vuelve a su burbuja.
+    const SaveData saved = g.Snapshot();
+    CHECK(saved.world.ships.size() == 2 && saved.world.ships[1].clock > saved.world.ships[0].clock);
+    CHECK(saved.world.simTime == g.WorldTime());
+    const std::optional<SaveData> read = ReadSave(WriteSave(saved));
+    CHECK(read && read->world.ships[1].clock == saved.world.ships[1].clock);
+    if (read) {
+        auto engineB = MakeEngine(rules, 9);
+        GameSession h(*engineB, rules, 9, GameModeId::Peaceful);
+        h.SetEngineFactory([&] { return MakeEngine(rules, 9); });
+        h.Step(0.05, {});
+        CHECK(h.Restore(*read));
+        CHECK(h.VesselCount() == 2 && h.BubbleCount() == 2 && h.BubbleOf(0) != h.BubbleOf(1));
+        CHECK(h.ClockOf(0) == saved.world.ships[0].clock && h.ClockOf(1) == saved.world.ships[1].clock);
+        h.SetFocus(1);
+        CHECK(Length(h.Ship().position + h.GetWorld().origin - saved.world.ships[1].absolutePosition) < 1.0);
+        h.SetFocus(0);
+        Run(h, 0.5);
+        CHECK(h.BubbleCount() == 2);
+    }
+
+    // Vuelve al sistema: entra en la burbuja de la que estaba y adopta su reloj, que es anterior.
+    CHECK(g.SetFocus(1));
+    g.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Impulse)));
+    g.Apply(Order(C::HoldPosition));
+    g.Ship().warpSpeed = 0.0;
+    g.Ship().warpCharge = 0.0;
+    g.Ship().velocity = {};
+    g.Ship().position = center() + Vec3d{extent * 0.5, 0.0, 0.0};
+    const Vec3d returned = g.Ship().position + g.GetWorld().origin;
+    CHECK(g.SetFocus(0));
+    const double ahead = g.ClockOf(1);
+    g.Step(0.05, {});
+    CHECK(g.BubbleCount() == 1 && g.BubbleOf(0) == g.BubbleOf(1));
+    CHECK(g.ClockOf(1) == g.ClockOf(0) && g.ClockOf(1) < ahead);
+    CHECK(Length(absolute(1) - returned) < 100.0);
+    Run(g, 1.0);
+    CHECK(g.Resolve(other).has_value());  // se vuelven a ver
+    // El tiempo de la central no ha vuelto atras ni ha producido dos veces.
+    power = g.Stations().Find(station.index);
+    CHECK(power && power->producedUntil == g.ClockOf(0) && power->storedAntimatter >= stored);
+
+    // Si sale otra vez, se reutiliza el motor que quedo libre.
+    CHECK(g.SetFocus(1));
+    g.Ship().position = center() + Vec3d{0.0, 0.0, extent * 3.0};
+    CHECK(g.SetFocus(0));
+    g.Step(0.05, {});
+    CHECK(g.BubbleCount() == 2 && made == 1);
+
+    // Sin fabrica de motores sigue el limite de la fase 3a (lo comprueba TestFleet); y una nave sola
+    // que cambia de sistema no abre ninguna burbuja.
+    auto engineC = MakeEngine(rules, 9);
+    GameSession solo(*engineC, rules, 9, GameModeId::Peaceful);
+    int extra = 0;
+    solo.SetEngineFactory([&] {
+        ++extra;
+        return MakeEngine(rules, 9);
+    });
+    Run(solo, 0.5);
+    solo.MarkKnown(3);
+    const TargetRef far{Kind::Star, 3, 0};
+    CHECK(solo.JumpTo(far, 1.0e8));
+    Run(solo, 1.0);
+    CHECK(solo.NearestSystem() == 3 && solo.BubbleCount() == 1 && extra == 0);
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -5652,6 +5793,34 @@ static void TestGoldenGame() {
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--regenerar-dorada") gRegenerateGolden = true;
+    // Lo que cuesta un motor (un mundo cargado) con la galaxia del juego: uno por burbuja (fase 4).
+    if (argc > 1 && std::string(argv[1]) == "--medir-motor") {
+        Balance rules;
+        EngineConfig config;
+        config.galaxy.seed = 20261105;
+        config.galaxy.systems = rules.world.systems;
+        config.galaxy.starSpacing = rules.world.starSpacing;
+        config.galaxy.streaming = true;
+        config.galaxy.blackHoles = true;
+        std::vector<std::unique_ptr<Engine>> engines;
+        std::printf("Galaxia de %d sistemas\n", rules.world.systems);
+        for (int i = 0; i < 8; ++i) {
+            const auto start = std::chrono::steady_clock::now();
+            engines.push_back(std::make_unique<Engine>(config));
+            const double built = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            const auto advance = std::chrono::steady_clock::now();
+            Vec3d eye = engines.back()->GetWorld().scene.WorldPosition(engines.back()->GetWorld().sectors[static_cast<std::size_t>(i % rules.world.systems)]);
+            for (int f = 0; f < 120; ++f) {
+                engines.back()->Recenter(eye);
+                engines.back()->Advance(eye, 800.0f, f * 1.0);
+            }
+            const double stepped = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - advance).count() / 120.0;
+            std::printf("  motor %d: %.0f ms en crearse, %.2f ms por paso\n", i + 1, built, stepped);
+            std::fflush(stdout);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // para leer la memoria desde fuera
+        }
+        return 0;
+    }
     const bool onlyGolden = argc > 1 && std::string(argv[1]) == "--solo-dorada";  // la comprobacion rapida de una reorganizacion
     if (gRegenerateGolden || onlyGolden) {
         std::printf("[ Partida dorada ]\n");
@@ -5665,6 +5834,7 @@ int main(int argc, char** argv) {
         {"Sellos de tiempo", TestTimeStamps},
         {"Flota: dos naves", TestFleet},
         {"Tripulacion: dos jugadores en una nave", TestCrew},
+        {"Burbujas: naves en sistemas distintos", TestBubbles},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},

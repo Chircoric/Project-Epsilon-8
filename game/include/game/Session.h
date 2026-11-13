@@ -5,6 +5,8 @@
 #pragma once
 
 #include <deque>
+#include <functional>
+#include <memory>
 #include <map>
 #include <set>
 #include <optional>
@@ -274,6 +276,8 @@ struct HullHit {
 // Una nave: lo que lleva, por donde va y lo que le pasa.
 struct Vessel {
     int id = 1;  // estable: es como la nombran el guardado y, en red, las ordenes
+    int bubble = 0;  // la burbuja en la que esta: indice en GameSession::bubbles_
+    int settled = -1;  // el sistema dentro del que estaba al acabar el ultimo paso; -1: en espacio abierto
     ShipState ship;
 
     // Vuelo, ruta y orbita.
@@ -387,6 +391,12 @@ struct WorldState {
 // Una zona simulada: su reloj y lo que vuela o flota en ella.
 struct Bubble {
     explicit Bubble(std::uint32_t seed) : rng(seed), fx(seed ^ 0x9E3779B9u) {}
+    // Su mundo cargado: cada burbuja tiene su motor, con su origen flotante y sus sistemas. La primera
+    // usa el que recibio la sesion; las demas, uno propio (owned) que hace la fabrica de motores.
+    eps::Engine* engine = nullptr;
+    std::unique_ptr<eps::Engine> owned;
+    bool active = true;   // false: vacia, con su motor guardado para la siguiente que haga falta
+    int system = -1;      // con dos naves o mas, el sistema donde estan: la que salga de el se lleva otra burbuja
     double simTime = 0;
     double timeFocus = 1.0;
     int steps = 0;
@@ -423,6 +433,16 @@ public:
     // Todo lo demas de esta clase (Ship(), Apply(), Contacts(), Route()...) habla de UNA nave: la del
     // foco, que es la que se mira y se maneja desde fuera. SetFocus cambia cual es.
     int VesselCount() const { return static_cast<int>(fleet_.size()); }
+    // ---- Burbujas (fase 4): las naves que no estan en el mismo sistema van cada una con su mundo ----
+    // Para que una nave pueda salir del sistema donde hay otras, la sesion necesita poder crear mas
+    // motores: una funcion que devuelva uno nuevo, igual que el que recibio. Sin ella sigue el limite de
+    // la fase 3a (ninguna nave sale del sistema mientras haya varias).
+    void SetEngineFactory(std::function<std::unique_ptr<eps::Engine>()> factory) { engineFactory_ = std::move(factory); }
+    int BubbleCount() const;                             // las que tienen alguna nave
+    int BubbleOf(int vessel) const { return fleet_[static_cast<std::size_t>(vessel)].bubble; }
+    double ClockOf(int vessel) const { return bubbles_[static_cast<std::size_t>(BubbleOf(vessel))].simTime; }
+    double WorldTime() const;                            // la fecha del mundo: el reloj mas adelantado
+    eps::Engine& ViewEngine() { return *engine_; }       // el motor de la burbuja del foco: el que hay que dibujar
     int Focus() const { return focus_; }
     bool SetFocus(int index);
     int VesselId() const { return vessel_->id; }
@@ -522,8 +542,8 @@ public:
     int FireAll(const TargetRef& target);       // todo lo que este listo; devuelve cuantas armas
     std::optional<FiringSolution> Solution(const TargetRef& target, WeaponKind kind) const;
     bool AimAtSolution(const TargetRef& target, WeaponKind kind);  // apunta el rumbo a la solucion
-    const std::vector<Projectile>& Projectiles() const { return bubble_.projectiles; }
-    const std::vector<ImpactFlash>& Impacts() const { return bubble_.impacts; }
+    const std::vector<Projectile>& Projectiles() const { return bubble_->projectiles; }
+    const std::vector<ImpactFlash>& Impacts() const { return bubble_->impacts; }
     double WeaponRange(WeaponKind kind) const;
     bool WeaponReady(WeaponKind kind) const;     // alguna de esa familia ha recargado
     double WeaponCooldown(WeaponKind kind) const;  // segundos simulados hasta la primera que recargue
@@ -566,9 +586,9 @@ public:
     bool CanBoard() const;
     const eps::HumanoidState& Player() const { return pilot_->avatar; }
     const eps::HumanoidRules& PersonRules() const { return body_; }
-    const std::vector<Person>& Crew() const { return bubble_.crew; }
-    const DeckPlan& Deck() const { return bubble_.deck; }
-    StationKind DeckKind() const { return bubble_.deckKind; }
+    const std::vector<Person>& Crew() const { return bubble_->crew; }
+    const DeckPlan& Deck() const { return bubble_->deck; }
+    StationKind DeckKind() const { return bubble_->deckKind; }
     eps::Vec3d DeckOrigin() const { return vessel_->ship.position; }  // km: la cubierta va donde esta la nave
     bool FirstPerson() const { return pilot_->firstPerson; }
     void ToggleFootView() { pilot_->firstPerson = !pilot_->firstPerson; }
@@ -638,12 +658,12 @@ public:
     const SpeciesState& Species() const { return world_.species; }
     SpeciesState& Species() { return world_.species; }
     double SystemAlert(int system) const;
-    bool Surrender() const { return Surrendered(world_.species, bubble_.simTime); }
+    bool Surrender() const { return Surrendered(world_.species, bubble_->simTime); }
     void MarkAnalysisUsed() { pilot_->analysisUsed = true; }
     bool AnalysisUsed() const { return pilot_->analysisUsed; }
 
     // Parte del tiempo normal que corre ahora: se frena en los momentos criticos.
-    double TimeFocus() const { return bubble_.timeFocus; }
+    double TimeFocus() const { return bubble_->timeFocus; }
 
     // Atencion: mueve la nave directamente. Es para pruebas y capturas.
     bool JumpTo(const TargetRef& target, double distance);
@@ -662,7 +682,7 @@ public:
     const std::vector<Contact>& Contacts() const { return vessel_->contacts; }
     const std::deque<std::string>& Log() const { return pilot_->log; }
     const Balance& Rules() const { return rules_; }
-    double SimTime() const { return bubble_.simTime; }
+    double SimTime() const { return bubble_->simTime; }
     double& TimeScale() { return world_.timeScale; }
     int NearestSystem() const { return vessel_->nearestSystem; }
     bool InHeatZone() const { return vessel_->inHeatZone; }
@@ -681,8 +701,8 @@ public:
     const std::optional<CollisionWarning>& Warning() const { return vessel_->warning; }
     std::vector<eps::Vec3d> PredictedPath() const;  // lo que va a recorrer, para dibujarlo
     const std::string& LossReason() const { return vessel_->lossReason; }
-    eps::World& GetWorld() { return engine_.GetWorld(); }
-    const eps::World& GetWorld() const { return engine_.GetWorld(); }
+    eps::World& GetWorld() { return engine_->GetWorld(); }
+    const eps::World& GetWorld() const { return engine_->GetWorld(); }
 
     Dialogue& Conversation() { return pilot_->dialogue; }
     const Dialogue& Conversation() const { return pilot_->dialogue; }
@@ -709,7 +729,7 @@ public:
     eps::Vec3d AnomalyPosition(const Anomaly& a) const;
 
     using LostPiece = game::LostPiece;
-    const std::vector<LostPiece>& LostPieces() const { return bubble_.lostPieces; }
+    const std::vector<LostPiece>& LostPieces() const { return bubble_->lostPieces; }
     // De 0 a 1 por zona: lo recien golpeado, que aun brilla. Se enfria en unos segundos.
     const HullZones& ZoneHeat() const { return vessel_->zoneHeat; }
     // Golpe en una zona concreta, en unidades de casco: para pruebas y la consola. Con from (unitaria,
@@ -874,15 +894,26 @@ private:
     };
     void PrepareVessel(double realSeconds, VesselStep& t);
     void StepVessel(const ShipControls& controls, const StepClock& k, VesselStep& t);
-    void AdvanceBubble(double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels);
+    void AdvanceBubble(int bubble, double realSeconds, double seconds, std::vector<VesselStep>& t, float focalPixels);
     bool SettleVessel(const StepClock& k, VesselStep& t);
     void FinishVessel(const StepClock& k, VesselStep& t);
 
-    eps::Engine& engine_;
+    eps::Engine* engine_;  // el motor de la burbuja en curso
     Balance rules_;
     eps::HumanoidRules body_;
     WorldState world_;
-    Bubble bubble_;
+    // Las burbujas (fase 4 de docs/multijugador.md): cada zona con naves tiene su mundo cargado, su reloj
+    // y lo que vuela en ella. bubble_ y engine_ son los de la nave en curso, como vessel_ y pilot_.
+    std::deque<Bubble> bubbles_;
+    Bubble* bubble_ = nullptr;
+    std::function<std::unique_ptr<eps::Engine>()> engineFactory_;
+    bool Here(const Vessel& v) const { return &bubbles_[static_cast<std::size_t>(v.bubble)] == bubble_; }  // en la burbuja en curso
+    int EyeOf(int bubble) const;        // la nave que hace de camara del motor de esa burbuja; -1 si no tiene naves
+    int CountIn(int bubble) const;
+    void StepBubble(int bubble, double realSeconds, const std::vector<ShipControls>& controls, float focalPixels);
+    void Regroup();                     // las naves que salen de una burbuja o entran en otra
+    int OpenBubble(const Bubble& from, const eps::Vec3d& absolute);  // -1 si no hay fabrica de motores
+    void Transfer(int vessel, int bubble);
     // Las naves y sus jugadores (fase 3a: un jugador por nave, en el mismo orden). En deque: sus
     // direcciones no cambian al anadir. Cada jugador dice en que nave va (PlayerState::vessel); una nave
     // tiene siempre al menos uno. vessel_ y pilot_ son la nave y el jugador EN CURSO: todo el
@@ -894,7 +925,6 @@ private:
     PlayerState* pilot_ = nullptr;
     int focus_ = 0;
     int nextVessel_ = 1;  // id de la proxima nave
-    int fleetSystem_ = -1;  // con varias naves, el sistema del que ninguna sale (fase 3a)
     int IndexOfId(int id) const;  // -1 si no hay nave con ese id
     eps::Vec3d VelocityOf(const Vessel& v) const;  // en el mundo
     void LeashToFleet();

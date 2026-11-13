@@ -124,7 +124,8 @@ orbita 0 -1 -1 0 0 0
 plano 0 -1 0 0
 atraque 0
 base 1 0
-suma ed4581c9447c6e20
+reloj 10544.981021548019
+suma b84fc7cf02c2324c
 EPSILON-NEBULOSA-JUGADOR 13
 id local
 nombre | Piloto
