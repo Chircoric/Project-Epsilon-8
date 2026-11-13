@@ -416,6 +416,49 @@ struct Bubble {
     std::vector<Person> crew;
 };
 
+// ---- Lo que el servidor le manda a un jugador (fase 5 de docs/multijugador.md) ----
+// Un jugador, tal como viaja: como PlayerState, pero con el id de su nave y el estado del tutorial en
+// lugar del tutorial entero.
+struct PlayerWire {
+    std::string id, name;
+    int vesselId = 0;
+    unsigned seats = 0;
+    Dialogue::State dialogue;
+    bool analysisUsed = false, cursorUsed = false;
+    int collected = 0, kills = 0;
+    std::deque<std::string> log;
+    std::vector<char> known, visited;
+    std::set<std::uint64_t> scanned;
+    bool onFoot = false;
+    eps::HumanoidState avatar;
+    StrikeMark lastStrike;
+    double strikeAge = 1e9;
+    bool cinematic = false;
+};
+
+// La instantanea: todo lo que un jugador puede ver ahora, que es el mundo y su burbuja. Las naves y los
+// jugadores de otras burbujas no van. Las posiciones son las del mundo del servidor, con su origen.
+struct SnapshotData {
+    std::uint32_t seed = 0;
+    GameModeId mode = GameModeId::Normal;
+    double timeScale = 60.0;
+    eps::Vec3d origin;  // el origen flotante del mundo del servidor para esta burbuja
+    double simTime = 0, timeFocus = 1.0;
+    int steps = 0;
+    std::vector<Projectile> projectiles;
+    std::vector<ImpactFlash> impacts;
+    std::vector<LostPiece> lostPieces;
+    StationKind deckKind = StationKind::Power;
+    std::vector<Person> crew;
+    std::vector<Station> stations;
+    int nextStation = 1;
+    std::vector<Anomaly> anomalies;
+    SpeciesState species;
+    std::vector<Vessel> vessels;
+    std::vector<PlayerWire> players;
+    int me = 0;  // quien la recibe: indice en players
+};
+
 class GameSession {
 public:
     GameSession(eps::Engine& engine, const Balance& rules, std::uint32_t seed = 20261105, GameModeId mode = GameModeId::Normal);
@@ -478,6 +521,28 @@ public:
     // Devuelve los pasos dados.
     static constexpr double kFixedStep = 1.0 / 60.0;
     int StepFixed(double realSeconds, const ShipControls& controls, float focalPixels = 800.0f);
+
+    // ---- Servidor y cliente (fase 5) ----
+    // El servidor saca de su sesion lo que ve cada jugador; el cliente lo aplica a la suya, que es una
+    // REPLICA: no simula nada. En una replica, Apply() y Step() no tocan la partida: mandan la orden y el
+    // mando por donde diga SetRemote, y Step solo mantiene cargado el mundo alrededor de la nave.
+    SnapshotData MakeSnapshot(int player) const;
+    void ApplySnapshot(const SnapshotData& data);
+    struct Remote {
+        std::function<void(const ShipCommand&)> command;
+        std::function<void(const ShipControls&)> controls;
+    };
+    void SetRemote(Remote remote) {
+        remote_ = std::move(remote);
+        replica_ = true;
+    }
+    bool Replica() const { return replica_; }
+    // El identificador y el nombre de un jugador cualquiera (el servidor, al entrar uno nuevo).
+    void NamePlayer(int player, const std::string& id, const std::string& name) {
+        players_[static_cast<std::size_t>(player)].id = SafePlayerId(id);
+        players_[static_cast<std::size_t>(player)].name = name;
+    }
+    std::uint32_t Seed() const { return world_.seed; }
 
     // Ejecuta una orden del jugador. Es la unica puerta por la que la interfaz y la consola cambian
     // la partida; los metodos de abajo siguen ahi para las pruebas y para la propia sesion.
@@ -907,6 +972,9 @@ private:
     std::deque<Bubble> bubbles_;
     Bubble* bubble_ = nullptr;
     std::function<std::unique_ptr<eps::Engine>()> engineFactory_;
+    bool replica_ = false;  // esta sesion es la copia de un cliente: la manda el servidor
+    Remote remote_;
+    void ReplicaFrame(double realSeconds, float focalPixels);
     bool Here(const Vessel& v) const { return &bubbles_[static_cast<std::size_t>(v.bubble)] == bubble_; }  // en la burbuja en curso
     int EyeOf(int bubble) const;        // la nave que hace de camara del motor de esa burbuja; -1 si no tiene naves
     int CountIn(int bubble) const;

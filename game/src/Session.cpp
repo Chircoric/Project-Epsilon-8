@@ -4355,6 +4355,12 @@ void GameSession::UpdateContacts() {
 //   (el trabajo de la nave y lo que se mueve en la burbuja: drones, barrido, anomalias, combate)
 //   FinishVessel   calor, reparacion, sensores y, si no queda casco, la perdida
 void GameSession::Step(double realSeconds, const ShipControls& controls, float focalPixels) {
+    // La copia de un cliente no simula: manda su mando y mantiene su mundo cargado.
+    if (replica_) {
+        if (remote_.controls) remote_.controls(controls);
+        ReplicaFrame(realSeconds, focalPixels);
+        return;
+    }
     // El mando es el del jugador del foco; los demas siguen con lo que tengan ordenado.
     std::vector<ShipControls> all(players_.size());
     all[static_cast<std::size_t>(focusPlayer_)] = controls;
@@ -4632,11 +4638,162 @@ void GameSession::AdvanceBubble(int index, double realSeconds, double seconds, s
             if (v.nearestSystem == system && v.phase == GamePhase::Flying) return v.bubble;
         return -1;
     };
-    world_.stations.ProduceUntil(bubble_->simTime, bubble_->simTime - seconds, [&](const Station& s) {
+    if (!replica_) world_.stations.ProduceUntil(bubble_->simTime, bubble_->simTime - seconds, [&](const Station& s) {
         const int host = hosted(s.site.system);
         return host < 0 || host == index;
     });
     if (fleet_[static_cast<std::size_t>(focus_)].bubble == index) world_.stations.Age(realSeconds);
+}
+
+// ---- Servidor y cliente ----
+
+// Lo que ve un jugador: el mundo y la burbuja donde esta su nave.
+SnapshotData GameSession::MakeSnapshot(int player) const {
+    SnapshotData d;
+    const PlayerState& me = players_[static_cast<std::size_t>(player)];
+    const int bubble = fleet_[static_cast<std::size_t>(me.vessel)].bubble;
+    const Bubble& b = bubbles_[static_cast<std::size_t>(bubble)];
+    d.seed = world_.seed;
+    d.mode = world_.mode;
+    d.timeScale = world_.timeScale;
+    d.origin = b.engine->GetWorld().origin;
+    d.simTime = b.simTime;
+    d.timeFocus = b.timeFocus;
+    d.steps = b.steps;
+    d.projectiles = b.projectiles;
+    d.impacts = b.impacts;
+    d.lostPieces = b.lostPieces;
+    d.deckKind = b.deckKind;
+    d.crew = b.crew;
+    d.stations = world_.stations.All();
+    d.nextStation = world_.stations.NextId();
+    d.anomalies = world_.anomalies;
+    d.species = world_.species;
+    for (const Vessel& v : fleet_)
+        if (v.bubble == bubble) d.vessels.push_back(v);
+    for (std::size_t p = 0; p < players_.size(); ++p) {
+        const PlayerState& from = players_[p];
+        const Vessel& ship = fleet_[static_cast<std::size_t>(from.vessel)];
+        if (ship.bubble != bubble) continue;
+        if (static_cast<int>(p) == player) d.me = static_cast<int>(d.players.size());
+        PlayerWire w;
+        w.id = from.id;
+        w.name = from.name;
+        w.vesselId = ship.id;
+        w.seats = from.seats;
+        w.dialogue = from.dialogue.GetState();
+        w.analysisUsed = from.analysisUsed;
+        w.cursorUsed = from.cursorUsed;
+        w.collected = from.collected;
+        w.kills = from.kills;
+        w.log = from.log;
+        w.known = from.known;
+        w.visited = from.visited;
+        w.scanned = from.scanned;
+        w.onFoot = from.onFoot;
+        w.avatar = from.avatar;
+        w.lastStrike = from.lastStrike;
+        w.strikeAge = from.strikeAge;
+        w.cinematic = from.cinematic;
+        d.players.push_back(std::move(w));
+    }
+    return d;
+}
+
+// Deja esta sesion, que es la copia de un cliente, como dice la instantanea. Las posiciones llegan en
+// el mundo del servidor: se pasan al de aqui con la diferencia entre los dos origenes.
+void GameSession::ApplySnapshot(const SnapshotData& d) {
+    if (d.vessels.empty() || d.players.empty() || d.me < 0 || d.me >= static_cast<int>(d.players.size())) return;
+    Bubble& b = bubbles_.front();
+    for (std::size_t i = 0; i < bubbles_.size(); ++i) bubbles_[i].active = i == 0;
+    const Vec3d shift = d.origin - b.engine->GetWorld().origin;
+
+    world_.mode = d.mode;
+    world_.timeScale = d.timeScale;
+    world_.stations.Restore(d.stations, d.nextStation);
+    world_.anomalies = d.anomalies;
+    world_.species = d.species;
+
+    b.simTime = d.simTime;
+    b.timeFocus = d.timeFocus;
+    b.steps = d.steps;
+    b.projectiles = d.projectiles;
+    b.impacts = d.impacts;
+    b.lostPieces = d.lostPieces;
+    b.crew = d.crew;
+    for (Projectile& p : b.projectiles) {
+        p.position += shift;
+        p.origin += shift;
+    }
+    for (ImpactFlash& f : b.impacts) {
+        f.position += shift;
+        f.origin += shift;
+    }
+
+    fleet_.resize(d.vessels.size());
+    for (std::size_t i = 0; i < d.vessels.size(); ++i) {
+        Vessel& v = fleet_[i];
+        v = d.vessels[i];
+        v.bubble = 0;
+        v.ship.position += shift;
+        v.wreckPosition += shift;
+        v.frame.position += shift;
+        for (MiningDrone& drone : v.drones) drone.position += shift;
+        for (Contact& c : v.contacts) c.position += shift;
+    }
+    nextVessel_ = 1;
+    for (const Vessel& v : fleet_) nextVessel_ = std::max(nextVessel_, v.id + 1);
+
+    bool anyOnFoot = false;
+    players_.resize(d.players.size());
+    for (std::size_t p = 0; p < d.players.size(); ++p) {
+        const PlayerWire& w = d.players[p];
+        PlayerState& to = players_[p];
+        const bool firstPerson = to.firstPerson;  // la vista a pie es cosa de cada cliente
+        to.id = w.id;
+        to.name = w.name;
+        to.vessel = std::max(IndexOfId(w.vesselId), 0);
+        to.seats = w.seats;
+        // El tutorial: los pasos son los mismos aqui que alli; viaja solo por donde va. Apagado o
+        // terminado en el servidor, apagado aqui.
+        if (w.dialogue.active) {
+            if (to.dialogue.StepCount() == 0) to.dialogue.Start(MakeTutorial());
+            to.dialogue.SetState(w.dialogue);
+        } else if (to.dialogue.Active()) {
+            to.dialogue.Stop();
+        }
+        to.analysisUsed = w.analysisUsed;
+        to.cursorUsed = w.cursorUsed;
+        to.collected = w.collected;
+        to.kills = w.kills;
+        to.log = w.log;
+        to.known = w.known;
+        to.visited = w.visited;
+        to.scanned = w.scanned;
+        to.onFoot = w.onFoot;
+        to.avatar = w.avatar;
+        to.lastStrike = w.lastStrike;
+        to.strikeAge = w.strikeAge;
+        to.cinematic = w.cinematic;
+        to.firstPerson = firstPerson;
+        anyOnFoot = anyOnFoot || w.onFoot;
+    }
+    // La cubierta sale de su tipo: no viaja.
+    if (anyOnFoot && (b.deck.boxes.empty() || b.deckKind != d.deckKind)) b.deck = MakeDeck(d.deckKind);
+    b.deckKind = d.deckKind;
+
+    focusPlayer_ = d.me;
+    focus_ = players_[static_cast<std::size_t>(d.me)].vessel;
+    UsePlayer(focusPlayer_);
+}
+
+// Lo unico que hace una replica por su cuenta: llevar el origen y los sistemas cargados de su motor a
+// donde esta su nave, en la fecha que dijo el servidor, para poder dibujar el mundo.
+void GameSession::ReplicaFrame(double realSeconds, float focalPixels) {
+    UsePlayer(focusPlayer_);
+    std::vector<VesselStep> t(fleet_.size());
+    AdvanceBubble(vessel_->bubble, realSeconds, 0.0, t, focalPixels);
+    UsePlayer(focusPlayer_);
 }
 
 // ---- Burbujas ----
@@ -4845,6 +5002,10 @@ void GameSession::FinishVessel(const StepClock& k, VesselStep& t) {
 }
 
 int GameSession::StepFixed(double realSeconds, const ShipControls& c, float focalPixels) {
+    if (replica_) {
+        Step(realSeconds, c, focalPixels);
+        return 0;
+    }
     // Los giros son incrementos: se suman hasta que un paso los gaste. Lo demas es el ultimo valor.
     ShipControls& k = fixedControls_;
     k.turnYaw += c.turnYaw;
@@ -4896,7 +5057,16 @@ CommandResult GameSession::ApplyAs(int player, const ShipCommand& command) {
     return Execute(command);
 }
 
-CommandResult GameSession::Apply(const ShipCommand& command) { return ApplyAs(focusPlayer_, command); }
+CommandResult GameSession::Apply(const ShipCommand& command) {
+    // En la copia de un cliente la orden viaja al servidor; si no se cumple, lo dira el registro.
+    if (replica_) {
+        if (remote_.command) remote_.command(command);
+        CommandResult sent;
+        sent.ok = true;
+        return sent;
+    }
+    return ApplyAs(focusPlayer_, command);
+}
 
 // Una orden a una nave, venga de quien venga: la da quien ocupe el puesto que hace falta.
 CommandResult GameSession::ApplyTo(int vesselId, const ShipCommand& command) {

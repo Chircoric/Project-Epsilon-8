@@ -320,7 +320,26 @@ Lo que falta o es provisional:
 
 `Bubble` con su propio `Engine`/`World`. Entrar, salir y fundir burbujas (reglas 3–5 del §2.3). Se quita el límite de 3a.7. Hay que medir antes cuánto ocupa un `World` (riesgo R3).
 
-### Fase 5 — Protocolo dentro de un proceso
+### Fase 5 — Protocolo dentro de un proceso — **hecha el 13-11-2026; en el juego, solo con `--loopback`**
+
+Cómo quedó (`game/include/game/Net.h`, `game/src/Net.cpp`):
+
+- **Servidor y cliente.** `GameServer` avanza la sesión de verdad a paso fijo de 1/60 s con los mandos que le llegan (`StepPlayers`) y manda a cada cliente lo que ve. `GameClient` convierte otra `GameSession` en una **réplica**: no simula; aplica las instantáneas. En una réplica, `Apply()` manda la orden y `Step()` manda el mando y solo mantiene cargado el mundo alrededor de la nave. Por eso la interfaz y el dibujo no han cambiado: leen la réplica como leían la sesión (riesgo R4 resuelto así).
+- **Instantánea** (`SnapshotData`): el mundo (estaciones, anomalías, especie) y la burbuja del jugador (reloj, proyectiles, restos, naves y jugadores que hay en ella). Las naves de otras burbujas no viajan. Las posiciones van en el mundo del servidor, con su origen; la réplica las pasa al suyo.
+- **Mensajes**: `Hello`, `Welcome`, `Refused`, `Controls`, `Command`, `Snapshot`. El saludo comprueba la versión del protocolo y la del guardado; `Welcome` lleva la semilla, y quien tiene otra galaxia no entra. Un jugador entra como anfitrión, como tripulante de la nave del anfitrión o con nave propia (`JoinAs`); quien vuelve con el mismo identificador recupera su sitio.
+- **Transporte**: la interfaz `Transport` y su versión en memoria (`MakeMemoryLink`). El de red es la fase 6.
+- **Un solo código para escribir y leer**: cada estructura tiene una función `Wire` que sirve para las dos cosas. Lo que se puede copiar byte a byte va tal cual, así que servidor y clientes tienen que ser el mismo ejecutable.
+- **Probado**: la partida que lleva el servidor con los mandos y órdenes de un cliente es idéntica, número a número, a la misma partida jugada sin red; la réplica ve lo mismo que el servidor; tripulante, nave propia, burbujas distintas y los tres rechazos.
+
+Lo que se aparta del plan o queda pendiente:
+
+- **El juego en solitario no pasa por el servidor.** Sigue siendo directo; servidor y cliente en memoria solo se usan con `--loopback`. Hacerlo el modo por defecto es un paso aparte, cuando el loopback lleve más rodaje.
+- **No se manda el guardado al entrar.** No hizo falta: la primera instantánea ya trae todo lo que el cliente ve.
+- **La instantánea pesa unos 20 kB y va entera en cada paso**: a 60 por segundo es más de 1 MB/s por cliente. `GameServer::snapshotEvery` la espacia; partirla en rápida y lenta y mandar solo diferencias es la fase 8.
+- **Sin interpolación ni predicción**: con una instantánea por paso no se nota; al espaciarlas, sí.
+- **En loopback**: la consola actúa sobre la sesión del servidor, así que `nave ver`, F2 y F3 no cambian lo que ve el cliente; y no se comprueba que el `Balance` sea el mismo (es el mismo proceso).
+- Las respuestas a las órdenes no vuelven al cliente: `Apply()` en una réplica dice siempre que sí, y si el servidor la rechaza se sabe por el registro.
+- Un cliente que se desconecta deja a su jugador y su nave donde estaban (decisión 6, sin tomar).
 
 Servidor y cliente separados por una interfaz `Transport`, con una implementación en memoria. El cliente ya **no** toca la sesión: manda `ShipControls` y `ShipCommand`, recibe instantáneas y eventos, y con ellos rellena una copia de solo lectura que alimentan `GameHud` y `GameLayer`. El juego en solitario pasa a ser «servidor + cliente en memoria». Pruebas: serializar y deserializar da lo mismo; una partida por el transporte en memoria da lo mismo que directa.
 

@@ -12,6 +12,8 @@
 //   --cmd "texto"      ejecuta un comando al empezar; se puede repetir
 //   --no-vsync         dibuja sin esperar al monitor
 //   --fixed-step       la partida avanza a pasos fijos de 1/60 s, como lo hara el servidor
+//   --loopback         servidor y cliente en este mismo proceso: la partida la simula un servidor y lo que
+//                      se ve es la replica de un cliente, unidos en memoria (docs/multijugador.md, fase 5)
 //   --size W H         tamano de la ventana
 //   --seed N           otra partida
 //   --mode N           salta el menu: 0 pacifico, 1 facil, 2 normal, 3 dificil, 4 realista
@@ -46,6 +48,7 @@
 #include "epsilon/SdlGpuBackend.h"
 #include "game/Armament.h"
 #include "game/GameHud.h"
+#include "game/Net.h"
 #include "game/GameLayer.h"
 #include "game/GameModels.h"
 #include "game/UiSounds.h"
@@ -69,7 +72,7 @@ struct Options {
     std::string screenshot;
     std::string shipModel;         // .glb o .gltf de la nave; vacio = buscarlo junto al ejecutable
     std::vector<std::string> commands;
-    bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false;
+    bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false, loopback = false;
     int mode = -1;                 // -1 = menu
     int quality = -1;              // -1 = la guardada; si no, GraphicsQuality
     int page = 0;                  // pagina del menu con la que empezar: MenuPage
@@ -114,6 +117,7 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--atlas-tabla") o.atlas = o.atlasTable = true;
         else if (a == "--no-vsync") o.vsync = false;
         else if (a == "--fixed-step") o.fixedStep = true;
+        else if (a == "--loopback") o.loopback = true;
         else if (a == "--mode" && i + 1 < argc) o.mode = std::atoi(argv[++i]);
         else if (a == "--quality" && i + 1 < argc) o.quality = std::atoi(argv[++i]);
         else if (a == "--page" && i + 1 < argc) o.page = std::atoi(argv[++i]);
@@ -846,16 +850,44 @@ int Run(Options options) {
             GameSession session(engine, rules, options.seed);
             session.SetPlayer(playerId, "Piloto");
             session.RefitToDesign();
+            // Con --loopback la partida de verdad la lleva un servidor, con su propio motor, y `session`
+            // pasa a ser la replica de un cliente: la interfaz y el dibujo la leen igual, y sus ordenes y su
+            // mando viajan al servidor. `authority` es siempre la sesion que manda: la del servidor, o la
+            // unica que hay. Lo que cambia la partida sin ser una orden (trucos, cargar, guardar) va a ella.
+            std::unique_ptr<Engine> serverEngine;
+            std::unique_ptr<GameSession> serverSession;
+            if (options.loopback) {
+                serverEngine = std::make_unique<Engine>(config, art);
+                serverEngine->Commands().Execute("desactivar cielo orbitas colisiones grano");
+                serverSession = std::make_unique<GameSession>(*serverEngine, rules, options.seed);
+                serverSession->SetPlayer(playerId, "Piloto");
+                serverSession->RefitToDesign();
+            }
+            GameSession& authority = serverSession ? *serverSession : session;
             GameLayer layer(session, assets, SdlGpuBackend::kGlowTexture, SdlGpuBackend::kRingTexture, fog);
             engine.AddLayer(&layer);
             // Una nave que sale del sistema donde hay otras se lleva su propia burbuja, con su mundo
             // cargado: la sesion pide aqui un motor mas, igual que este (docs/multijugador.md, fase 4).
-            session.SetEngineFactory([&]() {
+            authority.SetEngineFactory([&]() {
                 auto another = std::make_unique<Engine>(config, art);
                 another->Commands().Execute("desactivar cielo orbitas colisiones grano");
                 another->AddLayer(&layer);
                 return another;
             });
+            std::unique_ptr<GameServer> host;
+            std::unique_ptr<GameClient> client;
+            if (options.loopback) {
+                host = std::make_unique<GameServer>(authority);
+                auto link = MakeMemoryLink();
+                host->Add(link.first);
+                Hello hello;
+                hello.id = playerId;
+                hello.name = "Piloto";
+                client = std::make_unique<GameClient>(session, link.second, hello);
+                host->Update(0.0);
+                client->Update();
+                std::printf("Loopback: servidor y cliente en memoria%s\n", client->Ready() ? "" : " (sin respuesta del servidor)");
+            }
 
             TargetRef target;
             Quatd viewOrbit;  // camara respecto a la nave, sin limites
@@ -868,7 +900,7 @@ int Run(Options options) {
             // Lo mas cerca que puede ponerse la camara sin entrar en el casco, por donde mira ahora (km).
             double hullFloor = 0.0;
             Vec3f hullLook{0, 0, 0};  // direccion en que se midio, en el modelo
-            RegisterCommands(engine.Commands(), session, target);
+            RegisterCommands(engine.Commands(), authority, target);  // la consola actua sobre la partida de verdad
             engine.Commands().Add("vista", "camara: vista <grados> [km] [grados de elevacion; positivos, desde abajo]", [&](const CommandRegistry::Args& args) -> std::string {
                 if (!args.empty()) viewOrbit = Quatd::FromAxisAngle({0, 1, 0}, -std::atof(args[0].c_str()) * kPi / 180.0);
                 if (args.size() >= 3) viewOrbit = viewOrbit * Quatd::FromAxisAngle({1, 0, 0}, std::atof(args[2].c_str()) * kPi / 180.0);
@@ -878,7 +910,7 @@ int Run(Options options) {
 
             engine.Commands().Add("girar", "gira la nave de golpe, para probar: girar <derecha> <abajo> en grados", [&](const CommandRegistry::Args& args) -> std::string {
                 if (args.size() < 2) return engine.Commands().Fail("Uso: girar <derecha> <abajo>");
-                ShipState& ship = session.Ship();
+                ShipState& ship = authority.Ship();
                 ship.orientation = (ship.orientation * Quatd::FromAxisAngle({0, 1, 0}, std::atof(args[0].c_str()) * kPi / 180.0) * Quatd::FromAxisAngle({1, 0, 0}, -std::atof(args[1].c_str()) * kPi / 180.0)).Normalized();
                 ship.aim = ship.orientation;
                 ship.moveDirection = ship.warpHeading = Heading(ship);
@@ -887,7 +919,7 @@ int Run(Options options) {
 
             engine.Commands().Add("virar", "manda girar la nave, que gira sola con sus propulsores de maniobra: virar <derecha> <abajo> en grados", [&](const CommandRegistry::Args& args) -> std::string {
                 if (args.size() < 2) return engine.Commands().Fail("Uso: virar <derecha> <abajo>");
-                ShipState& ship = session.Ship();
+                ShipState& ship = authority.Ship();
                 ship.aim = (ship.orientation * Quatd::FromAxisAngle({0, 1, 0}, std::atof(args[0].c_str()) * kPi / 180.0) * Quatd::FromAxisAngle({1, 0, 0}, -std::atof(args[1].c_str()) * kPi / 180.0)).Normalized();
                 return "Virando";
             });
@@ -979,7 +1011,7 @@ int Run(Options options) {
                 if (args.size() >= 5) from = {std::atof(args[2].c_str()), std::atof(args[3].c_str()), std::atof(args[4].c_str())};
                 if (Length(from) < 1.0) from = {0, -1, 0};
                 from = Normalize(from);
-                session.DamageZone(zone, std::atof(args[1].c_str()), &from);
+                authority.DamageZone(zone, std::atof(args[1].c_str()), &from);
                 return std::string(ZoneInfo(zone).name) + ": " + std::to_string(static_cast<int>(session.Ship().zones[static_cast<std::size_t>(zone)] * 100.0)) + "%";
             });
             engine.Commands().Add("disparo", "proyectil sin escudos que sigue su trayectoria: disparo <dx dy dz> <px py pz> [casco]; llega desde d y pasa por p (m, en el modelo)", [&](const CommandRegistry::Args& args) -> std::string {
@@ -987,14 +1019,14 @@ int Run(Options options) {
                 const Vec3d d = Normalize(Vec3d{std::atof(args[0].c_str()), std::atof(args[1].c_str()), std::atof(args[2].c_str())} + Vec3d{0, 0, 1e-9});
                 const Vec3d p{std::atof(args[3].c_str()), std::atof(args[4].c_str()), std::atof(args[5].c_str())};
                 const double amount = args.size() >= 7 ? std::atof(args[6].c_str()) : 40.0;
-                const int zone = session.ShootHull(p + d * 2000.0, p - d * 2000.0, amount);
+                const int zone = authority.ShootHull(p + d * 2000.0, p - d * 2000.0, amount);
                 return std::string("Da en: ") + ZoneInfo(zone).name;
             });
             // El alienigena mas cercano: el objetivo si es uno, y si no el que este mas cerca de la nave.
             const auto nearestAlien = [&]() -> Anomaly* {
                 Anomaly* best = nullptr;
                 double closest = 1e300;
-                for (Anomaly& a : session.Anomalies()) {
+                for (Anomaly& a : authority.Anomalies()) {
                     if (a.hull <= 0.0 || !ZonesOf(a)) continue;
                     if (target.kind == TargetRef::Kind::Anomaly && target.index == a.id) return &a;
                     const double d = Length(session.AnomalyPosition(a) - session.Ship().position);
@@ -1018,9 +1050,9 @@ int Run(Options options) {
                 const int zone = std::atoi(args[0].c_str());
                 if (zone < 0 || zone >= kHullZoneCount) return engine.Commands().Fail("Zona desconocida");
                 const int id = a->id;
-                session.DamageAnomalyZone(id, zone, a->maxHull * std::atof(args[1].c_str()) / 100.0);
+                authority.DamageAnomalyZone(id, zone, a->maxHull * std::atof(args[1].c_str()) / 100.0);
                 const Anomaly* after = nullptr;
-                for (const Anomaly& b : session.Anomalies())
+                for (const Anomaly& b : authority.Anomalies())
                     if (b.id == id) after = &b;
                 if (!after || after->hull <= 0.0) return "Destruida";
                 return ZoneLabel(ZonesOf(*after), zone) + ": " + std::to_string(static_cast<int>(after->zones[static_cast<std::size_t>(zone)] * 100.0)) + "%, casco " + std::to_string(static_cast<int>(after->hull / after->maxHull * 100.0)) + "%" + (after->disabled ? ", apagada" : "");
@@ -1042,13 +1074,13 @@ int Run(Options options) {
                 return (ui.settings.folded >> p) & 1u ? "Plegada" : "Desplegada";
             });
             ui.screen = options.mode >= 0 ? HudScreen::Playing : HudScreen::Menu;
-            if (options.mode >= 0) session.SetMode(static_cast<GameModeId>(options.mode));
+            if (options.mode >= 0) authority.SetMode(static_cast<GameModeId>(options.mode));
             ui.console = &console;
             if (saved) ui.savedGame = SaveSummary(*saved);
             ui.saveProblem = saveProblem;
             ui.analysis = options.analysis;
             bool playing = ui.screen == HudScreen::Playing;
-            if (options.noTutorial) session.Conversation().Stop();
+            if (options.noTutorial) authority.Conversation().Stop();
             bool cursor = ui.screen == HudScreen::Menu || options.cursor;
             ui.wheel = options.wheel;
             ui.atlas.open = options.atlas;
@@ -1057,6 +1089,13 @@ int Run(Options options) {
             if (options.atlas) ui.atlas.selected = TargetRef{Kind::Star, 0, 0};
 
             session.Step(1.0 / 60.0, {});
+            // En loopback ese paso lo da la replica, que no simula: el servidor da el suyo, para que los
+            // comandos de arranque encuentren el sistema cargado igual que sin red.
+            if (host) {
+                authority.Step(1.0 / 60.0, {});
+                host->SendSnapshots();
+                client->Update();
+            }
             // Con --load los comandos corren despues de cargar la partida: si no, la carga los pisaria.
             const auto runCommands = [&] {
                 for (const std::string& line : options.commands) std::printf("> %s\n%s\n", line.c_str(), engine.Commands().Execute(line).c_str());
@@ -1141,7 +1180,7 @@ int Run(Options options) {
             const auto runConsole = [&] {
                 if (console.empty()) return;
                 const std::string answer = engine.Commands().Execute(console);
-                session.Announce("> " + console + (answer.empty() ? std::string() : ": " + answer));
+                authority.Announce("> " + console + (answer.empty() ? std::string() : ": " + answer));
                 console.clear();
             };
 
@@ -1159,7 +1198,7 @@ int Run(Options options) {
             cursor = ui.screen == HudScreen::Menu || options.cursor;
 
             const auto beginGame = [&](GameModeId mode) {
-                session.SetMode(mode);
+                authority.SetMode(mode);
                 ui.screen = HudScreen::Playing;
                 ui.page = MenuPage::Main;
                 SDL_SetWindowRelativeMouseMode(window, options.frames == 0);
@@ -1170,20 +1209,20 @@ int Run(Options options) {
             const auto writeGame = [&] {
                 if (savePath.empty() || !playing) return;
                 std::string problem;
-                if (SaveGame(savePath, session.Snapshot(), &problem)) return;
+                if (SaveGame(savePath, authority.Snapshot(), &problem)) return;
                 std::printf("Aviso: no se pudo guardar: %s\n", problem.c_str());
-                session.Announce("No se pudo guardar la partida.");
+                authority.Announce("No se pudo guardar la partida.");
             };
 
             const auto loadGame = [&] {
                 std::string problem;
-                if (!saved || !session.Restore(*saved, &problem)) {
+                if (!saved || !authority.Restore(*saved, &problem)) {
                     std::printf("Aviso: %s\n", problem.c_str());
                     return;
                 }
                 beginGame(saved->world.mode);
-                session.TakeSaveRequest();
-                session.Announce("Partida cargada.");
+                authority.TakeSaveRequest();
+                authority.Announce("Partida cargada.");
             };
             if (options.load) {
                 loadGame();
@@ -1256,7 +1295,7 @@ int Run(Options options) {
                     case T::ImpulseEngine: {
                         const CommandResult done = session.Apply(a.type == T::InstallModule ? Order(C::InstallModule, a.value, a.index) : Order(C::ImpulseEngine, a.value));
                         if (!done) {
-                            session.Notice(done.why);
+                            authority.Notice(done.why);
                             sounds.Play(UiSound::Error);
                         }
                         break;
@@ -1362,7 +1401,7 @@ int Run(Options options) {
                     case T::Fire:
                         if (a.value >= 0) session.Apply(Order(C::Fire, target, a.value));
                         else if (!session.Apply(Order(C::FireAll, target))) {
-                            session.Announce("Nada listo para disparar.");
+                            authority.Announce("Nada listo para disparar.");
                             sounds.Play(UiSound::Error);
                         }
                         break;
@@ -1372,7 +1411,7 @@ int Run(Options options) {
                         break;
                     case T::SaveGame:
                         writeGame();
-                        session.Announce("Partida guardada.");
+                        authority.Announce("Partida guardada.");
                         break;
                 }
             };
@@ -1395,14 +1434,14 @@ int Run(Options options) {
                         session.SetFocus((session.Focus() + 1) % session.VesselCount());
                         target = {};
                         contactIndex = -1;
-                        session.Announce("Llevas la nave " + std::to_string(session.VesselId()) + ".");
+                        authority.Announce("Llevas la nave " + std::to_string(session.VesselId()) + ".");
                     } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F3 && !e.key.repeat && session.PlayerCount() > 1) {
                         // Con varios jugadores, F3 pasa a ser el siguiente: su nave, su puesto, su registro.
                         session.SetFocusPlayer((session.FocusPlayer() + 1) % session.PlayerCount());
                         target = {};
                         contactIndex = -1;
                         syncMouse();
-                        session.Announce("Eres " + session.PlayerAt(session.FocusPlayer()).name + ".");
+                        authority.Announce("Eres " + session.PlayerAt(session.FocusPlayer()).name + ".");
                     } else if (e.type == SDL_EVENT_KEY_DOWN && consoleOpen) {
                         if (e.key.key == SDLK_ESCAPE) {
                             consoleOpen = false;
@@ -1567,6 +1606,13 @@ int Run(Options options) {
                 const double stepSeconds = ui.screen == HudScreen::Playing ? realSeconds : 0.0;
                 if (options.fixedStep) session.StepFixed(stepSeconds, controls, static_cast<float>(options.width) * 0.5f);
                 else session.Step(stepSeconds, controls, static_cast<float>(options.width) * 0.5f);
+                // En loopback, el paso de arriba solo ha mandado el mando: ahora avanza el servidor y la
+                // replica aplica lo que le llega. En pausa el servidor no avanza, pero sigue contando lo que hay.
+                if (host) {
+                    host->Update(stepSeconds, static_cast<float>(options.width) * 0.5f);
+                    if (stepSeconds <= 0.0) host->SendSnapshots();
+                    client->Update();
+                }
                 // Con --frames, cada cambio de paso del tutorial se anota con el tiempo real que lleva la partida.
                 if (options.frames > 0 && session.Conversation().Step() != lastTutorialStep) {
                     lastTutorialStep = session.Conversation().Step();
@@ -1581,14 +1627,14 @@ int Run(Options options) {
                     tutorialDone = session.Conversation().Completions();
                     sounds.Play(UiSound::Confirm);
                 }
-                if (session.TakeSaveDeletion() && !savePath.empty()) {
+                if (authority.TakeSaveDeletion() && !savePath.empty()) {
                     DeleteGame(savePath);
                     saved.reset();
                     ui.savedGame.clear();
                     playing = false;  // no queda nada que guardar hasta empezar otra vez
                 }
                 if (session.Phase() == GamePhase::Flying && ModeInfo(session.Mode()).permadeath && !playing && ui.screen == HudScreen::Playing) playing = true;
-                if (session.TakeSaveRequest()) writeGame();
+                if (authority.TakeSaveRequest()) writeGame();
 
                 // Camara de persecucion: detras y algo por encima de una nave de 1,2 km.
                 int width = options.width, height = options.height;
