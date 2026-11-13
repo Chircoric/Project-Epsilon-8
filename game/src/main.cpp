@@ -12,6 +12,9 @@
 //   --cmd "texto"      ejecuta un comando al empezar; se puede repetir
 //   --no-vsync         dibuja sin esperar al monitor
 //   --fixed-step       la partida avanza a pasos fijos de 1/60 s, como lo hara el servidor
+//   --host [puerto]    abre la partida a la red: juegas tu y pueden entrar otros (puerto 27300 si no se dice)
+//   --connect ip[:puerto]  entra en la partida de otro. Con --join ship (por defecto) llevas una nave propia;
+//                      con --join crew vas de tripulante en la del anfitrion. --name dice como te llamas
 //   --loopback         servidor y cliente en este mismo proceso: la partida la simula un servidor y lo que
 //                      se ve es la replica de un cliente, unidos en memoria (docs/multijugador.md, fase 5)
 //   --size W H         tamano de la ventana
@@ -73,6 +76,10 @@ struct Options {
     std::string shipModel;         // .glb o .gltf de la nave; vacio = buscarlo junto al ejecutable
     std::vector<std::string> commands;
     bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false, loopback = false;
+    int hostPort = 0;            // > 0: la partida se abre a la red en ese puerto
+    std::string connect;         // ip[:puerto] del servidor al que entrar
+    std::string playerName;      // --name
+    bool joinCrew = false;       // --join crew
     int mode = -1;                 // -1 = menu
     int quality = -1;              // -1 = la guardada; si no, GraphicsQuality
     int page = 0;                  // pagina del menu con la que empezar: MenuPage
@@ -118,6 +125,13 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--no-vsync") o.vsync = false;
         else if (a == "--fixed-step") o.fixedStep = true;
         else if (a == "--loopback") o.loopback = true;
+        else if (a == "--host") {
+            o.hostPort = kDefaultPort;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') o.hostPort = std::atoi(argv[++i]);
+            o.loopback = true;  // quien abre la partida juega por el mismo camino que los demas
+        } else if (a == "--connect" && i + 1 < argc) o.connect = argv[++i];
+        else if (a == "--name" && i + 1 < argc) o.playerName = argv[++i];
+        else if (a == "--join" && i + 1 < argc) o.joinCrew = std::string(argv[++i]) == "crew";
         else if (a == "--mode" && i + 1 < argc) o.mode = std::atoi(argv[++i]);
         else if (a == "--quality" && i + 1 < argc) o.quality = std::atoi(argv[++i]);
         else if (a == "--page" && i + 1 < argc) o.page = std::atoi(argv[++i]);
@@ -236,7 +250,7 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
             for (int i = 0; i < g.VesselCount(); ++i) {
                 const Vessel& v = g.VesselAt(i);
                 char line[160];
-                std::snprintf(line, sizeof(line), " %d%s (%s, casco %.0f %%, burbuja %d, sistema %d, dia %.2f)", v.id, i == g.Focus() ? "*" : "", v.phase == GamePhase::Flying ? Name(v.ship.mode) : "perdida",
+                std::snprintf(line, sizeof(line), " %d%s (%s, casco %.0f %%, burbuja %d, sistema %d, dia %.2f)", v.id, i == g.Focus() ? "*" : "", v.phase == GamePhase::Flying ? Name(v.ship.mode) : v.phase == GamePhase::Away ? "ausente" : "perdida",
                               100.0 * v.ship.hull / g.Rules().ship.hull, g.BubbleOf(i), v.nearestSystem, g.ClockOf(i) / 86400.0);
                 list += line;
             }
@@ -286,7 +300,7 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
             std::string list = "Jugadores:";
             for (int p = 0; p < g.PlayerCount(); ++p) {
                 const PlayerState& player = g.PlayerAt(p);
-                list += " " + std::to_string(p + 1) + (p == g.FocusPlayer() ? "*" : "") + " " + player.name + " (nave " + std::to_string(g.VesselAt(player.vessel).id) + ": " + seatsOf(player) + (player.onFoot ? ", a pie" : "") + ")";
+                list += " " + std::to_string(p + 1) + (p == g.FocusPlayer() ? "*" : "") + " " + player.name + " (nave " + std::to_string(g.VesselAt(player.vessel).id) + ": " + (player.connected ? seatsOf(player) : std::string("desconectado")) + (player.onFoot ? ", a pie" : "") + ")";
             }
             return list;
         }
@@ -700,12 +714,14 @@ int Run(Options options) {
 
     // Las partidas viven en la carpeta de datos del usuario, no junto al ejecutable.
     // Una partida es una carpeta: mundo.sav y jugadores/<id>.sav (SaveGame.h).
-    std::string savePath = options.savePath;
+    const bool joining = !options.connect.empty();  // se entra en la partida de otro: la guarda su servidor
+    if (joining && options.mode < 0) options.mode = 2;  // sin menu: el modo es el del servidor
+    std::string savePath = joining ? std::string() : options.savePath;
     std::string settingsPath, legacySave;
     std::string playerId = "local";
     if (options.frames == 0) {
         if (char* folder = SDL_GetPrefPath("Epsilon", "Nebulosa")) {
-            if (savePath.empty()) {
+            if (savePath.empty() && !joining) {
                 savePath = std::string(folder) + "partida";
                 legacySave = std::string(folder) + "partida.sav";  // hasta la version 12, un solo archivo
             }
@@ -722,6 +738,9 @@ int Run(Options options) {
         }
         playerId = stored.playerId;
     }
+    // Con --frames no hay identificador guardado: el nombre hace de el, para poder probar con varios.
+    if (playerId == "local" && !options.playerName.empty()) playerId = SafePlayerId(options.playerName);
+    const std::string playerName = options.playerName.empty() ? "Piloto" : options.playerName;
     std::optional<SaveData> saved;
     std::string saveProblem;
     if (!savePath.empty()) {
@@ -856,11 +875,11 @@ int Run(Options options) {
             // unica que hay. Lo que cambia la partida sin ser una orden (trucos, cargar, guardar) va a ella.
             std::unique_ptr<Engine> serverEngine;
             std::unique_ptr<GameSession> serverSession;
-            if (options.loopback) {
+            if (options.loopback && !joining) {
                 serverEngine = std::make_unique<Engine>(config, art);
                 serverEngine->Commands().Execute("desactivar cielo orbitas colisiones grano");
                 serverSession = std::make_unique<GameSession>(*serverEngine, rules, options.seed);
-                serverSession->SetPlayer(playerId, "Piloto");
+                serverSession->SetPlayer(playerId, playerName);
                 serverSession->RefitToDesign();
             }
             GameSession& authority = serverSession ? *serverSession : session;
@@ -876,17 +895,52 @@ int Run(Options options) {
             });
             std::unique_ptr<GameServer> host;
             std::unique_ptr<GameClient> client;
-            if (options.loopback) {
+            Hello hello;
+            hello.id = playerId;
+            hello.name = playerName;
+            if (joining) {
+                // Entrar en la partida de otro: esta sesion es solo la replica; no hay servidor aqui.
+                std::string address = options.connect;
+                int port = kDefaultPort;
+                if (const std::size_t colon = address.rfind(':'); colon != std::string::npos) {
+                    port = std::atoi(address.c_str() + colon + 1);
+                    address = address.substr(0, colon);
+                }
+                std::string problem;
+                std::shared_ptr<Transport> link = ConnectTo(address, port, 5.0, &problem);
+                if (!link) {
+                    std::printf("No se pudo entrar en %s:%d: %s\n", address.c_str(), port, problem.c_str());
+                    return 1;
+                }
+                hello.join = options.joinCrew ? JoinAs::Crew : JoinAs::OwnShip;
+                client = std::make_unique<GameClient>(session, link, hello);
+                // Hasta que llega el mundo no hay nada que dibujar: se espera un momento.
+                for (int i = 0; i < 300 && !client->Ready() && !client->Refused(); ++i) {
+                    client->Update();
+                    SDL_Delay(10);
+                }
+                if (!client->Ready()) {
+                    std::printf("El servidor no dejó entrar: %s\n", client->Refused() ? client->Refusal().c_str() : "no responde");
+                    return 1;
+                }
+                std::printf("Conectado a %s:%d como %s, en la nave %d\n", address.c_str(), port, playerName.c_str(), session.VesselId());
+            } else if (options.loopback) {
                 host = std::make_unique<GameServer>(authority);
                 auto link = MakeMemoryLink();
                 host->Add(link.first);
-                Hello hello;
-                hello.id = playerId;
-                hello.name = "Piloto";
                 client = std::make_unique<GameClient>(session, link.second, hello);
                 host->Update(0.0);
                 client->Update();
                 std::printf("Loopback: servidor y cliente en memoria%s\n", client->Ready() ? "" : " (sin respuesta del servidor)");
+                if (options.hostPort > 0) {
+                    std::string problem;
+                    if (std::unique_ptr<NetListener> listener = ListenOn(options.hostPort, 8, &problem)) {
+                        host->Listen(std::move(listener));
+                        std::printf("Partida abierta a la red en el puerto %d\n", options.hostPort);
+                    } else {
+                        std::printf("Aviso: no se pudo abrir la partida a la red: %s\n", problem.c_str());
+                    }
+                }
             }
 
             TargetRef target;
@@ -1609,9 +1663,17 @@ int Run(Options options) {
                 // En loopback, el paso de arriba solo ha mandado el mando: ahora avanza el servidor y la
                 // replica aplica lo que le llega. En pausa el servidor no avanza, pero sigue contando lo que hay.
                 if (host) {
-                    host->Update(stepSeconds, static_cast<float>(options.width) * 0.5f);
-                    if (stepSeconds <= 0.0) host->SendSnapshots();
+                    // Con la partida abierta a la red, el servidor no se para aunque el anfitrion este en pausa.
+                    const double serverSeconds = options.hostPort > 0 ? realSeconds : stepSeconds;
+                    host->Update(serverSeconds, static_cast<float>(options.width) * 0.5f);
+                    if (serverSeconds <= 0.0) host->SendSnapshots();
                     client->Update();
+                } else if (client) {
+                    client->Update();
+                    if (client->Refused()) {
+                        std::printf("El servidor ha cerrado la conexión: %s\n", client->Refusal().c_str());
+                        running = false;
+                    }
                 }
                 // Con --frames, cada cambio de paso del tutorial se anota con el tiempo real que lleva la partida.
                 if (options.frames > 0 && session.Conversation().Step() != lastTutorialStep) {

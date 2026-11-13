@@ -1,5 +1,6 @@
 // Pruebas del juego. Juegan partidas enteras sin ventana ni GPU.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -5828,6 +5829,277 @@ static void TestNet() {
     std::printf("  enviado por el servidor: %.0f kB en %llu pasos\n", host.BytesSent() / 1024.0, static_cast<unsigned long long>(host.Tick()));
 }
 
+// Desconectarse: la nave sale del mundo, pero no si esta en combate (decision 6 de docs/multijugador.md).
+static void TestDisconnect() {
+    using C = CommandType;
+    Balance rules;
+    const double calm = rules.world.logoutCalm;
+    const TargetRef second{Kind::Ship, 0, 2};
+    {
+        auto engine = MakeEngine(rules, 9);
+        GameSession g(*engine, rules, 9, GameModeId::Normal);
+        Run(g, 0.5);
+        g.AddVessel(400000.0);
+        Run(g, 1.0);
+        CHECK(g.Resolve(second).has_value() && g.PlayerAt(1).connected && !g.InCombat(1));
+        const auto where = [&] { return g.VesselAt(1).ship.position + g.GetWorld().origin; };
+
+        // Sin combate, la nave de quien se va sale del mundo enseguida, y deja de verse.
+        g.PlayerLeft(1);
+        CHECK(!g.PlayerAt(1).connected && g.VesselAt(1).leaving && g.VesselAt(1).phase == GamePhase::Flying);
+        const Vec3d parked = where();
+        g.Step(0.05, {});
+        CHECK(g.VesselAt(1).phase == GamePhase::Away && !g.VesselAt(1).leaving);
+        Run(g, 2.0);
+        CHECK(!g.Resolve(second));
+        CHECK(g.MakeSnapshot(0).vessels.size() == 1 && g.MakeSnapshot(0).players.size() == 1);
+        CHECK(g.BubbleCount() == 1 && g.Phase() == GamePhase::Flying);
+
+        // Guardada asi, al cargar sigue fuera; y quien la lleva, al cargar, esta dentro.
+        const SaveData saved = g.Snapshot();
+        CHECK(saved.world.ships.size() == 2 && saved.world.ships[1].away && !saved.world.ships[1].lost && !saved.world.ships[0].away);
+        const std::string text = WriteSave(saved);
+        CHECK(text.find("\nausente 1\n") != std::string::npos);
+        const std::optional<SaveData> read = ReadSave(text);
+        CHECK(read && read->world.ships[1].away && WriteSave(*read) == text);
+        if (read) {
+            auto engineB = MakeEngine(rules, 9);
+            GameSession h(*engineB, rules, 9, GameModeId::Normal);
+            h.Step(0.05, {});
+            CHECK(h.Restore(*read));
+            CHECK(h.VesselAt(1).phase == GamePhase::Away && h.VesselAt(0).phase == GamePhase::Flying && !h.PlayerAt(1).connected);
+            SaveData theirs = *read;
+            theirs.player = g.SnapshotPlayer(1);
+            auto engineC = MakeEngine(rules, 9);
+            GameSession k(*engineC, rules, 9, GameModeId::Normal);
+            k.Step(0.05, {});
+            CHECK(k.Restore(theirs) && k.VesselId() == 2 && k.Phase() == GamePhase::Flying);
+        }
+
+        // Vuelve: reaparece donde estaba.
+        g.PlayerBack(1);
+        CHECK(g.PlayerAt(1).connected && g.VesselAt(1).phase == GamePhase::Flying);
+        Run(g, 1.0);
+        CHECK(g.Resolve(second).has_value() && Length(where() - parked) < 50.0);
+
+        // En combate no: con un hostil a tiro, la nave de quien se va se queda, parada y vulnerable.
+        CHECK(g.SetFocus(1));
+        const int enemy = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 30000.0);
+        CHECK(g.SetFocus(0));
+        for (int i = 0; i < 600 && !g.InCombat(1); ++i) Run(g, 0.1);
+        CHECK(g.InCombat(1) && !g.InCombat(0));
+        const auto guard = [&] {
+            double total = g.VesselAt(1).ship.hull;
+            for (const double c : g.VesselAt(1).ship.defense.charge) total += c;
+            return total;
+        };
+        g.PlayerLeft(1);
+        const double before = guard();
+        for (int i = 0; i < 400 && guard() >= before; ++i) Run(g, 0.1);
+        CHECK(guard() < before);  // le siguen dando: desconectarse no la ha salvado
+        CHECK(g.VesselAt(1).phase == GamePhase::Flying && g.VesselAt(1).leaving && g.VesselAt(1).ship.throttle == 0.0);
+        CHECK(g.Resolve(second).has_value());
+        // El hostil se aleja. Hasta que no pasa el tiempo de calma, sigue ahi; despues, sale.
+        for (Anomaly& a : g.Anomalies())
+            if (a.id == enemy) a.offset = a.offset + Vec3d{5.0e8, 0.0, 0.0};
+        for (int i = 0; i < 100 && g.InCombat(1) && g.VesselAt(1).combatAge < 1.0; ++i) Run(g, 0.1);  // lo que quede en vuelo
+        Run(g, calm * 0.5);
+        CHECK(g.VesselAt(1).phase == GamePhase::Flying);
+        Run(g, calm + 5.0);
+        CHECK(g.VesselAt(1).phase == GamePhase::Away);
+    }
+
+    // En una nave con mas gente, el que se va solo deja sus puestos: la nave sigue con los demas.
+    {
+        auto engine = MakeEngine(rules, 9);
+        GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+        Run(g, 0.5);
+        g.AddPlayer("Ana");
+        g.PlayerLeft(0);
+        CHECK(g.PlayerAt(0).seats == 0 && g.PlayerAt(1).seats == kAllSeats && !g.VesselAt(0).leaving);
+        Run(g, 1.0);
+        CHECK(g.VesselAt(0).phase == GamePhase::Flying);
+        CHECK(g.ApplyAs(1, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))));  // ahora pilota ella
+        g.PlayerBack(0);
+        CHECK(g.PlayerAt(0).connected && g.PlayerAt(0).seats == 0);  // no quedaba ninguno libre
+        g.PlayerLeft(1);
+        CHECK(g.PlayerAt(0).seats == kAllSeats);
+        g.PlayerLeft(0);
+        CHECK(g.VesselAt(0).leaving);
+        g.Step(0.05, {});
+        CHECK(g.VesselAt(0).phase == GamePhase::Away);
+        g.Step(0.05, {});  // con todas las naves fuera, el mundo espera sin romperse
+        g.PlayerBack(1);
+        CHECK(g.VesselAt(0).phase == GamePhase::Flying && g.PlayerAt(1).seats == kAllSeats);
+    }
+
+    // Por la red: cerrar la conexion es irse, y volver con el mismo identificador es recuperar la nave.
+    {
+        auto engineS = MakeEngine(rules, 9), engineA = MakeEngine(rules, 9), engineB = MakeEngine(rules, 9), engineC = MakeEngine(rules, 9);
+        GameSession server(*engineS, rules, 9, GameModeId::Peaceful), first(*engineA, rules, 9, GameModeId::Peaceful), other(*engineB, rules, 9, GameModeId::Peaceful),
+            again(*engineC, rules, 9, GameModeId::Peaceful);
+        GameServer host(server);
+        auto linkA = MakeMemoryLink(), linkB = MakeMemoryLink(), linkC = MakeMemoryLink();
+        host.Add(linkA.first);
+        host.Add(linkB.first);
+        Hello ana, eva;
+        ana.id = "ana";
+        eva.id = "eva";
+        eva.join = JoinAs::OwnShip;
+        GameClient clientA(first, linkA.second, ana), clientB(other, linkB.second, eva);
+        const auto round = [&](int count) {
+            for (int i = 0; i < count; ++i) {
+                first.Step(GameSession::kFixedStep, {});
+                host.Update(GameSession::kFixedStep);
+                clientA.Update();
+                clientB.Update();
+            }
+        };
+        round(10);
+        CHECK(host.Clients() == 2 && server.VesselCount() == 2 && first.VesselCount() == 2 && other.VesselId() == 2);
+        linkB.second->Close();
+        round(10);
+        CHECK(host.Clients() == 1 && !server.PlayerAt(1).connected && server.VesselAt(1).phase == GamePhase::Away);
+        CHECK(first.VesselCount() == 1 && !first.Resolve(second));
+        host.Add(linkC.first);
+        GameClient clientC(again, linkC.second, eva);
+        for (int i = 0; i < 10; ++i) {
+            first.Step(GameSession::kFixedStep, {});
+            host.Update(GameSession::kFixedStep);
+            clientA.Update();
+            clientC.Update();
+        }
+        CHECK(clientC.Ready() && !clientC.Refused() && host.Clients() == 2);
+        CHECK(server.PlayerCount() == 2 && server.VesselCount() == 2 && server.PlayerAt(1).connected && server.VesselAt(1).phase == GamePhase::Flying);
+        CHECK(again.VesselId() == 2 && first.VesselCount() == 2 && first.Resolve(second).has_value());
+    }
+}
+
+// La red de verdad (ENet), por la interfaz de esta misma maquina: fase 6 de docs/multijugador.md.
+static void TestNetwork() {
+    if (!NetworkAvailable()) {
+        std::printf("  (compilado sin ENet: no se prueba la red)\n");
+        return;
+    }
+    using C = CommandType;
+    Balance rules;
+    const int port = 27391;  // distinto del de juego, por si hay un servidor abierto
+    std::string error;
+    std::unique_ptr<NetListener> listener = ListenOn(port, 4, &error);
+    CHECK(listener != nullptr);
+    if (!listener) {
+        std::printf("  no se pudo escuchar en el puerto %d: %s\n", port, error.c_str());
+        return;
+    }
+    CHECK(!ListenOn(port, 4, &error) && !error.empty());  // el puerto ya esta cogido
+    CHECK(!ConnectTo("127.0.0.1", port + 7, 0.3, &error) && error.find("no responde") != std::string::npos);  // ahi no hay nadie
+
+    // Un paquete pequeno y uno del tamano de una instantanea, en los dos sentidos y por los dos canales.
+    {
+        // Conectar bloquea esperando al servidor, y el servidor solo contesta si se le atiende: aqui, en otro hilo.
+        std::atomic<bool> stop{false};
+        std::thread pump([&] {
+            while (!stop) {
+                listener->Pump();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        });
+        std::shared_ptr<Transport> client = ConnectTo("127.0.0.1", port, 3.0, &error);
+        stop = true;
+        pump.join();
+        CHECK(client != nullptr);
+        if (!client) {
+            std::printf("  no se pudo conectar: %s\n", error.c_str());
+            return;
+        }
+        std::shared_ptr<Transport> peer;
+        for (int i = 0; i < 500 && !peer; ++i) {  // el saludo termina de cruzarse atendiendo a los dos lados
+            listener->Pump();
+            peer = listener->Accept();
+            Packet nothing;
+            client->Receive(nothing);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(peer && peer->Open() && client->Open());
+        if (!peer) return;
+        Packet small{1, 2, 3}, big(40000);
+        for (std::size_t i = 0; i < big.size(); ++i) big[i] = static_cast<std::uint8_t>(i * 7 + 3);
+        const auto exchange = [&](Transport& from, Transport& to, const Packet& sent, bool reliable) {
+            from.Send(sent, reliable);
+            Packet got;
+            for (int i = 0; i < 500; ++i) {
+                listener->Pump();
+                if (to.Receive(got)) return got == sent;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return false;
+        };
+        CHECK(exchange(*client, *peer, small, true) && exchange(*peer, *client, small, true));
+        CHECK(exchange(*client, *peer, big, true) && exchange(*peer, *client, big, true));
+        CHECK(exchange(*peer, *client, big, false) && exchange(*client, *peer, small, false));
+        // Al cerrar el cliente, el servidor ve la conexion cerrada.
+        client->Close();
+        for (int i = 0; i < 500 && peer->Open(); ++i) {
+            listener->Pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(!peer->Open() && !client->Open());
+    }
+
+    // Una partida entera por la red: servidor que escucha, y un cliente que entra con nave propia.
+    auto engineS = MakeEngine(rules, 9), engineR = MakeEngine(rules, 9);
+    GameSession server(*engineS, rules, 9, GameModeId::Peaceful), replica(*engineR, rules, 9, GameModeId::Peaceful);
+    GameServer host(server);
+    host.Listen(std::move(listener));
+    std::atomic<bool> stop{false};
+    std::thread pump([&] {  // el servidor, atendiendo mientras el cliente conecta
+        while (!stop) {
+            host.Update(0.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    std::shared_ptr<Transport> link = ConnectTo("localhost", port, 3.0, &error);
+    stop = true;
+    pump.join();
+    CHECK(link != nullptr);
+    if (!link) return;
+    Hello hello;
+    hello.id = "eva";
+    hello.name = "Eva";
+    hello.join = JoinAs::OwnShip;
+    GameClient client(replica, link, hello);
+    const auto frames = [&](int count, const ShipControls& controls = {}) {
+        for (int i = 0; i < count; ++i) {
+            replica.Step(GameSession::kFixedStep, controls);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // que el paquete cruce
+            host.Update(GameSession::kFixedStep);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            client.Update();
+        }
+    };
+    for (int i = 0; i < 300 && !client.Ready(); ++i) frames(1);
+    CHECK(client.Ready() && !client.Refused() && host.Clients() == 1);
+    CHECK(server.VesselCount() == 2 && server.PlayerAt(1).id == "eva" && replica.VesselId() == 2 && replica.VesselCount() == 2);
+    replica.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));
+    frames(20);
+    CHECK(server.VesselAt(1).ship.mode == DriveMode::Cruise && replica.Ship().mode == DriveMode::Cruise);
+    replica.Apply(Order(C::SetDrive, static_cast<int>(DriveMode::Impulse)));
+    ShipControls fly;
+    fly.throttleChange = 0.5;
+    frames(120, fly);
+    CHECK(server.VesselAt(1).ship.throttle > 0.8 && server.VesselAt(0).ship.throttle == 0.0);
+    frames(10);
+    CHECK(std::abs(replica.Ship().throttle - server.VesselAt(1).ship.throttle) < 1e-9);
+    CHECK(std::abs(replica.SimTime() - server.SimTime()) < 60.0 && replica.SimTime() > 0.0);
+    // Se va: su nave sale del mundo (no hay combate).
+    link->Close();
+    for (int i = 0; i < 300 && server.VesselAt(1).phase != GamePhase::Away; ++i) {
+        host.Update(GameSession::kFixedStep);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(host.Clients() == 0 && server.VesselAt(1).phase == GamePhase::Away && !server.PlayerAt(1).connected);
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -6067,6 +6339,8 @@ int main(int argc, char** argv) {
         {"Tripulacion: dos jugadores en una nave", TestCrew},
         {"Burbujas: naves en sistemas distintos", TestBubbles},
         {"Servidor y cliente en memoria", TestNet},
+        {"Desconexion: salir del mundo, pero no en combate", TestDisconnect},
+        {"Red (ENet) en esta maquina", TestNetwork},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},

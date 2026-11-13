@@ -1,5 +1,6 @@
 #include "game/Net.h"
 
+#include <algorithm>
 #include <cstring>
 #include <deque>
 #include <optional>
@@ -160,6 +161,7 @@ void Wire(A& a, Vessel& v) {
     a(v.routePhase); a(v.routeDistance); a(v.fuelWarned); a(v.warning); a(v.exteriorFactor); a(v.timeFocus);
     a(v.nearestSystem); a(v.inHeatZone); a(v.creative);
     a(v.dockPhase); a(v.dockWanted); a(v.undockGrace); a(v.dockedAge); a(v.approach); a(v.homeStation); a(v.respawnPending); a(v.leashWarned);
+    a(v.combatAge); a(v.leaving);
     a(v.hitStreak); a(v.hitDamage); a(v.hitShield); a(v.directedLoss); a(v.zoneHeat); a(v.hullHits); a(v.nextHit); a(v.failedZone);
     a(v.driftVelocity); a(v.lastWarpCharge); a(v.radiators); a(v.ramming); a(v.ramWarned); a(v.overheatWarned); a(v.gasWarned);
     a(v.phase); a(v.wreckAge); a(v.wreckPosition); a(v.lossReason);
@@ -295,6 +297,19 @@ bool DecodeControls(const Packet& packet, ShipControls& out) { return Decode(Mes
 bool DecodeCommand(const Packet& packet, ShipCommand& out) { return Decode(MessageType::Command, packet, out); }
 bool DecodeSnapshot(const Packet& packet, SnapshotData& out) { return Decode(MessageType::Snapshot, packet, out); }
 
+#ifndef EPSILON_WITH_ENET
+// Compilado sin ENet: no hay red, solo el transporte en memoria.
+bool NetworkAvailable() { return false; }
+std::unique_ptr<NetListener> ListenOn(int, int, std::string* error) {
+    if (error) *error = "este juego se compiló sin red";
+    return nullptr;
+}
+std::shared_ptr<Transport> ConnectTo(const std::string&, int, double, std::string* error) {
+    if (error) *error = "este juego se compiló sin red";
+    return nullptr;
+}
+#endif
+
 // ---- Servidor ----------------------------------------------------------------------------------
 
 void GameServer::Add(std::shared_ptr<Transport> link) {
@@ -343,6 +358,8 @@ void GameServer::Greet(Peer& peer, const Hello& hello) {
         }
         if (player < 0) return Refuse(peer, "No hay sitio en la partida.");
         session_.NamePlayer(player, id, name);
+    } else {
+        session_.PlayerBack(player);  // vuelve: su nave reaparece donde estaba
     }
     peer.player = player;
     std::uint32_t seed = session_.Seed();
@@ -397,7 +414,18 @@ void GameServer::SendSnapshots() {
 }
 
 int GameServer::Update(double realSeconds, float focalPixels) {
+    if (listener_) {
+        listener_->Pump();
+        while (std::shared_ptr<Transport> arrived = listener_->Accept()) Add(std::move(arrived));
+    }
     for (std::size_t i = 0; i < peers_.size(); ++i) Read(peers_[i]);
+    // Las conexiones que se han cerrado: su jugador se queda sin nadie al mando (GameSession::PlayerLeft).
+    for (Peer& peer : peers_) {
+        if (peer.link->Open() || peer.gone) continue;
+        peer.gone = true;
+        if (peer.player >= 0) session_.PlayerLeft(peer.player);
+    }
+    peers_.erase(std::remove_if(peers_.begin(), peers_.end(), [](const Peer& p) { return p.gone; }), peers_.end());
     // Con un tiron largo no se intenta recuperar todo: como mucho, ocho pasos de golpe.
     pending_ = std::min(pending_ + std::max(realSeconds, 0.0), GameSession::kFixedStep * 8.0);
     int steps = 0;

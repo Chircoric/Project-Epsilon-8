@@ -343,7 +343,24 @@ Lo que se aparta del plan o queda pendiente:
 
 Servidor y cliente separados por una interfaz `Transport`, con una implementación en memoria. El cliente ya **no** toca la sesión: manda `ShipControls` y `ShipCommand`, recibe instantáneas y eventos, y con ellos rellena una copia de solo lectura que alimentan `GameHud` y `GameLayer`. El juego en solitario pasa a ser «servidor + cliente en memoria». Pruebas: serializar y deserializar da lo mismo; una partida por el transporte en memoria da lo mismo que directa.
 
-### Fase 6 — Red
+### Fase 6 — Red — **hecha el 13-11-2026**
+
+Cómo quedó:
+
+- **ENet 1.3.18**, con `"enet"` en `vcpkg.json`. Entró **sin mover la línea base** (riesgo R8 descartado). `game/src/NetEnet.cpp` da el mismo `Transport` que el de memoria: `ListenOn(puerto)` para el servidor y `ConnectTo(ip, puerto)` para el cliente. Canal 0 sin fiabilidad (mandos e instantáneas, estas en trozos) y canal 1 fiable (saludo y órdenes). Si se configura sin ENet, el juego compila igual y solo queda el transporte en memoria.
+- **En el juego**: `--host [puerto]` abre la partida a la red (el anfitrión juega por el mismo camino que con `--loopback`, y el servidor no se para aunque él esté en pausa); `--connect ip[:puerto]` entra en la de otro, con nave propia (`--join ship`, por defecto) o de tripulante (`--join crew`); `--name` dice el nombre. Puerto por defecto, 27300.
+- **Desconexión (decisión 6).** Cerrar la conexión es `GameSession::PlayerLeft`: el jugador deja sus puestos y, si no queda nadie conectado a bordo, la nave se para y **sale del mundo (`GamePhase::Away`) cuando lleva `logoutCalm` segundos reales sin combate**. Hasta entonces sigue ahí y se la puede destruir. Cuenta como combate recibir un impacto, disparar y tener un hostil armado a tiro. Una nave ausente no se mueve, no se ve y no se le puede disparar; va en `mundo.sav` (línea `ausente`). Volver con el mismo identificador es `PlayerBack`: la nave reaparece donde estaba.
+- **Probado**: paquetes de 3 bytes y de 40 kB por los dos canales, una partida entera por ENet en esta máquina dentro de las pruebas, y **dos procesos del juego** (`--host` y `--connect`), con nave propia y de tripulante.
+
+Lo que falta o es provisional:
+
+- **Solo probado en una máquina** (127.0.0.1). Entre dos equipos de la LAN no se ha probado, y el cortafuegos de Windows preguntará la primera vez.
+- **Una instantánea entera por paso**: unos 20 kB, 60 veces por segundo y por cliente (más de 1 MB/s). En LAN cabe; hay que reducirlo (fase 8).
+- **El cliente no guarda nada**: la partida es del servidor. Su jugador y los puestos de la tripulación siguen sin guardarse.
+- **En el cliente, los trucos de consola no hacen nada** (cambian la réplica, que el servidor pisa). Las órdenes de consola (`motor`, `escudo`…) sí viajan.
+- **El anfitrión no puede cambiar de vista** (`nave ver`, F2, F3) y **no hay forma de echar a nadie** ni contraseña.
+- Si el servidor se cae, el cliente se queda con la última imagen: no hay aviso ni reconexión automática.
+- No se comprueba que el `Balance` coincida; el saludo mira versión de protocolo, versión de guardado y semilla.
 
 Biblioteca `epsilon_net` con ENet. `--servidor [puerto]` y `--conectar ip[:puerto]`. Saludo: versión, suma de `Balance`, semilla, identidad del jugador. Entrada tardía y desconexión limpia.
 
@@ -550,7 +567,7 @@ Marcadas con ★ las que bloquean el arranque. En cada una, mi propuesta.
 | 3 | **Conocimiento** (sistemas, astros analizados) | por jugador · por equipo | Por equipo | 1.2, 2 |
 | 4 | **Estaciones y recursos** | comunes · de cada jugador, con permiso para los demás | Comunes en cooperativo; con dueño cuando haya varias naves | 2, 3a |
 | 5 ★ | **Perder la nave** sin vuelta atrás del mundo | (a) reaparece en la última estación propia donde atracó, con la penalización de bodega del modo · (b) nave nueva en el punto de inicio · (c) en modo realista, fuera de la partida | **Decidido (13-11-2026): (a)**; (c) para el modo realista | 1.6 |
-| 6 | **Nave de un jugador desconectado** | desaparece · se queda donde está, vulnerable · solo se puede salir atracado y queda a salvo | Desaparece (y vuelve donde estaba); en cooperativo la nave sigue mientras quede alguien | 2, 6 |
+| 6 | **Nave de un jugador desconectado** | desaparece · se queda donde está, vulnerable · solo se puede salir atracado y queda a salvo | **Decidido (13-11-2026): desaparece y vuelve donde estaba, pero no en combate**: se queda parada y vulnerable hasta llevar `WorldRules::logoutCalm` (15 s reales) sin recibir ni hacer fuego y sin un hostil a tiro; si la destruyen antes, está perdida. En cooperativo la nave sigue mientras quede alguien conectado | 2, 6 |
 | 7 | **Entre naves de jugadores** | fuego amigo sí/no · choque entre naves sí/no · ¿habrá jugador contra jugador? | Sin fuego amigo, con choque, sin JcJ de momento | 3a.3 |
 | 8 | **Tutorial, creativo y consola** | tutorial por jugador en red o solo en solitario · quién puede usar la consola | Tutorial solo en solitario al principio; consola y creativo solo para el anfitrión | 1.2, 6 |
 | 9 | **Tamaño** | jugadores por nave · naves por mundo · ¿Internet o solo LAN? | 4 por nave, 8 naves, solo LAN y por IP (Internet pide atravesar el router: otro proyecto) | 6, 7 |

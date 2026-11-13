@@ -55,6 +55,7 @@ struct ShipSave {
     int homeStation = -1; // la ultima estacion propia donde atraco: ahi reaparece si se pierde
     bool lost = false;    // estaba perdida al guardar: al cargar, reaparece
     double clock = 0;     // el reloj de su burbuja (s): las naves que no estan juntas pueden llevar fechas distintas
+    bool away = false;    // fuera del mundo: su jugador no esta conectado (GamePhase::Away)
 };
 
 struct WorldSave {

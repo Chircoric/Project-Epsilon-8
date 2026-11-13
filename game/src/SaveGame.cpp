@@ -159,6 +159,7 @@ void WriteShip(std::ostream& out, const ShipSave& v) {
     out << "atraque " << v.docked << '\n';
     out << "base " << v.homeStation << ' ' << (v.lost ? 1 : 0) << '\n';
     out << "reloj " << v.clock << '\n';
+    if (v.away) out << "ausente 1\n";  // solo si lo esta: su jugador no estaba conectado
 }
 
 // Una linea de una nave. Devuelve false si la clave no es de nave; error se rellena si el dato no vale.
@@ -269,6 +270,7 @@ bool ReadShipLine(const std::string& key, std::istream& in, ShipSave& v, std::st
         in >> v.homeStation >> lost;
         v.lost = lost != 0;
     } else if (key == "reloj") in >> v.clock;
+    else if (key == "ausente") in >> v.away;
     else return false;
     return true;
 }

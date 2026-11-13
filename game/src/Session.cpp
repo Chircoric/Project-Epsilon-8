@@ -1256,7 +1256,8 @@ SaveData GameSession::Snapshot() const {
         v.homeStation = from.homeStation;
         v.clock = bubbles_[static_cast<std::size_t>(from.bubble)].simTime;
         // Con la nave recien perdida se guarda todo como esta y esta marca: al cargar, reaparece.
-        v.lost = from.phase != GamePhase::Flying;
+        v.lost = from.phase != GamePhase::Flying && from.phase != GamePhase::Away;
+        v.away = from.phase == GamePhase::Away;
         if (from.orbiting) {
             v.orbitKind = static_cast<int>(from.orbiting->kind);
             v.orbitSystem = from.orbiting->system;
@@ -1349,6 +1350,8 @@ bool GameSession::Restore(const SaveData& d, std::string* error) {
     // El jugador que carga; los de las demas naves saben lo mismo que el, hasta que carguen lo suyo.
     focusPlayer_ = focus_;
     UsePlayer(focusPlayer_);
+    if (vessel_->phase == GamePhase::Away) vessel_->phase = GamePhase::Flying;  // quien carga, esta
+    for (std::size_t i = 0; i < players_.size(); ++i) players_[i].connected = fleet_[i].phase != GamePhase::Away;
     pilot_->id = d.player.id;
     pilot_->name = d.player.name;
     pilot_->analysisUsed = d.player.analysisUsed;
@@ -1432,6 +1435,7 @@ void GameSession::RestoreVessel(const ShipSave& v) {
     vessel_->dockPhase = v.docked && vessel_->orbiting && vessel_->orbiting->kind == Kind::Station ? DockPhase::Docked : DockPhase::None;
     vessel_->homeStation = v.homeStation;
     vessel_->nearestSystem = eps::NearestSystem(w, vessel_->ship.position);
+    if (v.away) vessel_->phase = GamePhase::Away;  // su jugador no estaba: sigue fuera hasta que entre
 }
 
 void GameSession::ContinueAfterDefeat() {
@@ -2626,6 +2630,7 @@ void GameSession::UpdateAnomalies(double seconds) {
             const WeaponRules spec = Scaled(rules_.combat, a.weapon, a.weaponTier);
             // El planeta coraza dispara a todo lo que entra en su rango de percepcion.
             const double reach = planet ? rules_.anomalies.armorPlanetSight : spec.range;
+            if (gap < reach) vessel_->combatAge = 0.0;  // con un hostil a tiro, esta en combate aunque aun no le hayan dado
             if (gap < reach && a.cooldown <= 0.0) {
                 if (!a.discovered) Say("Bajo ataque: " + a.name + ".");
                 FireAlien(a, sector + a.offset);
@@ -3009,6 +3014,7 @@ bool GameSession::Fire(WeaponKind kind, const TargetRef& target) {
     if (kind == WeaponKind::Spinal) direction = Heading(vessel_->ship);  // fijo al casco
     else if (kind == WeaponKind::Turret) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * AimSpread(vessel_->ship.zones), bubble_->rng);  // el puente apunta
 
+    vessel_->combatAge = 0.0;  // ha disparado: esta en combate
     vessel_->ship.energy -= spec.energy;
     vessel_->ship.antimatter -= spec.antimatter;
     vessel_->ship.cargo.Add(Resource::Metal, -spec.metal);
@@ -3095,6 +3101,7 @@ void GameSession::FireAlien(Anomaly& a, const Vec3d& position) {
 void GameSession::Hurt(DamageType type, double amount, const std::string& source, const Vec3d& toward, int attacker, const ZoneImpact* impact) {
     const GameMode& mode = ModeInfo(world_.mode);
     if (mode.damage <= 0.0 || vessel_->phase != GamePhase::Flying) return;
+    vessel_->combatAge = 0.0;  // le han dado: esta en combate
     DefenseState& d = vessel_->ship.defense;
     const bool frontal = Dot(Heading(vessel_->ship), toward) > 0.0;
     const HitResult hit = AbsorbHit(d, rules_.defense, type, amount, frontal, FieldActive(), vessel_->ship.cargo.Get(Resource::Silicate));
@@ -3587,6 +3594,7 @@ bool GameSession::FireModule(int slot, const TargetRef& target, std::string* why
     }
     if (w->turn <= 0.0) direction = Scatter(direction, AimError(rules_.combat, vessel_->ship.computerTier) * w->aimError * (w->type == ArmType::RailSpinal ? 1.0 : AimSpread(vessel_->ship.zones)), bubble_->rng);
 
+    vessel_->combatAge = 0.0;
     vessel_->ship.energy -= w->energy;
     cooldown = w->cooldown;
     if (w->capacity > 0) --ammo;
@@ -4383,7 +4391,7 @@ void GameSession::StepPlayers(double realSeconds, const std::vector<ShipControls
     // Cada burbuja avanza por su cuenta, con su reloj y su motor. Luego, las naves que han salido de una
     // o han entrado en el sistema de otra cambian de burbuja.
     for (std::size_t b = 0; b < bubbles_.size(); ++b)
-        if (bubbles_[b].active && CountIn(static_cast<int>(b)) > 0) StepBubble(static_cast<int>(b), realSeconds, controls, focalPixels);
+        if (bubbles_[b].active && ActiveIn(static_cast<int>(b)) > 0) StepBubble(static_cast<int>(b), realSeconds, controls, focalPixels);
     Regroup();
 }
 
@@ -4391,7 +4399,8 @@ void GameSession::StepBubble(int index, double realSeconds, const std::vector<Sh
     const std::size_t count = fleet_.size();
     std::vector<std::size_t> ships;  // las naves de esta burbuja
     for (std::size_t i = 0; i < count; ++i)
-        if (fleet_[i].bubble == index) ships.push_back(i);
+        if (fleet_[i].bubble == index && fleet_[i].phase != GamePhase::Away) ships.push_back(i);
+    if (ships.empty()) return;  // solo quedan naves ausentes: su mundo espera
     const int eye = EyeOf(index);
     std::vector<VesselStep> t(count);
     std::vector<StepClock> k(count);
@@ -4484,6 +4493,21 @@ void GameSession::StepBubble(int index, double realSeconds, const std::vector<Sh
         use(i);
         FinishVessel(k[i], t[i]);
         SyncCrew(static_cast<int>(i));
+    }
+    // La nave a la que no le queda nadie conectado sale del mundo cuando lleva un rato sin combate.
+    for (const std::size_t i : ships) {
+        Vessel& v = fleet_[i];
+        v.combatAge += realSeconds;
+        if (!v.leaving || v.phase != GamePhase::Flying || v.combatAge < rules_.world.logoutCalm) continue;
+        use(i);
+        CancelScan();
+        vessel_->drones.clear();
+        vessel_->droneSite.reset();
+        vessel_->autopilot.reset();
+        vessel_->tracking.reset();
+        vessel_->contacts.clear();
+        vessel_->phase = GamePhase::Away;
+        vessel_->leaving = false;
     }
 }
 
@@ -4670,11 +4694,11 @@ SnapshotData GameSession::MakeSnapshot(int player) const {
     d.anomalies = world_.anomalies;
     d.species = world_.species;
     for (const Vessel& v : fleet_)
-        if (v.bubble == bubble) d.vessels.push_back(v);
+        if (v.bubble == bubble && (v.phase != GamePhase::Away || &v == &fleet_[static_cast<std::size_t>(me.vessel)])) d.vessels.push_back(v);
     for (std::size_t p = 0; p < players_.size(); ++p) {
         const PlayerState& from = players_[p];
         const Vessel& ship = fleet_[static_cast<std::size_t>(from.vessel)];
-        if (ship.bubble != bubble) continue;
+        if (ship.bubble != bubble || (ship.phase == GamePhase::Away && static_cast<int>(p) != player)) continue;
         if (static_cast<int>(p) == player) d.me = static_cast<int>(d.players.size());
         PlayerWire w;
         w.id = from.id;
@@ -4818,10 +4842,64 @@ double GameSession::WorldTime() const {
 }
 
 int GameSession::EyeOf(int bubble) const {
-    if (fleet_[static_cast<std::size_t>(focus_)].bubble == bubble) return focus_;
-    for (std::size_t i = 0; i < fleet_.size(); ++i)
-        if (fleet_[i].bubble == bubble) return static_cast<int>(i);
-    return -1;
+    const Vessel& focus = fleet_[static_cast<std::size_t>(focus_)];
+    if (focus.bubble == bubble && focus.phase != GamePhase::Away) return focus_;
+    int any = -1;
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        if (fleet_[i].bubble != bubble) continue;
+        if (fleet_[i].phase != GamePhase::Away) return static_cast<int>(i);
+        any = static_cast<int>(i);
+    }
+    return any;  // solo quedan ausentes, o -1 si no hay ninguna
+}
+
+int GameSession::ActiveIn(int bubble) const {
+    int count = 0;
+    for (const Vessel& v : fleet_) count += v.bubble == bubble && v.phase != GamePhase::Away ? 1 : 0;
+    return count;
+}
+
+int GameSession::AboardConnected(int vessel) const {
+    int count = 0;
+    for (const PlayerState& p : players_) count += p.vessel == vessel && p.connected ? 1 : 0;
+    return count;
+}
+
+bool GameSession::InCombat(int vessel) const { return fleet_[static_cast<std::size_t>(vessel)].combatAge < rules_.world.logoutCalm; }
+
+void GameSession::PlayerLeft(int player) {
+    if (player < 0 || player >= static_cast<int>(players_.size())) return;
+    PlayerState& p = players_[static_cast<std::size_t>(player)];
+    if (!p.connected) return;
+    p.connected = false;
+    p.seats = 0;
+    const int vessel = p.vessel;
+    PlayerState* last = nullptr;
+    for (PlayerState& other : players_)
+        if (other.vessel == vessel && other.connected) last = &other;
+    if (AboardConnected(vessel) == 1) last->seats = kAllSeats;  // el que queda solo lo lleva todo
+    if (AboardConnected(vessel) > 0) return;
+    // No queda nadie: la nave se para y espera. Saldra del mundo cuando deje de estar en combate.
+    const Using ship(*this, vessel);
+    if (p.onFoot) BoardAll();
+    if (vessel_->phase == GamePhase::Flying) {
+        HoldPosition();
+        vessel_->leaving = true;
+    }
+}
+
+void GameSession::PlayerBack(int player) {
+    if (player < 0 || player >= static_cast<int>(players_.size())) return;
+    PlayerState& p = players_[static_cast<std::size_t>(player)];
+    if (p.connected) return;
+    p.connected = true;
+    Vessel& v = fleet_[static_cast<std::size_t>(p.vessel)];
+    v.leaving = false;
+    if (v.phase == GamePhase::Away) v.phase = GamePhase::Flying;  // reaparece donde estaba
+    // Los puestos que sigan libres son suyos.
+    for (int s = 0; s < static_cast<int>(Seat::Count); ++s)
+        if (HolderOf(p.vessel, static_cast<Seat>(s)) < 0) p.seats |= 1u << s;
+    UsePlayer(focusPlayer_);
 }
 
 // Una burbuja para una nave que se va: reutiliza una vacia o crea su motor, con el reloj de la que deja.

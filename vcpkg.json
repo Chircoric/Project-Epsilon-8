@@ -6,6 +6,7 @@
   "dependencies": [
     "sdl3",
     "cgltf",
+    "enet",
     { "name": "imgui", "features": [ "sdlgpu3-binding" ] }
   ]
 }

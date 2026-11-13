@@ -46,6 +46,22 @@ public:
 // Dos extremos unidos dentro del mismo proceso: lo que manda uno lo recibe el otro.
 std::pair<std::shared_ptr<Transport>, std::shared_ptr<Transport>> MakeMemoryLink();
 
+// ---- Red (fase 6): el mismo Transport, sobre ENet ----
+// Quien hace de servidor escucha en un puerto y recibe un Transport por cada cliente que llega; el
+// cliente obtiene el suyo al conectarse. Si el juego se compilo sin ENet, NetworkAvailable() es false y
+// las otras dos devuelven nulo con su motivo.
+inline constexpr int kDefaultPort = 27300;
+bool NetworkAvailable();
+class NetListener {
+public:
+    virtual ~NetListener() = default;
+    virtual void Pump() = 0;                            // atiende la red; llamar en cada fotograma
+    virtual std::shared_ptr<Transport> Accept() = 0;    // la siguiente conexion nueva, o nulo
+};
+std::unique_ptr<NetListener> ListenOn(int port, int maxClients, std::string* error = nullptr);
+// Bloquea hasta timeoutSeconds esperando al servidor.
+std::shared_ptr<Transport> ConnectTo(const std::string& host, int port, double timeoutSeconds, std::string* error = nullptr);
+
 inline constexpr std::uint32_t kProtocolVersion = 1;
 
 enum class MessageType : std::uint8_t { Hello = 1, Welcome, Refused, Controls, Command, Snapshot };
@@ -82,6 +98,7 @@ public:
     explicit GameServer(GameSession& session) : session_(session) {}
 
     void Add(std::shared_ptr<Transport> link);  // una conexion nueva; el jugador llega con su Hello
+    void Listen(std::unique_ptr<NetListener> listener) { listener_ = std::move(listener); }  // y las que lleguen por la red
     // Lee lo que haya llegado, avanza los pasos de 1/60 s que quepan en realSeconds y, tras cada
     // snapshotEvery pasos, manda una instantanea a cada cliente. Devuelve los pasos dados.
     int Update(double realSeconds, float focalPixels = 800.0f);
@@ -98,12 +115,14 @@ private:
         std::shared_ptr<Transport> link;
         int player = -1;          // su jugador en la sesion; -1 hasta que saluda
         ShipControls controls;    // su mando, acumulado desde el ultimo paso
+        bool gone = false;        // la conexion se ha cerrado y ya se ha avisado a la sesion
     };
     void Read(Peer& peer);
     void Greet(Peer& peer, const Hello& hello);
     void Refuse(Peer& peer, const std::string& why);
 
     GameSession& session_;
+    std::unique_ptr<NetListener> listener_;
     std::vector<Peer> peers_;
     double pending_ = 0;
     std::uint64_t tick_ = 0;
