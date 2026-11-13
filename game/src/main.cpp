@@ -262,6 +262,66 @@ void RegisterCommands(CommandRegistry& commands, GameSession& g, TargetRef& targ
         g.SetFocus(back);
         return "[nave " + args[0] + "] " + answer;
     });
+    // ---- Tripulacion: varios jugadores en la misma nave (fase 3b) ----
+    const auto seatArg = [](const std::string& w) {
+        if (w == "pilotaje" || w == "piloto") return Seat::Pilot;
+        if (w == "armas" || w == "tactico") return Seat::Tactical;
+        if (w == "ingenieria") return Seat::Engineering;
+        return Seat::Count;
+    };
+    const auto seatsOf = [](const PlayerState& p) {
+        std::string list;
+        for (int s = 0; s < static_cast<int>(Seat::Count); ++s)
+            if ((p.seats & SeatBit(static_cast<Seat>(s))) != 0) list += (list.empty() ? "" : ", ") + std::string(Name(static_cast<Seat>(s)));
+        return list.empty() ? std::string("sin puesto") : list;
+    };
+    commands.Add("jugador", "varios jugadores: jugador (lista) | jugador nuevo [nombre] (entra en tu nave) | jugador ver <n> (pasas a ser el; tambien F3) | jugador <n> <orden...>",
+                 [&, seatsOf](const CommandRegistry::Args& args) -> std::string {
+        if (args.empty()) {
+            std::string list = "Jugadores:";
+            for (int p = 0; p < g.PlayerCount(); ++p) {
+                const PlayerState& player = g.PlayerAt(p);
+                list += " " + std::to_string(p + 1) + (p == g.FocusPlayer() ? "*" : "") + " " + player.name + " (nave " + std::to_string(g.VesselAt(player.vessel).id) + ": " + seatsOf(player) + (player.onFoot ? ", a pie" : "") + ")";
+            }
+            return list;
+        }
+        if (args[0] == "nuevo") {
+            std::string name;
+            for (std::size_t i = 1; i < args.size(); ++i) name += (i > 1 ? " " : "") + args[i];
+            const int p = g.AddPlayer(name);
+            if (p < 0) return commands.Fail("No se pudo");
+            return "Jugador " + std::to_string(p + 1) + ", " + g.PlayerAt(p).name + ": " + seatsOf(g.PlayerAt(p));
+        }
+        const bool look = args[0] == "ver";
+        if (look && args.size() < 2) return commands.Fail("Uso: jugador ver <n>");
+        const int player = std::atoi(args[look ? 1 : 0].c_str()) - 1;
+        if (player < 0 || player >= g.PlayerCount()) return commands.Fail("No hay ningun jugador con ese numero");
+        if (look) {
+            g.SetFocusPlayer(player);
+            return "Eres " + g.PlayerAt(player).name + ": " + seatsOf(g.PlayerAt(player));
+        }
+        if (args.size() < 2) return commands.Fail("Uso: jugador <n> <orden...>");
+        std::string line;
+        for (std::size_t i = 1; i < args.size(); ++i) line += (i > 1 ? " " : "") + args[i];
+        const int back = g.FocusPlayer();
+        g.SetFocusPlayer(player);
+        const std::string answer = commands.Execute(line);
+        g.SetFocusPlayer(back);
+        return "[jugador " + args[0] + "] " + answer;
+    });
+    commands.Add("puesto", "tus puestos en la nave: puesto (los dice) | puesto <pilotaje|armas|ingenieria> (lo ocupas si esta libre) | puesto dejar <...>",
+                 [&, seatArg, seatsOf](const CommandRegistry::Args& args) -> std::string {
+        const int me = g.FocusPlayer();
+        if (args.empty()) return seatsOf(g.PlayerAt(me));
+        const bool leave = args[0] == "dejar";
+        if (leave && args.size() < 2) return commands.Fail("Uso: puesto dejar <pilotaje|armas|ingenieria>");
+        const Seat seat = seatArg(args[leave ? 1 : 0]);
+        if (seat == Seat::Count) return commands.Fail("Los puestos son pilotaje, armas e ingenieria");
+        if (leave) return g.LeaveSeat(me, seat) ? "Puesto libre. Te quedan: " + seatsOf(g.PlayerAt(me)) : commands.Fail("Ese puesto no es tuyo");
+        if (g.TakeSeat(me, seat)) return "Tuyo. Llevas: " + seatsOf(g.PlayerAt(me));
+        const int holder = g.SeatHolder(seat);
+        return commands.Fail("Lo lleva " + (holder >= 0 ? g.PlayerAt(holder).name : std::string("otro")));
+    });
     commands.Add("ir", "piloto automatico al objetivo", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::Autopilot, target)) ? "Rumbo fijado" : commands.Fail("Sin objetivo"); });
     commands.Add("drones", "manda los drones mineros al objetivo (planeta o campo)", [&](const CommandRegistry::Args&) -> std::string { return g.Apply(Order(C::DeployDrones, target)) ? "Drones fuera" : commands.Fail("No se pudo"); });
     commands.Add("recoger-drones", "los drones mineros vuelven a sus bahias", [&](const CommandRegistry::Args&) -> std::string {
@@ -1327,6 +1387,13 @@ int Run(Options options) {
                         target = {};
                         contactIndex = -1;
                         session.Announce("Llevas la nave " + std::to_string(session.VesselId()) + ".");
+                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F3 && !e.key.repeat && session.PlayerCount() > 1) {
+                        // Con varios jugadores, F3 pasa a ser el siguiente: su nave, su puesto, su registro.
+                        session.SetFocusPlayer((session.FocusPlayer() + 1) % session.PlayerCount());
+                        target = {};
+                        contactIndex = -1;
+                        syncMouse();
+                        session.Announce("Eres " + session.PlayerAt(session.FocusPlayer()).name + ".");
                     } else if (e.type == SDL_EVENT_KEY_DOWN && consoleOpen) {
                         if (e.key.key == SDLK_ESCAPE) {
                             consoleOpen = false;

@@ -1537,6 +1537,12 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
         };
         for (const Person& p : session_.Crew()) person(*assets_.crew, p.body);
         if (!session_.FirstPerson()) person(*assets_.pilot, session_.Player());
+        // Los companeros de tripulacion que tambien han bajado.
+        const int me = session_.FocusPlayer();
+        for (int p = 0; p < session_.PlayerCount(); ++p) {
+            const PlayerState& mate = session_.PlayerAt(p);
+            if (p != me && mate.onFoot && mate.vessel == session_.PlayerAt(me).vessel) person(*assets_.pilot, mate.avatar);
+        }
         return;
     }
     CollectStarLights(c, out);

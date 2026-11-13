@@ -5326,6 +5326,136 @@ static void TestFleet() {
     }
 }
 
+// Dos jugadores en la misma nave, cada uno con su puesto y su mando (fase 3b de docs/multijugador.md).
+static void TestCrew() {
+    using C = CommandType;
+    Balance rules;
+    auto engine = MakeEngine(rules, 9);
+    GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+    Run(g, 0.5);
+    const auto logHas = [&](int player, const std::string& text) {
+        for (const std::string& line : g.PlayerAt(player).log)
+            if (line.find(text) != std::string::npos) return true;
+        return false;
+    };
+    const auto step = [&](const ShipControls& first, const ShipControls& second, int steps) {
+        for (int i = 0; i < steps; ++i) g.StepPlayers(1.0 / 60.0, {first, second});
+    };
+    ShipControls fly;
+    fly.throttleChange = 0.5;
+    fly.turnYaw = 0.002f;
+
+    // Quien va solo lo lleva todo. Al entrar el segundo, el primero pilota y el otro lleva lo demas.
+    CHECK(g.PlayerCount() == 1 && g.PlayerAt(0).seats == kAllSeats);
+    CHECK(g.SeatHolder(Seat::Tactical) == 0);
+    const int ana = g.AddPlayer("Ana");
+    CHECK(ana == 1 && g.PlayerCount() == 2 && g.VesselCount() == 1 && g.FocusPlayer() == 0);
+    CHECK(g.PlayerAt(1).vessel == 0 && g.PlayerAt(1).name == "Ana");
+    CHECK(g.PlayerAt(0).seats == SeatBit(Seat::Pilot));
+    CHECK(g.PlayerAt(1).seats == (SeatBit(Seat::Tactical) | SeatBit(Seat::Engineering)));
+    CHECK(g.SeatHolder(Seat::Pilot) == 0 && g.SeatHolder(Seat::Tactical) == 1 && g.SeatHolder(Seat::Engineering) == 1);
+
+    // Cada orden pide su puesto. La que no toca se rechaza, se le explica a quien la dio y no hace nada.
+    const CommandResult refused = g.ApplyAs(1, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise)));
+    CHECK(!refused && refused.why.find("pilotaje") != std::string::npos && g.Ship().mode == DriveMode::Impulse);
+    CHECK(logHas(1, "pilotaje") && !logHas(0, "pilotaje"));
+    CHECK(g.ApplyAs(0, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))) && g.Ship().mode == DriveMode::Cruise);
+    CHECK(g.ApplyAs(0, Order(C::SetDrive, static_cast<int>(DriveMode::Impulse))));
+    CHECK(!g.ApplyAs(0, Order(C::SetShield, static_cast<int>(ShieldKind::EM))));  // el piloto no toca los escudos
+    CHECK(!g.Apply(Order(C::StartScan)) && !g.Scanning());                        // Apply es el jugador del foco: el piloto
+    CHECK(!g.ApplyAs(5, Order(C::HoldPosition)));
+    // Lo que hace uno en su puesto lo ve toda la tripulacion en su registro.
+    CHECK(g.ApplyAs(1, Order(C::SetShield, static_cast<int>(ShieldKind::EM))));
+    CHECK(g.Ship().defense.field == ShieldKind::EM && logHas(0, "Escudo") && logHas(1, "Escudo"));
+    // Lo de cada uno no pide puesto y no toca al otro.
+    CHECK(g.ApplyAs(1, Order(C::Cinematic, 1)) && g.PlayerAt(1).cinematic && !g.PlayerAt(0).cinematic);
+
+    // El mando de vuelo solo vale el de quien pilota.
+    const Vec3d heading = Heading(g.Ship());
+    step({}, fly, 120);
+    CHECK(g.Ship().throttle == 0.0 && Length(Heading(g.Ship()) - heading) < 1e-9);
+    step(fly, {}, 120);
+    CHECK(g.Ship().throttle > 0.9 && Length(Heading(g.Ship()) - heading) > 1e-3);
+    CHECK(g.ApplyAs(0, Order(C::HoldPosition)));
+
+    // Un puesto ocupado no se quita; uno libre lo ocupa quien quiera. Sin piloto, la nave no obedece a nadie.
+    CHECK(!g.TakeSeat(1, Seat::Pilot) && g.TakeSeat(1, Seat::Tactical));
+    CHECK(g.LeaveSeat(0, Seat::Pilot) && !g.LeaveSeat(0, Seat::Pilot) && g.SeatHolder(Seat::Pilot) == -1);
+    step(fly, fly, 60);
+    CHECK(g.Ship().throttle == 0.0);
+    const CommandResult vacant = g.ApplyAs(0, Order(C::Orbit));
+    CHECK(!vacant && vacant.why.find("libre") != std::string::npos);
+    CHECK(g.TakeSeat(1, Seat::Pilot) && g.SeatHolder(Seat::Pilot) == 1);
+    step(fly, {}, 60);
+    CHECK(g.Ship().throttle == 0.0);  // el primero ya no pilota
+    step({}, fly, 60);
+    CHECK(g.Ship().throttle > 0.4);
+    CHECK(g.ApplyAs(1, Order(C::HoldPosition)));
+    CHECK(g.LeaveSeat(1, Seat::Pilot) && g.TakeSeat(0, Seat::Pilot));  // como al principio
+    Run(g, 2.0);
+
+    // Lo que averigua uno lo sabe el otro.
+    CHECK(g.SetFocusPlayer(1));
+    g.MarkScanned(0);
+    CHECK(g.SetFocusPlayer(0));
+    CHECK(g.PlayerAt(0).scanned.empty() && !g.PlayerAt(1).scanned.empty());
+    g.Step(0.05, {});
+    CHECK(!g.PlayerAt(0).scanned.empty() && g.PlayerAt(0).scanned == g.PlayerAt(1).scanned);
+
+    // A pie: baja cada uno por su cuenta a la misma cubierta, y la nave no se suelta con alguien fuera.
+    const TargetRef station = PlaceStation(g);  // de ingenieria: lo hace la sesion directamente
+    CHECK(g.JumpTo(station, g.Resolve(station)->arrival));
+    CHECK(g.Dock(station, true));
+    Run(g, 0.5);
+    CHECK(g.Docked());
+    CHECK(g.ApplyAs(1, Order(C::Disembark)) && g.PlayerAt(1).onFoot && !g.PlayerAt(0).onFoot);
+    CHECK(!g.OnFoot() && !g.Crew().empty());  // el del foco, el piloto, sigue a bordo
+    CHECK(logHas(1, "A pie en") && !logHas(0, "A pie en"));
+    g.ApplyAs(0, Order(C::Undock));
+    Run(g, 0.5);
+    CHECK(g.Docked() && logHas(0, "tripulación a pie"));
+    ShipControls walk;
+    walk.foot.move.forward = 1.0f;
+    const auto spawn = g.Deck().spawn;  // donde se baja
+    const auto from = g.PlayerAt(1).avatar.position;
+    step(walk, walk, 90);
+    CHECK(Length(g.PlayerAt(1).avatar.position - from) > 0.5);  // ella anda con su mando
+    CHECK(g.Docked());
+    CHECK(g.ApplyAs(0, Order(C::Disembark)) && g.OnFoot() && g.PlayerAt(0).onFoot);
+    CHECK(Length(g.PlayerAt(0).avatar.position - spawn) < 1e-9);  // el baja a la esclusa, donde ella ya no esta
+    CHECK(Length(g.PlayerAt(1).avatar.position - spawn) > 0.5);
+    step(walk, {}, 30);
+    CHECK(Length(g.PlayerAt(0).avatar.position - spawn) > 0.1);
+    CHECK(g.ApplyAs(1, Order(C::Board, 1)) && !g.PlayerAt(1).onFoot && !g.Crew().empty());  // queda uno: la cubierta sigue
+    CHECK(g.ApplyAs(0, Order(C::Board, 1)) && !g.OnFoot() && g.Crew().empty());
+    g.ApplyAs(0, Order(C::Undock));
+    Run(g, 1.0);
+    CHECK(!g.Docked());
+
+    // Un tercero se queda con uno de los dos puestos del segundo.
+    const int eva = g.AddPlayer("Eva");
+    CHECK(eva == 2 && g.PlayerAt(0).seats == SeatBit(Seat::Pilot));
+    CHECK(g.PlayerAt(1).seats == SeatBit(Seat::Tactical) && g.PlayerAt(2).seats == SeatBit(Seat::Engineering));
+    CHECK(g.AddPlayer("Sin sitio") == 3 && g.PlayerAt(3).seats == 0);  // el cuarto mira
+
+    // Y con dos naves, cada tripulacion en la suya.
+    const int second = g.AddVessel(500.0);
+    CHECK(second == 2 && g.PlayerCount() == 5 && g.PlayerAt(4).vessel == 1 && g.PlayerAt(4).seats == kAllSeats);
+    const int luis = g.AddPlayer("Luis", second);
+    CHECK(luis == 5 && g.PlayerAt(5).vessel == 1 && g.PlayerAt(4).seats == SeatBit(Seat::Pilot));
+    CHECK(g.AddPlayer("Nadie", 99) == -1);
+    CHECK(g.SetFocus(1) && g.FocusPlayer() == 4 && g.VesselId() == 2);  // SetFocus(nave) pasa a quien la pilota
+    CHECK(g.SetFocusPlayer(5) && g.Focus() == 1 && g.VesselId() == 2 && g.SeatHolder(Seat::Engineering) == 5);
+    // Una orden a la nave la da quien ocupa el puesto: no se rechaza.
+    CHECK(g.ApplyTo(second, Order(C::SetDrive, static_cast<int>(DriveMode::Cruise))) && g.VesselAt(1).ship.mode == DriveMode::Cruise);
+    CHECK(g.ApplyTo(second, Order(C::SetShield, static_cast<int>(ShieldKind::EM))) && g.VesselAt(0).ship.mode == DriveMode::Impulse);
+    // Un mensaje de la segunda nave no llega a la tripulacion de la primera.
+    CHECK(logHas(4, "Escudo") && logHas(5, "Escudo"));
+    CHECK(g.SnapshotPlayer(5).ship == 2 && g.SnapshotPlayer(1).ship == 1);
+    Run(g, 1.0);
+    CHECK(g.FocusPlayer() == 5);
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -5534,6 +5664,7 @@ int main(int argc, char** argv) {
         {"Ordenes y paso fijo", TestOrdersAndFixedStep},
         {"Sellos de tiempo", TestTimeStamps},
         {"Flota: dos naves", TestFleet},
+        {"Tripulacion: dos jugadores en una nave", TestCrew},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},
