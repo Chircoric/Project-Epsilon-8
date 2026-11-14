@@ -6248,6 +6248,108 @@ static void TestLanAndServer() {
     std::filesystem::remove_all(path);
 }
 
+// Un transporte que pierde uno de cada tantos paquetes sin fiabilidad, como una red de verdad.
+class LossyLink final : public Transport {
+public:
+    LossyLink(std::shared_ptr<Transport> inner, int every) : every(every), inner_(std::move(inner)) {}
+    void Send(const Packet& packet, bool reliable) override {
+        if (!reliable && every > 0 && ++count_ % every == 0) {
+            ++lost;
+            return;
+        }
+        inner_->Send(packet, reliable);
+    }
+    bool Receive(Packet& out) override { return inner_->Receive(out); }
+    bool Open() const override { return inner_->Open(); }
+    void Close() override { inner_->Close(); }
+    int every, lost = 0;
+
+private:
+    std::shared_ptr<Transport> inner_;
+    int count_ = 0;
+};
+
+// Instantaneas por diferencias (fase 8 de docs/multijugador.md): poco trafico, y sin romperse al perder paquetes.
+static void TestSnapshotDeltas() {
+    using C = CommandType;
+    Balance rules;
+    const double dt = GameSession::kFixedStep;
+    auto engineS = MakeEngine(rules, 9), engineR = MakeEngine(rules, 9);
+    GameSession server(*engineS, rules, 9, GameModeId::Peaceful), replica(*engineR, rules, 9, GameModeId::Peaceful);
+    server.Step(dt, {});
+
+    // Partir y juntar da lo mismo; y la diferencia contra una referencia se reconstruye exacta.
+    {
+        const SnapshotData first = server.MakeSnapshot(0);
+        const SnapshotSections a = SplitSnapshot(first);
+        SnapshotData joined;
+        CHECK(JoinSnapshot(a, joined) && EncodeSnapshot(joined) == EncodeSnapshot(first));
+        for (int i = 0; i < 30; ++i) server.Step(dt, {});
+        const SnapshotSections b = SplitSnapshot(server.MakeSnapshot(0));
+        std::map<std::uint32_t, SnapshotSections> known;
+        known[7] = a;
+        const Packet whole = EncodeDelta(8, 0, b, nullptr), delta = EncodeDelta(8, 7, b, &a);
+        CHECK(delta.size() * 10 < whole.size());  // casi todo era igual
+        std::uint32_t seq = 0;
+        SnapshotSections back;
+        bool missing = false;
+        CHECK(DecodeDelta(delta, known, seq, back, missing) && seq == 8 && !missing && back.size() == b.size());
+        bool same = back.size() == b.size();
+        for (std::size_t i = 0; same && i < b.size(); ++i) same = back[i].kind == b[i].kind && back[i].key == b[i].key && back[i].bytes == b[i].bytes;
+        CHECK(same);
+        CHECK(DecodeDelta(whole, {}, seq, back, missing) && back.size() == b.size());  // entera: no necesita referencia
+        CHECK(!DecodeDelta(delta, {}, seq, back, missing) && missing);                  // sin la referencia no se puede, y lo dice
+        Packet cut(delta.begin(), delta.begin() + static_cast<std::ptrdiff_t>(delta.size() / 2));
+        CHECK(!DecodeDelta(cut, known, seq, back, missing) && !missing);
+        std::printf("  una instantanea: %zu bytes entera, %zu por diferencias\n", whole.size(), delta.size());
+    }
+
+    // Una partida con una red que pierde uno de cada tres paquetes, en los dos sentidos.
+    GameServer host(server);
+    auto link = MakeMemoryLink();
+    auto toClient = std::make_shared<LossyLink>(link.first, 3), toServer = std::make_shared<LossyLink>(link.second, 3);
+    host.Add(toClient);
+    Hello hello;
+    hello.id = "ana";
+    GameClient client(replica, toServer, hello);
+    ShipControls fly;
+    fly.throttleChange = 0.4;
+    fly.turnYaw = 0.00390625f;
+    const auto frames = [&](int count, const ShipControls& controls) {
+        for (int i = 0; i < count; ++i) {
+            replica.Step(dt, controls);
+            host.Update(dt);
+            client.Update();
+        }
+    };
+    for (int i = 0; i < 40 && !client.Ready(); ++i) frames(1, {});
+    CHECK(client.Ready());
+    replica.Apply(Order(C::SetShield, static_cast<int>(ShieldKind::EM)));  // las ordenes van por el canal fiable
+    frames(300, fly);
+    CHECK(toClient->lost > 80 && toServer->lost > 80);
+    CHECK(client.Snapshots() > 150 && client.Snapshots() < 280);  // llegaron unas dos de cada tres
+    CHECK(server.Ship().defense.field == ShieldKind::EM && server.Ship().throttle > 0.5);
+    // Con la red limpia un momento, la replica es otra vez identica al servidor.
+    toClient->every = toServer->every = 0;
+    frames(3, {});
+    const auto absolute = [](const GameSession& s) { return s.Ship().position + s.GetWorld().origin; };
+    CHECK(replica.SimTime() == server.SimTime() && replica.Ship().throttle == server.Ship().throttle);
+    CHECK(Length(absolute(replica) - absolute(server)) < 1e-6 && replica.Ship().defense.field == ShieldKind::EM);
+    CHECK(replica.Log() == server.Log());
+
+    // En regimen, con la nave quieta o en vuelo, cada paso manda muy poco.
+    const std::size_t before = host.BytesSent();
+    frames(120, fly);
+    const double perStep = static_cast<double>(host.BytesSent() - before) / 120.0;
+    CHECK(perStep < 2500.0);
+    std::printf("  en vuelo: %.0f bytes por paso (%.0f kB/s a 60 pasos)\n", perStep, perStep * 60.0 / 1024.0);
+    // Un cliente que pierde la referencia la pide entera y sigue.
+    for (int i = 0; i < 5; ++i) toServer->Send(Packet{static_cast<std::uint8_t>(MessageType::Ack), 0xFF, 0xFF, 0xFF, 0xFF}, false);
+    const std::uint64_t had = client.Snapshots();
+    frames(5, {});
+    CHECK(client.Snapshots() == had + 5 && replica.SimTime() == server.SimTime());
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -6488,6 +6590,7 @@ int main(int argc, char** argv) {
         {"Burbujas: naves en sistemas distintos", TestBubbles},
         {"Servidor y cliente en memoria", TestNet},
         {"Desconexion: salir del mundo, pero no en combate", TestDisconnect},
+        {"Instantaneas por diferencias", TestSnapshotDeltas},
         {"Red (ENet) en esta maquina", TestNetwork},
         {"Red local y servidor sin jugador", TestLanAndServer},
         {"Armamento humano", TestHumanArmament},

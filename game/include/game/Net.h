@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -84,7 +85,27 @@ std::vector<LanGame> FindLanGames(double seconds);
 
 inline constexpr std::uint32_t kProtocolVersion = 1;
 
-enum class MessageType : std::uint8_t { Hello = 1, Welcome, Refused, Controls, Command, Snapshot };
+enum class MessageType : std::uint8_t { Hello = 1, Welcome, Refused, Controls, Command, Snapshot, SnapshotDelta, Ack };
+
+// ---- Instantaneas por diferencias (fase 8) ----
+// Una instantanea entera pesa unos 20 kB y casi todo en ella es igual que en la anterior. Se parte en
+// trozos (cabecera, proyectiles, estaciones, anomalias, cada nave, cada jugador...) y de cada trozo solo
+// viaja lo que ha cambiado respecto a la ultima instantanea que el cliente ha confirmado tener: nada si
+// es identico, la diferencia byte a byte (casi toda ceros, que se comprimen) si mide lo mismo, y entero
+// si no. Como la referencia es siempre una que el cliente confirmo, perder un paquete no rompe nada.
+struct SnapshotSection {
+    std::uint8_t kind = 0;
+    std::int32_t key = 0;  // que nave o que jugador
+    Packet bytes;
+};
+using SnapshotSections = std::vector<SnapshotSection>;
+SnapshotSections SplitSnapshot(const SnapshotData& data);
+bool JoinSnapshot(const SnapshotSections& sections, SnapshotData& out);
+// base nulo: todo entero. baseSeq es el numero de la instantanea de referencia (0 = ninguna).
+Packet EncodeDelta(std::uint32_t seq, std::uint32_t baseSeq, const SnapshotSections& now, const SnapshotSections* base);
+// La referencia se pide por su numero; si no se tiene, devuelve false con missingBase a true.
+bool DecodeDelta(const Packet& packet, const std::map<std::uint32_t, SnapshotSections>& known, std::uint32_t& seq, SnapshotSections& out, bool& missingBase);
+inline constexpr std::uint32_t kNeedFull = 0xFFFFFFFFu;  // en un Ack: no tengo la referencia, mandamela entera
 
 // Como entra un jugador nuevo en la partida.
 enum class JoinAs : std::uint8_t {
@@ -150,10 +171,13 @@ private:
         int player = -1;          // su jugador en la sesion; -1 hasta que saluda
         ShipControls controls;    // su mando, acumulado desde el ultimo paso
         bool gone = false;        // la conexion se ha cerrado y ya se ha avisado a la sesion
+        std::uint32_t sent = 0, acked = 0;                    // la ultima instantanea mandada y la ultima que confirmo
+        std::map<std::uint32_t, SnapshotSections> history;    // las mandadas, para usarlas de referencia
     };
     void Read(Peer& peer);
     void Greet(Peer& peer, const Hello& hello);
     void Refuse(Peer& peer, const std::string& why);
+    void SendSnapshot(Peer& peer);
 
     GameSession& session_;
     std::unique_ptr<NetListener> listener_;
@@ -181,6 +205,8 @@ private:
     GameSession& replica_;
     std::shared_ptr<Transport> link_;
     std::uint64_t snapshots_ = 0;
+    std::uint32_t lastSeq_ = 0;                             // la ultima aplicada: una mas vieja que llegue tarde no cuenta
+    std::map<std::uint32_t, SnapshotSections> history_;     // las recibidas, que el servidor puede usar de referencia
     std::string refusal_;
 };
 
