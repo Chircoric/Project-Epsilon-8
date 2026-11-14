@@ -33,6 +33,9 @@ bool EnsureEnet() {
 
 constexpr enet_uint8 kUnreliableChannel = 0, kReliableChannel = 1;
 constexpr std::size_t kChannels = 2;
+// Cuando el otro lado deja de contestar (se ha caido, se ha ido la red), la conexion se da por perdida
+// entre 3 y 8 segundos despues, y no a los 30 que ENet espera de serie.
+constexpr enet_uint32 kTimeoutLimit = 8, kTimeoutMinimum = 3000, kTimeoutMaximum = 8000;
 
 ENetPacket* MakePacket(const Packet& packet, bool reliable) {
     // Una instantanea no cabe en un datagrama: sin fiabilidad va en trozos, y si se pierde uno se pierde
@@ -82,6 +85,7 @@ public:
         while (enet_host_service(host_, &event, 0) > 0) {
             switch (event.type) {
                 case ENET_EVENT_TYPE_CONNECT: {
+                    enet_peer_timeout(event.peer, kTimeoutLimit, kTimeoutMinimum, kTimeoutMaximum);
                     auto link = std::make_shared<PeerLink>(host_, event.peer);
                     event.peer->data = link.get();
                     links_.push_back(link);
@@ -325,7 +329,10 @@ std::shared_ptr<Transport> ConnectTo(const std::string& hostName, int port, doub
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeoutSeconds);
     ENetEvent event;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (enet_host_service(host, &event, 50) > 0 && event.type == ENET_EVENT_TYPE_CONNECT) return std::make_shared<ClientLink>(host, peer);
+        if (enet_host_service(host, &event, 50) > 0 && event.type == ENET_EVENT_TYPE_CONNECT) {
+            enet_peer_timeout(peer, kTimeoutLimit, kTimeoutMinimum, kTimeoutMaximum);
+            return std::make_shared<ClientLink>(host, peer);
+        }
     }
     enet_peer_reset(peer);
     enet_host_destroy(host);

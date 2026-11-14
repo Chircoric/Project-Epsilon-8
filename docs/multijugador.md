@@ -355,7 +355,7 @@ Cómo quedó:
 Lo que falta o es provisional:
 
 - **Solo probado en una máquina** (127.0.0.1). Entre dos equipos de la LAN no se ha probado, y el cortafuegos de Windows preguntará la primera vez.
-- **Una instantánea entera por paso**: unos 20 kB, 60 veces por segundo y por cliente (más de 1 MB/s). En LAN cabe; hay que reducirlo (fase 8).
+- ~~Una instantánea entera por paso (más de 1 MB/s por cliente).~~ Resuelto en la fase 8: unos 23 kB/s.
 - **El cliente no guarda nada**: la partida es del servidor. Su jugador y los puestos de la tripulación siguen sin guardarse.
 - **En el cliente, los trucos de consola no hacen nada** (cambian la réplica, que el servidor pisa). Las órdenes de consola (`motor`, `escudo`…) sí viajan.
 - **El anfitrión no puede cambiar de vista** (`nave ver`, F2, F3) y **no hay forma de echar a nadie** ni contraseña.
@@ -396,7 +396,21 @@ Lo que falta:
 
 Descubrimiento por difusión, lista de partidas en el menú, `epsilon_server.exe` sin ventana.
 
-### Fase 8 — Pulido de red
+### Fase 8 — Pulido de red — **hecho el 13-11-2026: tráfico y caídas**
+
+Cómo quedó:
+
+- **Instantáneas por diferencias** (`SplitSnapshot`, `EncodeDelta`, `DecodeDelta` en `Net.cpp`). La instantánea se parte en trozos (cabecera, proyectiles, destellos, restos, cubierta, estaciones, anomalías, especie, cada nave, cada jugador). De cada trozo viaja nada si es idéntico al de la referencia, la diferencia byte a byte comprimida (ceros seguidos) si mide lo mismo, y entero si no. La **referencia es la última instantánea que el cliente confirmó** (`Ack`), así que perder paquetes no rompe nada; si el cliente no la tiene, la pide entera (`kNeedFull`). Cada lado guarda las últimas 64.
+- **Medido**: una instantánea entera, 18,6 kB; por diferencias, unos 300 bytes. En vuelo, **398 bytes por paso: 23 kB/s por cliente** a 60 pasos por segundo, frente a más de 1 MB/s. Sigue yendo una por paso, así que no hace falta interpolar.
+- **Probado con pérdida**: con una red que pierde uno de cada tres paquetes en los dos sentidos, la partida sigue, y en cuanto la red se limpia la réplica es idéntica al servidor.
+- **Caídas**: una conexión que deja de contestar se da por perdida entre 3 y 8 segundos después (antes, 30). Si es el servidor el que cae, el cliente lo dice y sale, o vuelve a su partida si había entrado desde el menú.
+
+Lo que el plan ponía en esta fase y no está hecho:
+
+- **Interpolación y predicción del propio giro.** No hacen falta en LAN con una instantánea por paso. Para jugar por Internet, con menos instantáneas y más retardo, sí.
+- **Reconexión automática**: tras una caída hay que volver a entrar a mano.
+- **Zona de interés más fina**: se manda la burbuja entera del jugador, con todas sus anomalías, estén cerca o no.
+- El formato sigue siendo «los bytes tal como están en memoria»: servidor y clientes tienen que ser el mismo ejecutable.
 
 Interpolación, predicción del propio giro, instantáneas por diferencias, zona de interés, reconexión, registro de errores del servidor.
 

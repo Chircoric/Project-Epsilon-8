@@ -251,6 +251,87 @@ bool Decode(MessageType type, const Packet& packet, T& value) {
     return in.ok && in.Left() == 0;
 }
 
+// ---- Instantaneas por diferencias --------------------------------------------------------------
+
+enum : std::uint8_t { kHead, kProjectiles, kImpacts, kLostPieces, kCrew, kStations, kAnomalies, kSpecies, kVessel, kPlayer };
+
+template <class T>
+Packet Bytes(const T& value) {
+    Out out;
+    out(const_cast<T&>(value));
+    return std::move(out.data);
+}
+
+// La cabecera: lo suelto de la instantanea, que no es ninguna lista.
+template <class A>
+void WireHead(A& a, SnapshotData& d) {
+    a(d.seed); a(d.mode); a(d.timeScale); a(d.origin); a(d.simTime); a(d.timeFocus); a(d.steps); a(d.deckKind); a(d.nextStation); a(d.me);
+}
+
+// Un numero en trozos de 7 bits: los pequenos, que son casi todos, ocupan un byte.
+void PutCount(Packet& out, std::size_t n) {
+    while (n >= 0x80) {
+        out.push_back(static_cast<std::uint8_t>(n | 0x80));
+        n >>= 7;
+    }
+    out.push_back(static_cast<std::uint8_t>(n));
+}
+
+bool GetCount(const Packet& in, std::size_t& at, std::size_t& n) {
+    n = 0;
+    for (int shift = 0; shift < 35; shift += 7) {
+        if (at >= in.size()) return false;
+        const std::uint8_t b = in[at++];
+        n |= static_cast<std::size_t>(b & 0x7F) << shift;
+        if ((b & 0x80) == 0) return true;
+    }
+    return false;
+}
+
+// La diferencia entre dos trozos del mismo tamano, comprimida: tantos ceros, tantos bytes tal cual, y asi.
+Packet PackDifference(const Packet& now, const Packet& base) {
+    Packet out;
+    const std::size_t n = now.size();
+    std::size_t i = 0;
+    while (i < n) {
+        std::size_t zeros = 0;
+        while (i < n && now[i] == base[i]) {
+            ++zeros;
+            ++i;
+        }
+        PutCount(out, zeros);
+        // Los bytes distintos, hasta que vengan cuatro iguales seguidos (menos no compensa cortar).
+        std::size_t j = i, same = 0;
+        while (j < n && same < 4) {
+            same = now[j] == base[j] ? same + 1 : 0;
+            ++j;
+        }
+        if (same >= 4) j -= 4;
+        PutCount(out, j - i);
+        for (; i < j; ++i) out.push_back(static_cast<std::uint8_t>(now[i] ^ base[i]));
+    }
+    return out;
+}
+
+bool UnpackDifference(const Packet& packed, const Packet& base, Packet& out) {
+    out = base;
+    std::size_t at = 0, i = 0;
+    while (at < packed.size()) {
+        std::size_t zeros = 0, literal = 0;
+        if (!GetCount(packed, at, zeros) || !GetCount(packed, at, literal)) return false;
+        i += zeros;
+        if (i + literal > out.size() || at + literal > packed.size()) return false;
+        for (std::size_t k = 0; k < literal; ++k) out[i++] ^= packed[at++];
+    }
+    return i <= out.size();
+}
+
+const SnapshotSection* FindSection(const SnapshotSections& all, std::uint8_t kind, std::int32_t key) {
+    for (const SnapshotSection& s : all)
+        if (s.kind == kind && s.key == key) return &s;
+    return nullptr;
+}
+
 // ---- Transporte en memoria ---------------------------------------------------------------------
 
 struct MemoryPipe {
@@ -284,6 +365,116 @@ private:
 std::pair<std::shared_ptr<Transport>, std::shared_ptr<Transport>> MakeMemoryLink() {
     auto pipe = std::make_shared<MemoryPipe>();
     return {std::make_shared<MemoryEnd>(pipe, true), std::make_shared<MemoryEnd>(pipe, false)};
+}
+
+SnapshotSections SplitSnapshot(const SnapshotData& d) {
+    SnapshotSections out;
+    {
+        Out head;
+        WireHead(head, const_cast<SnapshotData&>(d));
+        out.push_back({kHead, 0, std::move(head.data)});
+    }
+    out.push_back({kProjectiles, 0, Bytes(d.projectiles)});
+    out.push_back({kImpacts, 0, Bytes(d.impacts)});
+    out.push_back({kLostPieces, 0, Bytes(d.lostPieces)});
+    out.push_back({kCrew, 0, Bytes(d.crew)});
+    out.push_back({kStations, 0, Bytes(d.stations)});
+    out.push_back({kAnomalies, 0, Bytes(d.anomalies)});
+    out.push_back({kSpecies, 0, Bytes(d.species)});
+    for (const Vessel& v : d.vessels) out.push_back({kVessel, v.id, Bytes(v)});
+    for (std::size_t p = 0; p < d.players.size(); ++p) out.push_back({kPlayer, static_cast<std::int32_t>(p), Bytes(d.players[p])});
+    return out;
+}
+
+bool JoinSnapshot(const SnapshotSections& sections, SnapshotData& d) {
+    d = SnapshotData{};
+    bool head = false;
+    for (const SnapshotSection& s : sections) {
+        In in(s.bytes);
+        switch (s.kind) {
+            case kHead:
+                WireHead(in, d);
+                head = true;
+                break;
+            case kProjectiles: in(d.projectiles); break;
+            case kImpacts: in(d.impacts); break;
+            case kLostPieces: in(d.lostPieces); break;
+            case kCrew: in(d.crew); break;
+            case kStations: in(d.stations); break;
+            case kAnomalies: in(d.anomalies); break;
+            case kSpecies: in(d.species); break;
+            case kVessel:
+                d.vessels.emplace_back();
+                in(d.vessels.back());
+                break;
+            case kPlayer:
+                d.players.emplace_back();
+                in(d.players.back());
+                break;
+            default: return false;
+        }
+        if (!in.ok || in.Left() != 0) return false;
+    }
+    return head;
+}
+
+Packet EncodeDelta(std::uint32_t seq, std::uint32_t baseSeq, const SnapshotSections& now, const SnapshotSections* base) {
+    Out out;
+    MessageType type = MessageType::SnapshotDelta;
+    std::uint32_t count = static_cast<std::uint32_t>(now.size());
+    if (!base) baseSeq = 0;
+    out(type); out(seq); out(baseSeq); out(count);
+    for (const SnapshotSection& s : now) {
+        std::uint8_t kind = s.kind, mode = 0;  // 0 entero, 1 diferencia, 2 igual que en la referencia
+        std::int32_t key = s.key;
+        const SnapshotSection* old = base ? FindSection(*base, s.kind, s.key) : nullptr;
+        if (old && old->bytes == s.bytes) mode = 2;
+        else if (old && old->bytes.size() == s.bytes.size()) mode = 1;
+        out(kind); out(key); out(mode);
+        if (mode == 0) out(const_cast<Packet&>(s.bytes));
+        else if (mode == 1) {
+            Packet packed = PackDifference(s.bytes, old->bytes);
+            out(packed);
+        }
+    }
+    return std::move(out.data);
+}
+
+bool DecodeDelta(const Packet& packet, const std::map<std::uint32_t, SnapshotSections>& known, std::uint32_t& seq, SnapshotSections& out, bool& missingBase) {
+    missingBase = false;
+    out.clear();
+    if (TypeOf(packet) != MessageType::SnapshotDelta) return false;
+    In in(packet);
+    MessageType type{};
+    std::uint32_t baseSeq = 0, count = 0;
+    in(type); in(seq); in(baseSeq); in(count);
+    if (!in.ok || count > 4096) return false;
+    const SnapshotSections* base = nullptr;
+    if (baseSeq != 0) {
+        const auto found = known.find(baseSeq);
+        if (found == known.end()) {
+            missingBase = true;
+            return false;
+        }
+        base = &found->second;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        SnapshotSection s;
+        std::uint8_t mode = 0;
+        in(s.kind); in(s.key); in(mode);
+        if (!in.ok) return false;
+        const SnapshotSection* old = base ? FindSection(*base, s.kind, s.key) : nullptr;
+        if (mode == 0) in(s.bytes);
+        else if (mode == 2 && old) s.bytes = old->bytes;
+        else if (mode == 1 && old) {
+            Packet packed;
+            in(packed);
+            if (!in.ok || !UnpackDifference(packed, old->bytes, s.bytes)) return false;
+        } else return false;
+        if (!in.ok) return false;
+        out.push_back(std::move(s));
+    }
+    return in.Left() == 0;
 }
 
 MessageType TypeOf(const Packet& packet) { return packet.empty() ? MessageType{} : static_cast<MessageType>(packet[0]); }
@@ -395,9 +586,24 @@ void GameServer::Greet(Peer& peer, const Hello& hello) {
     peer.player = player;
     std::uint32_t seed = session_.Seed();
     peer.link->Send(Encode(MessageType::Welcome, seed));
-    const Packet first = EncodeSnapshot(session_.MakeSnapshot(player));
-    bytesSent_ += first.size();
-    peer.link->Send(first);
+    SendSnapshot(peer);
+}
+
+// Lo que ve ese jugador, respecto a la ultima instantanea que confirmo tener.
+void GameServer::SendSnapshot(Peer& peer) {
+    SnapshotSections now = SplitSnapshot(session_.MakeSnapshot(peer.player));
+    const auto base = peer.acked != 0 ? peer.history.find(peer.acked) : peer.history.end();
+    const bool have = base != peer.history.end();
+    const std::uint32_t seq = ++peer.sent;
+    const Packet packet = EncodeDelta(seq, have ? peer.acked : 0, now, have ? &base->second : nullptr);
+    peer.history[seq] = std::move(now);
+    // Las anteriores a la confirmada ya no sirven; y como mucho se guardan unas pocas.
+    while (!peer.history.empty() && (peer.history.begin()->first < peer.acked || peer.history.size() > 64)) {
+        if (peer.history.begin()->first == peer.acked) peer.acked = 0;  // se queda sin referencia: la siguiente ira entera
+        peer.history.erase(peer.history.begin());
+    }
+    bytesSent_ += packet.size();
+    peer.link->Send(packet, false);
 }
 
 void GameServer::Read(Peer& peer) {
@@ -428,6 +634,13 @@ void GameServer::Read(Peer& peer) {
             case MessageType::Command: {
                 ShipCommand command;
                 if (peer.player >= 0 && DecodeCommand(packet, command)) session_.ApplyAs(peer.player, command);
+                break;
+            }
+            case MessageType::Ack: {
+                std::uint32_t seq = 0;
+                if (!Decode(MessageType::Ack, packet, seq)) break;
+                if (seq == kNeedFull) peer.acked = 0;  // no tiene la referencia: la siguiente, entera
+                else if (seq > peer.acked && peer.history.count(seq) != 0) peer.acked = seq;
                 break;
             }
             default: break;  // lo que no se entiende se ignora
@@ -475,9 +688,7 @@ bool GameServer::Save(std::string* error) {
 void GameServer::SendSnapshots() {
     for (Peer& peer : peers_) {
         if (peer.player < 0 || !peer.link->Open()) continue;
-        const Packet packet = EncodeSnapshot(session_.MakeSnapshot(peer.player));
-        bytesSent_ += packet.size();
-        peer.link->Send(packet, false);
+        SendSnapshot(peer);
     }
 }
 
@@ -554,6 +765,28 @@ void GameClient::Update() {
                 if (!DecodeSnapshot(packet, data) || data.seed != replica_.Seed()) break;  // uno cortado se salta: ya llegara otro
                 replica_.ApplySnapshot(data);
                 ++snapshots_;
+                break;
+            }
+            case MessageType::SnapshotDelta: {
+                std::uint32_t seq = 0;
+                SnapshotSections sections;
+                bool missing = false;
+                if (!DecodeDelta(packet, history_, seq, sections, missing)) {
+                    // Sin la referencia no se puede reconstruir: se le pide entera.
+                    if (missing) link_->Send(Encode(MessageType::Ack, kNeedFull), false);
+                    break;
+                }
+                // Se confirma siempre, para que el servidor pueda usarla de referencia.
+                link_->Send(Encode(MessageType::Ack, seq), false);
+                SnapshotData data;
+                const bool fresh = seq > lastSeq_;
+                if (fresh && JoinSnapshot(sections, data) && data.seed == replica_.Seed()) {
+                    replica_.ApplySnapshot(data);
+                    ++snapshots_;
+                    lastSeq_ = seq;
+                }
+                history_[seq] = std::move(sections);
+                while (history_.size() > 64) history_.erase(history_.begin());
                 break;
             }
             default: break;
