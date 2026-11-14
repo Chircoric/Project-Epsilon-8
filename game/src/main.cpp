@@ -16,7 +16,9 @@
 //   --connect lan      busca partidas abiertas en la red local y entra en la primera
 //   --connect ip[:puerto]  entra en la partida de otro. Con --join ship (por defecto) llevas una nave propia;
 //                      con --join crew vas de tripulante en la del anfitrion. --name dice como te llamas
-//   --loopback         servidor y cliente en este mismo proceso: la partida la simula un servidor y lo que
+//   --direct           sin servidor: la interfaz lee la partida directamente, como antes de la fase 5. No se
+//                      puede abrir la partida a la red ni entrar en otra
+//   --loopback         (ya es lo normal) servidor y cliente en este mismo proceso: la partida la simula un servidor y lo que
 //                      se ve es la replica de un cliente, unidos en memoria (docs/multijugador.md, fase 5)
 //   --size W H         tamano de la ventana
 //   --seed N           otra partida
@@ -42,6 +44,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <random>
 #include <sstream>
@@ -77,6 +80,7 @@ struct Options {
     std::string shipModel;         // .glb o .gltf de la nave; vacio = buscarlo junto al ejecutable
     std::vector<std::string> commands;
     bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false, loopback = false;
+    bool direct = false;         // --direct: sin servidor ni cliente
     int hostPort = 0;            // > 0: la partida se abre a la red en ese puerto
     std::string connect;         // ip[:puerto] del servidor al que entrar
     std::string playerName;      // --name
@@ -126,6 +130,7 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--no-vsync") o.vsync = false;
         else if (a == "--fixed-step") o.fixedStep = true;
         else if (a == "--loopback") o.loopback = true;
+        else if (a == "--direct") o.direct = true;
         else if (a == "--host") {
             o.hostPort = kDefaultPort;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') o.hostPort = std::atoi(argv[++i]);
@@ -717,6 +722,9 @@ int Run(Options options) {
     // Una partida es una carpeta: mundo.sav y jugadores/<id>.sav (SaveGame.h).
     const bool joining = !options.connect.empty();  // se entra en la partida de otro: la guarda su servidor
     if (joining && options.mode < 0) options.mode = 2;  // sin menu: el modo es el del servidor
+    // Lo normal: la partida la lleva un servidor en este mismo proceso y lo que se ve es su replica. Asi
+    // se puede abrir a la red o entrar en la de otro desde el menu, con el juego en marcha.
+    if (!options.direct && !joining) options.loopback = true;
     std::string savePath = joining ? std::string() : options.savePath;
     std::string settingsPath, legacySave;
     std::string playerId = "local";
@@ -896,6 +904,10 @@ int Run(Options options) {
             });
             std::unique_ptr<GameServer> host;
             std::unique_ptr<GameClient> client;
+            std::shared_ptr<Transport> localServerEnd, clientLink;  // el lado del servidor de la conexion en memoria, y la conexion que usa ahora el cliente
+            bool remote = false;                       // desde el menu, se ha entrado en la partida de otro
+            std::string remoteName;
+            std::future<std::vector<LanGame>> search;  // la busqueda en la red local, en marcha
             Hello hello;
             hello.id = playerId;
             hello.name = playerName;
@@ -927,6 +939,7 @@ int Run(Options options) {
                     return 1;
                 }
                 hello.join = options.joinCrew ? JoinAs::Crew : JoinAs::OwnShip;
+                clientLink = link;
                 client = std::make_unique<GameClient>(session, link, hello);
                 // Hasta que llega el mundo no hay nada que dibujar: se espera un momento.
                 for (int i = 0; i < 300 && !client->Ready() && !client->Refused(); ++i) {
@@ -942,14 +955,16 @@ int Run(Options options) {
                 host = std::make_unique<GameServer>(authority);
                 auto link = MakeMemoryLink();
                 host->Add(link.first);
+                localServerEnd = link.first;
+                clientLink = link.second;
                 client = std::make_unique<GameClient>(session, link.second, hello);
                 host->Update(0.0);
                 client->Update();
-                std::printf("Loopback: servidor y cliente en memoria%s\n", client->Ready() ? "" : " (sin respuesta del servidor)");
+                if (!client->Ready()) std::printf("Aviso: el servidor en memoria no responde\n");
+                // Quien entre por la red recupera lo suyo de la carpeta de la partida, y se guarda con los demas.
+                if (!savePath.empty()) host->SetSaveFolder(savePath);
                 if (options.hostPort > 0) {
                     std::string problem;
-                    // Quien entre recupera lo suyo de la carpeta de la partida, y se guarda con los demas.
-                    if (!savePath.empty()) host->SetSaveFolder(savePath);
                     if (host->OpenToNetwork(options.hostPort, "Partida de " + playerName, 8, &problem)) {
                         std::printf("Partida abierta a la red en el puerto %d, anunciada en la red local\n", options.hostPort);
                     } else {
@@ -1185,7 +1200,7 @@ int Run(Options options) {
             if (options.ui == 0) ui.settings.uiStyle = UiStyle::Minimal;
             else if (options.ui == 1) ui.settings.uiStyle = UiStyle::Expert;
             if (options.uiScale > 0) ui.settings.uiScale = std::clamp(options.uiScale, kUiScales[0], kUiScales[kUiScaleCount - 1]);
-            ui.page = static_cast<MenuPage>(std::clamp(options.page, 0, static_cast<int>(MenuPage::Interface)));
+            ui.page = static_cast<MenuPage>(std::clamp(options.page, 0, static_cast<int>(MenuPage::Network)));
             // La primera vez se elige la interfaz antes que nada.
             if (ui.screen == HudScreen::Menu && ui.settings.uiStyle == UiStyle::Unset && ui.page == MenuPage::Main) ui.page = MenuPage::Interface;
             const PostSettings basePost = engine.Post();
@@ -1279,7 +1294,7 @@ int Run(Options options) {
                 if (savePath.empty() || !playing) return;
                 std::string problem;
                 // Con la partida abierta a la red se guardan tambien los archivos de los demas jugadores.
-                if (host && options.hostPort > 0 ? host->Save(&problem) : SaveGame(savePath, authority.Snapshot(), &problem)) return;
+                if (host && host->Hosting() ? host->Save(&problem) : SaveGame(savePath, authority.Snapshot(), &problem)) return;
                 std::printf("Aviso: no se pudo guardar: %s\n", problem.c_str());
                 authority.Announce("No se pudo guardar la partida.");
             };
@@ -1304,6 +1319,47 @@ int Run(Options options) {
                 if (session.Contacts().empty()) return;
                 contactIndex = (contactIndex + 1) % static_cast<int>(session.Contacts().size());
                 target = session.Contacts()[static_cast<std::size_t>(contactIndex)].target;
+            };
+
+            // Volver de la partida de otro a la propia: el cliente se conecta otra vez al servidor de aqui.
+            const auto leaveRemote = [&](const std::string& why) {
+                if (!remote || !host) return;
+                if (clientLink) clientLink->Close();
+                auto link = MakeMemoryLink();
+                host->Add(link.first);
+                localServerEnd = link.first;
+                clientLink = link.second;
+                Hello back = hello;
+                back.join = JoinAs::Host;
+                client = std::make_unique<GameClient>(session, clientLink, back);
+                remote = false;
+                host->Update(0.0);
+                client->Update();
+                ui.net.status = why;
+                target = {};
+            };
+            // Entrar en la partida de otro: el cliente deja el servidor de aqui (su nave sale de este mundo,
+            // como al desconectarse) y se conecta al de alli, con nave propia.
+            const auto joinRemote = [&](const NetGame& game) {
+                if (!host || remote) return;
+                std::string problem;
+                std::shared_ptr<Transport> link = ConnectTo(game.address, game.port, 3.0, &problem);
+                if (!link) {
+                    ui.net.status = "No se pudo entrar en " + game.name + ": " + problem + ".";
+                    return;
+                }
+                if (clientLink) clientLink->Close();
+                clientLink = link;
+                Hello guest = hello;
+                guest.join = JoinAs::OwnShip;
+                client = std::make_unique<GameClient>(session, clientLink, guest);
+                remote = true;
+                remoteName = game.name;
+                ui.net.status.clear();
+                target = {};
+                ui.screen = HudScreen::Playing;
+                ui.page = MenuPage::Main;
+                SDL_SetWindowRelativeMouseMode(window, options.frames == 0);
             };
 
             const auto perform = [&](const HudAction& a) {
@@ -1483,8 +1539,52 @@ int Run(Options options) {
                         writeGame();
                         authority.Announce("Partida guardada.");
                         break;
+                    case T::NetHost:
+                        if (!host || remote) break;
+                        ui.net.status.clear();
+                        if (host->Hosting()) {
+                            host->CloseNetwork();
+                        } else {
+                            std::string problem;
+                            if (!host->OpenToNetwork(kDefaultPort, "Partida de " + playerName, 8, &problem)) ui.net.status = "No se pudo abrir la partida: " + problem + ".";
+                        }
+                        break;
+                    case T::NetSearch:
+                        if (search.valid()) break;  // ya hay una en marcha
+                        ui.net.searching = true;
+                        ui.net.status.clear();
+                        search = std::async(std::launch::async, [] { return FindLanGames(1.5); });
+                        break;
+                    case T::NetJoin:
+                        if (a.value >= 0 && static_cast<std::size_t>(a.value) < ui.net.games.size()) joinRemote(NetGame(ui.net.games[static_cast<std::size_t>(a.value)]));
+                        break;
+                    case T::NetLeave: leaveRemote(""); break;
                 }
             };
+
+            // Lo mismo que los botones de la pagina de red del menu, para probar sin manos.
+            engine.Commands().Add("red", "partida en red, como en el menu: red (estado) | red abrir | red cerrar | red buscar | red entrar <n> | red volver", [&](const CommandRegistry::Args& args) -> std::string {
+                const auto state = [&]() -> std::string {
+                    if (!ui.net.available) return "Sin red (el juego va con --direct o entro con --connect)";
+                    std::string text = remote ? "En la partida de " + remoteName : host->Hosting() ? "Abierta en el puerto " + std::to_string(host->Port()) + ", " + std::to_string(ui.net.guests) + " dentro" : std::string("Solo en este equipo");
+                    for (std::size_t i = 0; i < ui.net.games.size(); ++i) text += "\n  " + std::to_string(i + 1) + ": " + ui.net.games[i].name + " en " + ui.net.games[i].address + ":" + std::to_string(ui.net.games[i].port);
+                    if (!ui.net.status.empty()) text += "\n  " + ui.net.status;
+                    return text;
+                };
+                if (args.empty()) return state();
+                if (args[0] == "abrir" && host && !host->Hosting()) perform({HudActionType::NetHost});
+                else if (args[0] == "cerrar" && host && host->Hosting()) perform({HudActionType::NetHost});
+                else if (args[0] == "buscar") {
+                    // Aqui se espera a la respuesta, para que el comando siguiente ya tenga la lista.
+                    ui.net.games.clear();
+                    for (const LanGame& g : FindLanGames(1.5))
+                        if (!(host && host->Hosting() && g.port == host->Port())) ui.net.games.push_back({g.name, g.address, g.port, g.players, g.maxPlayers, g.mode});
+                    ui.net.searched = true;
+                } else if (args[0] == "entrar") perform({HudActionType::NetJoin, args.size() >= 2 ? std::atoi(args[1].c_str()) - 1 : 0});
+                else if (args[0] == "volver") perform({HudActionType::NetLeave});
+                else return engine.Commands().Fail("Uso: red [abrir|cerrar|buscar|entrar <n>|volver]");
+                return state();
+            });
 
             bool wasScanning = false;
             int tutorialDone = session.Conversation().Completions();
@@ -1499,19 +1599,19 @@ int Run(Options options) {
                         consoleOpen = !consoleOpen;
                         if (consoleOpen) SDL_StartTextInput(window);
                         else SDL_StopTextInput(window);
-                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F2 && !e.key.repeat && session.VesselCount() > 1) {
+                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F2 && !e.key.repeat && authority.VesselCount() > 1 && !remote) {
                         // Con varias naves, F2 pasa a llevar la siguiente.
-                        session.SetFocus((session.Focus() + 1) % session.VesselCount());
+                        authority.SetFocus((authority.Focus() + 1) % authority.VesselCount());
                         target = {};
                         contactIndex = -1;
-                        authority.Announce("Llevas la nave " + std::to_string(session.VesselId()) + ".");
-                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F3 && !e.key.repeat && session.PlayerCount() > 1) {
+                        authority.Announce("Llevas la nave " + std::to_string(authority.VesselId()) + ".");
+                    } else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F3 && !e.key.repeat && authority.PlayerCount() > 1 && !remote) {
                         // Con varios jugadores, F3 pasa a ser el siguiente: su nave, su puesto, su registro.
-                        session.SetFocusPlayer((session.FocusPlayer() + 1) % session.PlayerCount());
+                        authority.SetFocusPlayer((authority.FocusPlayer() + 1) % authority.PlayerCount());
                         target = {};
                         contactIndex = -1;
                         syncMouse();
-                        authority.Announce("Eres " + session.PlayerAt(session.FocusPlayer()).name + ".");
+                        authority.Announce("Eres " + authority.PlayerAt(authority.FocusPlayer()).name + ".");
                     } else if (e.type == SDL_EVENT_KEY_DOWN && consoleOpen) {
                         if (e.key.key == SDLK_ESCAPE) {
                             consoleOpen = false;
@@ -1542,7 +1642,7 @@ int Run(Options options) {
                     } else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && ui.screen == HudScreen::Paused) {
                         if (e.key.key == SDLK_ESCAPE) {
                             if (ui.page == MenuPage::Graphics) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)});
-                            else if (ui.page == MenuPage::Settings) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Main)});
+                            else if (ui.page == MenuPage::Settings || ui.page == MenuPage::Network) perform({HudActionType::MenuPage, static_cast<int>(MenuPage::Main)});
                             else perform({HudActionType::Resume});
                         }
                     } else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
@@ -1679,18 +1779,45 @@ int Run(Options options) {
                 // En loopback, el paso de arriba solo ha mandado el mando: ahora avanza el servidor y la
                 // replica aplica lo que le llega. En pausa el servidor no avanza, pero sigue contando lo que hay.
                 if (host) {
-                    // Con la partida abierta a la red, el servidor no se para aunque el anfitrion este en pausa.
-                    const double serverSeconds = options.hostPort > 0 ? realSeconds : stepSeconds;
+                    // "nave ver", "jugador ver", F2 y F3 cambian el foco de la partida de verdad: la conexion de
+                    // este proceso pasa a ver y mandar como ese jugador.
+                    if (!remote) host->Follow(localServerEnd.get(), authority.FocusPlayer());
+                    // Con la partida abierta a la red, el servidor no se para aunque el anfitrion este en pausa;
+                    // sin abrir, y con el jugador en la partida de otro, este mundo espera.
+                    const double serverSeconds = host->Hosting() ? realSeconds : remote ? 0.0 : stepSeconds;
                     host->Update(serverSeconds, static_cast<float>(options.width) * 0.5f);
-                    if (serverSeconds <= 0.0) host->SendSnapshots();
+                    if (serverSeconds <= 0.0 && !remote) host->SendSnapshots();
+                }
+                if (client) {
                     client->Update();
-                } else if (client) {
-                    client->Update();
-                    if (client->Refused()) {
-                        std::printf("El servidor ha cerrado la conexión: %s\n", client->Refusal().c_str());
+                    const bool dropped = client->Refused() || (clientLink && !clientLink->Open());
+                    if (dropped && remote) {
+                        leaveRemote(client->Refused() ? "No se pudo entrar: " + client->Refusal() : "Se perdió la conexión con " + remoteName + ".");
+                        ui.screen = HudScreen::Paused;
+                        ui.page = MenuPage::Network;
+                        SDL_SetWindowRelativeMouseMode(window, false);
+                    } else if (dropped && !host) {
+                        std::printf("El servidor ha cerrado la conexión%s%s\n", client->Refused() ? ": " : ".", client->Refusal().c_str());
                         running = false;
                     }
                 }
+                // Lo que ensena la pagina de red del menu.
+                if (search.valid() && search.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    ui.net.games.clear();
+                    for (const LanGame& g : search.get()) {
+                        if (host && host->Hosting() && g.port == host->Port() && g.name == "Partida de " + playerName) continue;  // la mia no
+                        ui.net.games.push_back({g.name, g.address, g.port, g.players, g.maxPlayers, g.mode});
+                    }
+                    ui.net.searching = false;
+                    ui.net.searched = true;
+                }
+                ui.net.available = host != nullptr && NetworkAvailable();
+                ui.net.hosting = host && host->Hosting();
+                ui.net.port = host ? host->Port() : 0;
+                ui.net.guests = host ? std::max(host->Clients() - (remote ? 0 : 1), 0) : 0;
+                ui.net.joined = remote || (!host && client);
+                ui.net.canLeave = remote;
+                ui.net.where = remote ? remoteName : options.connect;
                 // Con --frames, cada cambio de paso del tutorial se anota con el tiempo real que lleva la partida.
                 if (options.frames > 0 && session.Conversation().Step() != lastTutorialStep) {
                     lastTutorialStep = session.Conversation().Step();

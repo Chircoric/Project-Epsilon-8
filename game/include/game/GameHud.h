@@ -62,12 +62,33 @@ enum class HudActionType : int {
     Shipyard,       // suelta la estacion origami donde esta la nave
     ExtractElement, // value: numero atomico que extraen los drones; 0 = a granel
     ReplayTip,      // el tutorial vuelve a decir las lineas del paso actual
+    NetHost,        // abre la partida a la red, o la cierra si ya esta abierta
+    NetSearch,      // busca partidas en la red local
+    NetJoin,        // value: indice en NetView::games; entra en esa partida
+    NetLeave,       // vuelve de la partida de otro a la propia
 };
 
 // Paginas del menu de inicio. La configuracion tambien se abre desde la pausa.
 // Graphics es la pestaña de graficos de la configuracion: se entra desde Settings y se vuelve a ella.
 // Interface es la eleccion entre modo minimalista y experto: sale sola la primera vez.
-enum class MenuPage : int { Main, NewGame, Settings, Credits, Graphics, Interface };
+enum class MenuPage : int { Main, NewGame, Settings, Credits, Graphics, Interface, Network };
+
+// Lo que la pagina de red del menu ensena. Lo rellena main.cpp.
+struct NetGame {
+    std::string name, address;
+    int port = 0, players = 0, maxPlayers = 0, mode = 0;
+};
+struct NetView {
+    bool available = false;   // el juego tiene red y va por servidor y cliente
+    bool hosting = false;     // mi partida esta abierta a la red
+    int port = 0, guests = 0; // en que puerto, y cuantos han entrado
+    bool searching = false, searched = false;
+    std::vector<NetGame> games;
+    bool joined = false;      // estoy en la partida de otro
+    bool canLeave = false;    // y puedo volver a la mia desde aqui
+    std::string where;        // en la de quien
+    std::string status;       // lo ultimo que paso: un error, una desconexion
+};
 
 // Alcances del radar, en km: de la escotilla de una estacion a otro sistema.
 inline constexpr double kRadarRanges[] = {10.0, 100.0, 1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9, 1.0e11, 1.0e13};
@@ -115,6 +136,7 @@ struct HudInput {
     bool analysis = false;    // ventana de analisis del objetivo
     bool wheel = false;       // rueda de opciones abierta
     AtlasView atlas;
+    NetView net;
 };
 
 // Donde va la ventana de analisis y la esfera real que muestra.
