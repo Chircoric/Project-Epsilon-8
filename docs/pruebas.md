@@ -78,7 +78,9 @@ out\build\x64-sdl-release\epsilon_game_tests.exe --solo-dorada
 | `--connect ip[:puerto]` | Entra en la partida de otro. No carga ni guarda nada: la partida es del servidor. Si no puede entrar, lo dice y sale |
 | `--join ship\|crew` | Con `--connect`: con nave propia junto a la del anfitrión (por defecto) o de tripulante en la suya |
 | `--name Nombre` | Cómo te llamas en la partida. Con `--frames`, además hace de identificador, para poder probar con varios procesos |
-| `--loopback` | Servidor y cliente en el mismo proceso, unidos en memoria: la partida la simula un servidor a 1/60 s y lo que se ve es la réplica de un cliente (`docs/multijugador.md`, fase 5). Debe verse igual que sin la opción. La consola actúa sobre el servidor, así que `nave ver`, F2 y F3 no cambian la vista |
+| `--direct` | Sin servidor: la interfaz lee la partida directamente, como antes. No se puede abrir la partida a la red ni entrar en otra. Sirve para comparar si algo se ve distinto |
+| `--loopback` | Ya es lo normal y no hace falta pasarla: la partida la simula un servidor a 1/60 s en este mismo proceso y lo que se ve es la réplica de un cliente (`docs/multijugador.md`, fase 5) |
+| `--page 6` | Con el menú: empieza en la página «Partida en red» |
 | `--fixed-step` | La partida avanza a pasos fijos de 1/60 s (`GameSession::StepFixed`), como lo hará el servidor. Por encima de 60 FPS hay fotogramas sin paso: aún no se interpola |
 | `--mode N` | Salta el menú: 0 Pacífico, 1 Fácil, 2 Normal, 3 Difícil, 4 Realista |
 | `--no-tutorial` | Sin diálogos |
@@ -167,6 +169,9 @@ Se escriben con F1 dentro del juego, o se pasan con `--cmd`. Cada uno deja su re
 | `jugador ver <n>` | Pasas a ser ese jugador: su nave, sus puestos, su registro, su tutorial. En el juego, **F3** pasa al siguiente |
 | `jugador <n> <orden...>` | Ejecuta cualquier comando como ese jugador: `jugador 2 escudo em`, `jugador 2 apie`. Si la orden pide un puesto que no lleva, se rechaza y se le dice por qué |
 | `puesto` | Tus puestos. `puesto <pilotaje\|armas\|ingenieria>` ocupa uno libre; `puesto dejar <...>` lo suelta. Sin nadie en el pilotaje, la nave no obedece ningún mando |
+| `red` | El estado de la red y las partidas encontradas. `red abrir`, `red cerrar`, `red buscar`, `red entrar <n>` y `red volver` hacen lo mismo que los botones de la página «Partida en red». **Solo con `--cmd-at`**: se registra después de los `--cmd` de arranque |
+
+Receta (el menú de red, sin manos): `--interfaz experta --page 6 --frames 300 --cmd-at 30 "red abrir" --screenshot red.png` enseña la página con la partida abierta. Con un `epsilon_server.exe` en otro proceso, `--mode 2 --no-tutorial --frames 700 --cmd-at 60 "red buscar" --cmd-at 70 "red entrar 1" --cmd-at 500 "red volver"` entra en él con el juego en marcha y vuelve.
 
 Receta (dos procesos en red, en la misma máquina). En una terminal, el anfitrión; en otra, cuando ya esté abierto, el que entra:
 

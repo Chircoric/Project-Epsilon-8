@@ -122,6 +122,12 @@ public:
     // Abre la partida a la red: escucha en ese puerto y se anuncia en la red local con ese nombre. false
     // si no pudo abrir el puerto; no poder anunciarse no es un error (se puede entrar con la direccion).
     bool OpenToNetwork(int port, const std::string& name, int maxClients, std::string* error = nullptr);
+    void CloseNetwork();  // deja de escuchar y de anunciarse; los que entraron por la red se quedan sin conexion
+    bool Hosting() const { return listener_ != nullptr; }
+    int Port() const { return announced_.port; }
+    // La conexion de este mismo proceso (el anfitrion) pasa a ver y mandar como otro jugador: es lo que
+    // hacen "nave ver", "jugador ver", F2 y F3 cuando la partida va por servidor y cliente.
+    void Follow(const Transport* link, int player);
 
     // La carpeta de la partida (SaveGame.h). Con ella, quien entra recupera lo suyo (jugadores/<id>.sav:
     // su nave, lo que conoce, su tutorial) y Save() escribe el mundo y el archivo de cada jugador.

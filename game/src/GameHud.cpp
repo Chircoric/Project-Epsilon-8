@@ -2890,6 +2890,46 @@ void CreditsPanel(const Ui& u, float x, float y, float w) {
     MenuButton(u, x + w - 238.0f * s, y + h - 52.0f * s, 220.0f * s, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
 }
 
+// La pagina de red: abrir la partida propia, buscar las de la red local y entrar en una.
+void NetworkPanel(const Ui& u, float x, float y, float w) {
+    const float s = u.s;
+    const NetView& n = u.in.net;
+    const int shown = static_cast<int>(std::min<std::size_t>(n.games.size(), 4));
+    const float h = (318.0f + 56.0f * shown) * s;
+    u.Panel(x, y, w, h, "PARTIDA EN RED", "ENLACE");
+    const float ix = x + 18.0f * s, iw = w - 36.0f * s;
+    float line = y + 40.0f * s;
+    std::string state = "Solo en este equipo";
+    if (!n.available) state = "Este juego no tiene red";
+    else if (n.joined) state = "En la partida de " + n.where;
+    else if (n.hosting) state = Format("Abierta en el puerto %d  ·  %d dentro", n.port, n.guests);
+    u.Spaced(ix, line, 11.0f, kMuted, "ESTADO");
+    u.Label(ix, line + 16.0f * s, 15.0f, n.hosting || n.joined ? kAmber : kText, state);
+    line += 50.0f * s;
+    if (n.available && n.joined) {
+        if (n.canLeave) MenuButton(u, ix, line, iw, 48.0f * s, "VOLVER A MI PARTIDA", "Sales de esta; tu nave se queda donde está", nullptr, {HudActionType::NetLeave}, 1);
+        line += 56.0f * s;
+    } else if (n.available) {
+        MenuButton(u, ix, line, iw, 48.0f * s, n.hosting ? "CERRAR MI PARTIDA A LA RED" : "ABRIR MI PARTIDA A LA RED", n.hosting ? "Los que estén dentro salen" : "Otros podrán entrar con su nave o en la tuya", nullptr,
+                   {HudActionType::NetHost}, 1);
+        line += 56.0f * s;
+        MenuButton(u, ix, line, iw, 48.0f * s, n.searching ? "BUSCANDO..." : "BUSCAR PARTIDAS", "En la red local", nullptr, {HudActionType::NetSearch}, 2, !n.searching);
+        line += 56.0f * s;
+        for (int i = 0; i < shown; ++i) {
+            const NetGame& g = n.games[static_cast<std::size_t>(i)];
+            MenuButton(u, ix, line, iw, 48.0f * s, Upper(g.name), Format("%s:%d  ·  %d de %d  ·  %s", g.address.c_str(), g.port, g.players, g.maxPlayers, ModeInfo(static_cast<GameModeId>(std::clamp(g.mode, 0, 4))).name), nullptr,
+                       {HudActionType::NetJoin, i}, 3 + i);
+            line += 56.0f * s;
+        }
+        if (n.searched && !n.searching && n.games.empty()) u.Label(ix, line, 12.0f, kMuted, "No hay ninguna partida abierta en la red local.");
+    }
+    if (!n.status.empty()) {
+        const ImVec4 clip(ix, y + h - 104.0f * s, ix + iw, y + h - 60.0f * s);
+        u.d->AddText(u.text, 12.0f * s, ImVec2(ix, y + h - 104.0f * s), kHot, n.status.c_str(), nullptr, iw, &clip);
+    }
+    MenuButton(u, x + w - 238.0f * s, y + h - 52.0f * s, 220.0f * s, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
+}
+
 // Una muestra de cada interfaz dentro de su tarjeta: la minimalista con dos ventanas redondas y
 // barras gruesas; la experta con paneles, un reloj, un radar y columnas de cifras.
 void InterfacePreview(const Ui& u, float x, float y, float w, float h, bool minimal, bool lit) {
@@ -3039,6 +3079,9 @@ void Menu(const Ui& u, float width, float height) {
             by += step;
             MenuButton(u, bx, by, bw, bh, "CONFIGURACIÓN", std::string(u.in.settings.Minimal() ? "Interfaz minimalista" : "Interfaz experta") + "   Gráficos: " + (u.in.settings.Custom() ? "Personalizada" : Profile(u.in.settings.quality).name), nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)}, order++);
             by += step;
+            MenuButton(u, bx, by, bw, bh, "PARTIDA EN RED", u.in.net.joined ? "En la partida de " + u.in.net.where : u.in.net.hosting ? std::string("Tu partida está abierta a la red") : std::string("Abrir la tuya o entrar en la de otro"), nullptr,
+                       {HudActionType::MenuPage, static_cast<int>(MenuPage::Network)}, order++);
+            by += step;
             MenuButton(u, bx, by, bw, bh, "CRÉDITOS", "Quién hizo Epsilon-Z", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Credits)}, order++);
             by += step;
             MenuButton(u, bx, by, bw, bh, "ABORTAR", "Salir del juego", "ESC", {HudActionType::Quit}, order++);
@@ -3075,6 +3118,9 @@ void Menu(const Ui& u, float width, float height) {
         case MenuPage::Credits:
             CreditsPanel(u, bx - 40.0f * s, by - 30.0f * s, bw + 50.0f * s);
             break;
+        case MenuPage::Network:
+            NetworkPanel(u, bx - 40.0f * s, std::max(std::min(by - 30.0f * s, height - 600.0f * s), 20.0f * s), bw + 50.0f * s);
+            break;
     }
 
     u.Label(left, height - 44.0f * s, 11.0f, kMuted, "EPSILON-Z  //  CONSTRUCCIÓN 0.Z  //  ENLACE ESTABLE");
@@ -3094,11 +3140,17 @@ void Paused(const Ui& u, float width, float height) {
         SettingsPanel(u, cx - w * 0.5f, std::max(cy - SettingsHeight() * 0.5f * s, 10.0f * s), w, true);
         return;
     }
+    if (u.in.page == MenuPage::Network) {
+        const float w = 560.0f * s;
+        NetworkPanel(u, cx - w * 0.5f, std::max(cy - 270.0f * s, 10.0f * s), w);
+        return;
+    }
     u.Title(cx - u.TitleWidth(44.0f, "PAUSA") * 0.5f, cy - 130.0f * s, 44.0f, kAmber, "PAUSA");
     u.Button(cx - 130.0f * s, cy - 44.0f * s, 260.0f * s, 38.0f * s, "CONTINUAR", nullptr, {HudActionType::Resume});
     u.Button(cx - 130.0f * s, cy + 4.0f * s, 260.0f * s, 38.0f * s, "GUARDAR", nullptr, {HudActionType::SaveGame});
     u.Button(cx - 130.0f * s, cy + 52.0f * s, 260.0f * s, 38.0f * s, "CONFIGURACIÓN", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Settings)});
-    u.Button(cx - 130.0f * s, cy + 100.0f * s, 260.0f * s, 38.0f * s, "GUARDAR Y SALIR", nullptr, {HudActionType::Quit});
+    u.Button(cx - 130.0f * s, cy + 100.0f * s, 260.0f * s, 38.0f * s, "PARTIDA EN RED", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Network)});
+    u.Button(cx - 130.0f * s, cy + 148.0f * s, 260.0f * s, 38.0f * s, "GUARDAR Y SALIR", nullptr, {HudActionType::Quit});
 }
 
 // --- Taller: modulos y motor, atracada en una estacion propia ---------------------------------

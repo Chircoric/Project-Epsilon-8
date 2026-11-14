@@ -333,7 +333,7 @@ Cómo quedó (`game/include/game/Net.h`, `game/src/Net.cpp`):
 
 Lo que se aparta del plan o queda pendiente:
 
-- **El juego en solitario no pasa por el servidor.** Sigue siendo directo; servidor y cliente en memoria solo se usan con `--loopback`. Hacerlo el modo por defecto es un paso aparte, cuando el loopback lleve más rodaje.
+- ~~El juego en solitario no pasa por el servidor.~~ **Desde el menú de red (fase 7) sí**: servidor y cliente en memoria es el modo normal, y `--direct` el antiguo.
 - **No se manda el guardado al entrar.** No hizo falta: la primera instantánea ya trae todo lo que el cliente ve.
 - **La instantánea pesa unos 20 kB y va entera en cada paso**: a 60 por segundo es más de 1 MB/s por cliente. `GameServer::snapshotEvery` la espacia; partirla en rápida y lenta y mandar solo diferencias es la fase 8.
 - **Sin interpolación ni predicción**: con una instantánea por paso no se nota; al espaciarlas, sí.
@@ -375,9 +375,20 @@ Cómo quedó:
 - **En el juego**: `--host` se anuncia en la red local y `--connect lan` busca partidas, las lista y entra en la primera.
 - **Probado**: en las pruebas (anuncio y búsqueda, servidor que guarda y recupera a tres jugadores) y con `epsilon_server.exe` y el juego en dos procesos, en dos rondas: partida nueva, y la misma carpeta cargada otra vez.
 
+**El menú (hecho después, el 13-11-2026):**
+
+- **El juego va siempre por servidor y cliente en memoria.** Lo que era `--loopback` es ahora lo normal, como preveía la fase 5; `--direct` deja el camino antiguo, sin servidor. Gracias a eso, abrir a la red es encender la escucha del servidor que ya está en marcha, y entrar en otra partida es cambiar la conexión del cliente.
+- **Página «Partida en red»**, en el menú principal y en la pausa (`NetworkPanel` en `GameHud.cpp`, `MenuPage::Network`, `HudInput::net`): estado, abrir o cerrar la partida propia, buscar en la red local (en segundo plano) y entrar en una de las encontradas. Dentro de la de otro, «Volver a mi partida».
+- **Entrar en la de otro con el juego en marcha**: el cliente cierra su conexión en memoria (su nave sale de su propio mundo, como en cualquier desconexión) y se conecta al otro servidor con nave propia. Si la partida propia no está abierta a la red, su mundo espera. Al volver, o si se pierde la conexión, el cliente se conecta otra vez al servidor de aquí y recupera su nave.
+- **`nave ver`, `jugador ver`, F2 y F3 vuelven a funcionar**: cambian el foco de la partida de verdad, y la conexión de este proceso pasa a ver y mandar como ese jugador (`GameServer::Follow`).
+- **Comando `red`** (`red abrir`, `red cerrar`, `red buscar`, `red entrar <n>`, `red volver`): lo mismo que los botones, para probar sin manos. Solo con `--cmd-at`, no con `--cmd`.
+- **Probado**: capturas del menú y de la página; abrir la partida; y, con un `epsilon_server.exe` aparte, buscar, entrar, jugar y volver, todo con el juego ya arrancado.
+
 Lo que falta:
 
-- **El menú no está hecho.** No hay «Crear partida» ni «Partidas en red local» en la interfaz: todo va por opciones al lanzar el juego. Hacerlo pide poder abrir o entrar en una partida con el juego ya arrancado, y hoy eso se decide al arrancar.
+- **Entrar de tripulante desde el menú**: el botón entra siempre con nave propia. De tripulante, solo con `--connect ... --join crew`.
+- **Escribir una dirección en el menú**: solo se entra en lo que se encuentra en la red local; con dirección, `--connect`.
+- Entrar bloquea el juego hasta tres segundos mientras espera al servidor.
 - **La consola del servidor no está**: el plan decía comandos por la entrada estándar. Los comandos viven en `main.cpp` del juego; habría que sacarlos a la biblioteca común.
 - **El cliente tiene que usar la misma semilla** que el servidor (la de por defecto, si no se pasa `--seed`); si no, se le rechaza por «otra galaxia».
 - **Los puestos de la tripulación no se guardan**: al volver, cada uno ocupa los que estén libres.

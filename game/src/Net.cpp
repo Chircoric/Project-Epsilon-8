@@ -446,6 +446,17 @@ bool GameServer::OpenToNetwork(int port, const std::string& name, int maxClients
     return true;
 }
 
+void GameServer::CloseNetwork() {
+    listener_.reset();  // al destruirse, sus conexiones quedan cerradas: el siguiente Update avisa a la sesion
+    beacon_.reset();
+}
+
+void GameServer::Follow(const Transport* link, int player) {
+    if (player < 0 || player >= session_.PlayerCount()) return;
+    for (Peer& peer : peers_)
+        if (peer.link.get() == link && peer.player >= 0) peer.player = player;
+}
+
 // El mundo una vez, y el archivo de cada jugador que haya entrado alguna vez.
 bool GameServer::Save(std::string* error) {
     if (saveFolder_.empty()) {
