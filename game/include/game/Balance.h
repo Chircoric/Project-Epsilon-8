@@ -93,6 +93,15 @@ struct ShipRules {
     double heatBurn = 0.11 * kCombatScale;  // casco por segundo a una vez la intensidad limite
     double sensorRange = 8.0e7;       // km
     double identifyRange = 6.0e6;     // km: mas lejos, solo una senal sin identificar
+    // Radar pasivo, segundo nivel: los cuerpos grandes (estrellas, planetas con masa, cinturones) se
+    // notan a escala de sistema como senal sin identificar. Las naves, estructuras y anomalias siguen
+    // con sensorRange. El alcance crece con el nivel de escaner y las antenas (kSensorBoost) y la
+    // niebla lo acorta o lo alarga igual que a sensorRange: con el nivel 1 y niebla media, unas 13 UA,
+    // el interior de un sistema inicial (35 a 80 UA de radio); con el nivel 5, todo el sistema.
+    double passiveBodyRange = 2.0e9;  // km con el nivel 1
+    double passiveBodyPerTier = 0.8;  // cada nivel de escaner suma esta parte del alcance del nivel 1
+    double passiveBodyMass = 1.0e22;  // kg: un planeta mas ligero (un enano) no se nota desde lejos
+    double passiveStarFactor = 10.0;  // una estrella de un sistema aun desconocido se nota a este multiplo
     double interactRange = 5.0e4;     // km para recoger de una estacion o explorar
     double repairPerHour = 60.0 * kCombatScale;  // en orbita de una estacion de energia propia
     double bow = 0.55;                // km del centro de la nave a la punta de la proa
@@ -141,6 +150,18 @@ struct StationRules {
     double shipyardDeploySpeed = 2.0;  // km/s: hay que estar casi parado respecto a lo que domina aqui
     double shipyardSlide = 1.6;        // km que se aparta hacia popa, ya abierta, antes de sacar los brazos
     double shipyardGoal = 1500.0;      // kt de material: la referencia de la barra, lo que pedira la primera nave minera
+
+    // Casco, escudo y defensa (docs/multijugador.md, 8 reglas 2 a 5 y 11). Cifras iniciales para probar.
+    int maxLevel = 30;
+    double hullPerLevel = 30.0;        // veces el casco de la fragata ligera, por nivel
+    double shieldPerLevel = 30.0;      // idem, el escudo: hasta P4, que lo hace modular
+    double absentFactor = 0.1;         // dano que recibe si su duenio no esta en la partida
+    double hitRadius = 1.0;            // km desde su centro: donde la alcanza un proyectil
+    // Hasta P5 (huecos y armas montadas) se defiende con torretas de serie: una por nivel. Las armas de
+    // estacion son las de las naves con el triple de dano.
+    int turretsPerLevel = 1;
+    double weaponDamage = 3.0;
+    double rangeFactor = 2.0;          // alcance de sus torretas respecto al de las de una nave
 };
 
 // Drones mineros: salen de sus bahias (modulo exterior) a un planeta o un campo de asteroides, minan
@@ -503,6 +524,70 @@ struct CinematicRules {
     double distance = 2.2;     // la camara, a estas veces el tamano del blanco
     double minimum = 0.25;     // km: y nunca mas cerca que esto
 };
+
+// Cifras iniciales de balanceo (docs/multijugador.md §8, «para probar»). Todavia no las usa la logica:
+// los pasos P2 a P12 del §9 las leeran. Unidades: UF = una fragata ligera.
+
+// Volumen de una nave = casco relativo^0,8 (en UF). Por clase, la variante normal de la tabla del §8.
+inline constexpr double kVolumeExponent = 0.8;
+// Dron no aparece en la tabla del §8: su valor sale de la formula (0,007^0,8).
+inline constexpr double kVolumeUF[kShipClassCount] = {0.0139, 0.2, 1.0, 3.2, 4.7, 11.0, 15.0, 40.0, 96.0, 600.0};
+
+// Hangar: un modulo de nivel n ocupa 10 · n^1,5 UF (nivel maximo 10).
+inline constexpr double kHangarModuleVolume = 10.0;
+inline constexpr double kHangarModuleExponent = 1.5;
+inline constexpr int kHangarModuleMaxLevel = 10;
+inline constexpr double kHangarTechPerLevel = 0.5;   // +50 % de volumen por nivel de tecnologia
+inline constexpr int kHangarTechMaxLevel = 5;
+inline constexpr int kHangarModulesPerStation = 4;
+inline constexpr int kInternetShipsPerServer = 200;  // para probar
+
+// Personas por nave en Internet, por clase. Dron 0 (no lleva a nadie; no esta en la tabla).
+inline constexpr int kCrewPerShip[kShipClassCount] = {0, 2, 4, 6, 8, 12, 20, 30, 30, 30};
+
+// Bonus por personas a bordo: dano y resistencia x(1 + 0,25 · ln n), con n personas dentro de la nave.
+inline constexpr double kCrewBonusPerLog = 0.25;
+
+// Estadistica de un tripulante: campana de Gauss, media 40 y desviacion 18, recortada a [0, 100].
+inline constexpr double kCrewStatMean = 40.0;
+inline constexpr double kCrewStatSigma = 18.0;
+inline constexpr double kCrewStatMin = 0.0;
+inline constexpr double kCrewStatMax = 100.0;
+// Mejora de un sub capitan: por estadistica, 1 % + 9 % × (valor ÷ 100).
+inline constexpr double kSubcaptainBase = 0.01;
+inline constexpr double kSubcaptainGain = 0.09;
+// Categoria por la media de las cuatro estadisticas: Recluta < 30, Veterano desde 30, Elite desde 50, Leyenda > 65.
+inline constexpr double kRankVeteran = 30.0;
+inline constexpr double kRankElite = 50.0;
+inline constexpr double kRankLegend = 65.0;
+
+// Fama (escala -1000 a +1000).
+inline constexpr int kFameMax = 1000;
+inline constexpr int kFameRecaptureBeacon = 50;
+inline constexpr int kFameBeaconDestroyed = -100;
+inline constexpr double kRecaptureCredits = 500.0;
+// Impuesto del mercado: base 5 %; -1 punto por cada 200 de fama positiva (minimo 2 %);
+// +1 punto por cada 100 de fama negativa (maximo 15 %).
+inline constexpr double kTaxBase = 0.05;
+inline constexpr double kTaxMin = 0.02;
+inline constexpr double kTaxMax = 0.15;
+inline constexpr int kTaxFameStepGood = 200;
+inline constexpr int kTaxFameStepBad = 100;
+
+// Flotilla de la faccion por nivel (1 a 4): clase de nave y cantidad base; la cantidad varia ±25 %.
+inline constexpr ShipClassId kFleetClass[4] = {ShipClassId::Corvette, ShipClassId::Frigate, ShipClassId::Cruiser, ShipClassId::Destroyer};
+inline constexpr int kFleetCount[4] = {3, 3, 4, 4};
+inline constexpr double kFleetCountSpread = 0.25;
+
+// Control del espacio. Anillo 0 y 1: siempre 100 %. Balizas desde el anillo 2 hasta el 6.
+// Base sin balizas para los anillos 2, 3, 4, 5, 6, 7 y 8 o mas (salvaje).
+inline constexpr int kBeaconFirstRing = 2;
+inline constexpr int kBeaconLastRing = 6;
+inline constexpr double kControlBase[7] = {70.0, 55.0, 40.0, 25.0, 15.0, 10.0, 0.0};
+inline constexpr double kBeaconActive = 50.0;     // baliza activa: + 50 · a(d)
+inline constexpr double kBeaconInactive = 30.0;   // baliza desactivada: - 30 · a(d)
+inline constexpr double kBeaconDistanceFalloff = 0.2;  // a(d) = 1 - 0,2 · d
+inline constexpr int kBeaconNoEffectDistance = 5;      // con d >= 5 no afecta
 
 struct Balance {
     DriveRules drive;

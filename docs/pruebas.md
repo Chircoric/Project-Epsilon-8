@@ -200,6 +200,10 @@ epsilon_server.exe --world mi_partida --name "Nebulosa" --port 27300
 | `--mode N`, `--seed N`, `--no-tutorial` | Solo para una partida nueva. Los que entren tienen que usar la misma semilla |
 | `--save-every S` | Segundos entre guardados (120) |
 | `--seconds S` | Se cierra solo pasado ese tiempo: para pruebas |
+| `--ranks archivo` | Categorías del personal. Por defecto, `rangos.txt` dentro de `--world` |
+| `--no-console` | No lee la entrada estándar |
+
+**Consola del servidor.** Lo que se escribe en su terminal (o se le pasa por una tubería) lo ejecuta el dueño: vale cualquier comando del juego (`saltar`, `creativo`, `nivel`, `aparecer`, `tiempo`…). Además: `ayuda`, `jugadores` (con id y categoría), `rangos`, `guardar`, `salir`, `rango <id> <jugador|moderador|administrador|dueño|desarrollador>` y `como <id> <orden…>`, que ejecuta la orden con la categoría de ese jugador. **Solo moderadores, administradores, dueños y desarrolladores pueden usar comandos**; un jugador sin categoría es rechazado sin que se ejecute nada. Receta: `"jugadores`ncomo local creativo si`nrango local moderador`ncomo local creativo si`nsalir`n" | epsilon_server.exe --seconds 10` (el primer `como` se rechaza y el segundo funciona).
 
 Para probarlo sin manos: `epsilon_server.exe --world prueba.sav --seconds 22 --no-tutorial` en un proceso y, dos segundos después, `epsilon_game.exe --connect lan --name Eva --frames 500 --screenshot cliente.png` en otro. Lanzándolo dos veces seguidas con la misma carpeta, la segunda vez el servidor dice `Partida de prueba.sav` y el jugador recupera su nave.
 

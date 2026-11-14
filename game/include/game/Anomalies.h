@@ -52,6 +52,7 @@ struct Anomaly {
     int weaponTier = 1;
     int computerTier = 1;
     double cooldown = 0;      // segundos simulados hasta el proximo disparo
+    double stationCooldown = 0;  // lo mismo, contra estaciones (no se guarda): el otro solo corre con una nave cerca
     ShieldKind shield = ShieldKind::EM;  // su campo: elige con que conviene dispararle
     double shieldCharge = 0, shieldMax = 0;
     // Solo las naves: su clase en la tabla ShipClass (Balance.h). De ella salen casco, escudo y velocidad.

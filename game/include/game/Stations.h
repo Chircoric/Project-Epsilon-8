@@ -28,6 +28,15 @@ namespace game {
 enum class StationKind : int { Power = 1, Shipyard = 2 };
 constexpr int kRetiredMiningKind = 0;
 
+// En que punto de su vida esta (docs/multijugador.md, 9.1). Los numeros van al guardado.
+enum class StationState : int {
+    Active = 0,     // en servicio
+    Upgrading = 1,  // mejora en curso: vulnerable (P6)
+    Debris = 2,     // destruida: casco 0, sigue en la lista y no produce (reponerla, P7)
+    Folded = 3      // origami plegada y anclada a una nave (P9)
+};
+inline bool Vulnerable(StationState state) { return state == StationState::Active || state == StationState::Upgrading; }
+
 enum class ModuleKind : int {
     Collector = 2,  // central: capta mas energia, y por tanto hace mas antimateria
     Capacitor,      // central: guarda mas
@@ -68,6 +77,21 @@ struct Station {
     eps::Quatd attitude;    // origami: la de la nave al soltarla; su eje es el de la nave (+Z del modelo girado)
     eps::Vec3d launch;      // origami: km, como site.offset: donde se abrio, antes de apartarse; no se guarda
     double producedUntil = -1.0;  // reloj (s) hasta el que ha producido; < 0: aun sin sello. No se guarda
+
+    // Defensa. Casco y escudo son la fraccion que queda de su maximo (que sale del nivel): 1 = entero.
+    int level = 1;          // 1 a StationRules::maxLevel
+    StationState state = StationState::Active;
+    double hull = 1.0;
+    double shield = 1.0;
+    std::string owner;      // id del jugador que la desplego; vacio = de nadie
+    double cooldown = 0;    // s simulados hasta la proxima salva de sus torretas. No se guarda
+};
+
+// Lo que dejo un impacto en una estacion.
+struct StationHit {
+    double shield = 0;      // lo que paro el escudo (en unidades de dano)
+    double hull = 0;        // lo que llego al casco
+    bool destroyed = false; // este impacto la dejo en escombros
 };
 
 class StationNetwork {
@@ -104,6 +128,15 @@ public:
     double MatterPerHour(const Station& s) const;
     double AntimatterCapacity(const Station& s) const;
     double MatterCapacity(const Station& s) const;
+
+    // Casco y escudo maximos, en unidades de dano: salen del nivel.
+    double MaxHull(const Station& s) const;
+    double MaxShield(const Station& s) const;
+    // Un impacto: primero el escudo y luego el casco. Con el duenio ausente solo cuenta la parte
+    // StationRules::absentFactor. Una estacion sin casco queda en escombros (Debris), no desaparece.
+    StationHit Hurt(int id, double amount, bool ownerPresent);
+    // Las torretas de serie hasta que P5 monte armas por huecos.
+    int Turrets(const Station& s) const;
 
     const std::vector<Station>& All() const { return stations_; }
     int NextId() const { return nextId_; }

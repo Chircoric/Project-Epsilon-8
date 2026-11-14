@@ -14,6 +14,7 @@
 #include <string>
 
 #include "game/Armament.h"
+#include "game/Console.h"
 #include "game/Defense.h"
 #include "game/Economy.h"
 #include "game/GameLayer.h"
@@ -467,6 +468,26 @@ static void TestStationRules() {
     std::mt19937 rng(3);
     const double perHour = power.AntimatterFrom(YieldOf(MakeStar(StarClass::G, rng)).energyPerHour);
     CHECK(perHour > 1.5 && perHour < 6.0);
+}
+
+// Cifras iniciales de balanceo (Balance.h, §8): valores clave y las formulas que los usan.
+static void TestBalanceBudgets() {
+    CHECK(kVolumeUF[static_cast<int>(ShipClassId::Freighter)] == 15.0);  // el carguero, 15 UF
+    CHECK(kVolumeUF[static_cast<int>(ShipClassId::Frigate)] == 1.0);
+    // Bonus con 4 personas: 1 + 0,25 · ln 4 = +34,7 %, redondeado a +35 %.
+    const double bonus4 = 1.0 + kCrewBonusPerLog * std::log(4.0);
+    CHECK(std::abs(bonus4 - 1.35) < 0.005);
+    // Hangar: nivel 1 = 10 UF, nivel 5 = 112 UF (10 · 5^1,5 = 111,8).
+    CHECK(std::abs(kHangarModuleVolume * std::pow(1.0, kHangarModuleExponent) - 10.0) < 1e-9);
+    CHECK(std::abs(kHangarModuleVolume * std::pow(5.0, kHangarModuleExponent) - 112.0) < 0.5);
+    CHECK(kCrewPerShip[static_cast<int>(ShipClassId::Freighter)] == 20);
+    CHECK(kCrewPerShip[static_cast<int>(ShipClassId::Corvette)] == 2);
+    // Estadistica de tripulante: media 40, desviacion 18.
+    CHECK(kCrewStatMean == 40.0 && kCrewStatSigma == 18.0);
+    // Control: en el anillo 2, baliza activa en el propio sistema da 100; desactivada da 40.
+    CHECK(std::min(kControlBase[0] + kBeaconActive, 100.0) == 100.0);
+    CHECK(std::clamp(kControlBase[0] - kBeaconInactive, 0.0, 100.0) == 40.0);
+    CHECK(kTaxBase == 0.05 && kFameRecaptureBeacon == 50);
 }
 
 static void TestAnomalies() {
@@ -1971,6 +1992,147 @@ static void TestScanner() {
     bool deepest = false;
     for (const Anomaly& a : g.Anomalies()) deepest = deepest || (a.cold && a.signature > 1);
     CHECK(deepest);
+}
+
+// Radar pasivo en dos niveles: los cuerpos grandes se notan a escala de sistema como eco de masa;
+// naves, estructuras y anomalias siguen con el alcance corto y la regla de la firma.
+static void TestPassiveRadar() {
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 42);
+    g.Conversation().Stop();
+    g.Step(0.05, {});
+    const auto find = [&](const TargetRef& t) -> const Contact* {
+        for (const Contact& c : g.Contacts())
+            if (c.target == t) return &c;
+        return nullptr;
+    };
+    const auto antennas = [&] { return 1.0 + kSensorBoost * WorkingModules(g.Ship(), ShipModuleKind::SensorArray); };
+
+    // La niebla acorta los dos alcances por igual; el de masas crece ademas con el escaner y las antenas.
+    CHECK(g.PassiveBodyRange() > g.PassiveRange() * 10.0);
+    CHECK(std::abs(g.PassiveBodyRange() / g.PassiveRange() - rules.ship.passiveBodyRange * antennas() / rules.ship.sensorRange) < 1e-9);
+    const double tier1 = g.PassiveBodyRange(), near1 = g.PassiveRange();
+    g.Ship().scannerTier = 5;
+    CHECK(std::abs(g.PassiveBodyRange() / tier1 - (1.0 + rules.ship.passiveBodyPerTier * 4.0)) < 1e-9);
+    CHECK(g.PassiveRange() == near1);  // las naves y anomalias no ganan alcance con el escaner
+    g.Ship().scannerTier = 1;
+    const int before = WorkingModules(g.Ship(), ShipModuleKind::SensorArray);
+    for (ShipModuleKind& m : g.Ship().loadout.modules) {
+        if (m == ShipModuleKind::DroneBay) continue;
+        const ShipModuleKind old = m;
+        m = ShipModuleKind::SensorArray;
+        if (WorkingModules(g.Ship(), ShipModuleKind::SensorArray) == before + 1) {
+            CHECK(std::abs(g.PassiveBodyRange() / tier1 - (1.0 + kSensorBoost * (before + 1)) / (1.0 + kSensorBoost * before)) < 1e-9);
+        }
+        m = old;
+        break;
+    }
+
+    // Un planeta con masa, sin barrer: entre los dos alcances es un eco de masa sin nombre.
+    const StarSystemData& system = *g.GetWorld().systems[0];
+    TargetRef planet;
+    for (std::size_t b = 0; b < system.bodies.size(); ++b) {
+        const BodyData& body = system.bodies[b];
+        const TargetRef t{Kind::Planet, 0, static_cast<int>(b)};
+        if (body.parent < 0 && !body.destroyed && body.kind != PlanetClass::Comet && body.kind != PlanetClass::Asteroid && body.mass >= rules.ship.passiveBodyMass && !g.Scanned(t)) planet = t;
+    }
+    CHECK(planet.kind == Kind::Planet);
+    const double middle = std::sqrt(g.PassiveRange() * g.PassiveBodyRange());
+    CHECK(g.JumpTo(planet, middle));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    const Contact* echo = find(planet);
+    CHECK(echo != nullptr);
+    if (echo) {
+        CHECK(echo->coarse && !echo->identified && echo->stance == Stance::None);
+        CHECK(echo->name == "Señal sin identificar");
+        CHECK(echo->distance > g.PassiveRange() && echo->distance < g.PassiveBodyRange());
+    }
+
+    // Mas alla del alcance de masas no esta; con mas nivel de escaner, si.
+    CHECK(g.JumpTo(planet, g.PassiveBodyRange() * 2.0));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    CHECK(find(planet) == nullptr);
+    g.Ship().scannerTier = 5;
+    Run(g, 1.0);
+    echo = find(planet);
+    CHECK(echo != nullptr && echo->coarse);
+    g.Ship().scannerTier = 1;
+
+    // De cerca deja de ser un eco de masa, aunque siga sin nombre hasta barrerlo.
+    CHECK(g.JumpTo(planet, g.PassiveRange() * 0.3));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    echo = find(planet);
+    CHECK(echo != nullptr && !echo->coarse && !echo->identified);
+
+    // Una anomalia no se nota a escala de sistema: conserva el alcance corto.
+    TargetRef loud, cold;
+    for (const Anomaly& a : g.Anomalies()) {
+        if (a.revealed) continue;
+        if (!a.cold && loud.kind == Kind::None) loud = {Kind::Anomaly, a.system, a.id};
+        if (a.cold && a.system == 0 && cold.kind == Kind::None) cold = {Kind::Anomaly, a.system, a.id};
+    }
+    CHECK(loud.kind == Kind::Anomaly && cold.kind == Kind::Anomaly);
+    CHECK(g.JumpTo(loud, std::sqrt(g.PassiveRange() * g.PassiveBodyRange())));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    CHECK(find(loud) == nullptr);
+    CHECK(g.JumpTo(loud, g.PassiveRange() * 0.5));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    CHECK(find(loud) != nullptr && !find(loud)->coarse);
+    // Y lo frio sigue sin existir sin barrido, por mucho escaner que se lleve.
+    g.Ship().scannerTier = 8;
+    CHECK(g.JumpTo(cold, g.PassiveRange() * 0.5));
+    Run(g, 1.0);
+    g.CancelAutopilot();
+    Run(g, 1.0);
+    CHECK(find(cold) == nullptr);
+    g.Ship().scannerTier = 1;
+
+    // Relevancia: el tope no se come lo cercano. 30 estaciones aqui al lado no tapan una nave
+    // hostil mas lejos, y un eco de masa de este sistema gana a la estrella de otro.
+    std::vector<Contact> all;
+    const auto make = [&](Kind kind, int sys, int index, double distance, bool coarse = false) {
+        Contact c;
+        c.target = {kind, sys, index};
+        c.distance = distance;
+        c.coarse = coarse;
+        c.identified = !coarse;
+        all.push_back(c);
+    };
+    for (int i = 0; i < 30; ++i) make(Kind::Station, 0, i, 10.0 + i);
+    make(Kind::Anomaly, 0, 900, 5.0e6);
+    make(Kind::Planet, 0, 3, 4.0e8, true);
+    make(Kind::Star, 7, 0, 6.0e11);
+    make(Kind::Station, 7, 50, 6.0e11);
+    std::vector<Contact> kept = KeepRelevantContacts(all, 0, 24);
+    CHECK(kept.size() == 24);
+    const auto has = [&](const std::vector<Contact>& v, Kind kind, int index) {
+        for (const Contact& c : v)
+            if (c.target.kind == kind && c.target.index == index) return true;
+        return false;
+    };
+    CHECK(has(kept, Kind::Anomaly, 900));
+    for (std::size_t i = 1; i < kept.size(); ++i) CHECK(kept[i - 1].distance <= kept[i].distance);
+    all.resize(10);  // diez estaciones de aqui
+    make(Kind::Anomaly, 0, 900, 5.0e6);
+    make(Kind::Planet, 0, 3, 4.0e8, true);
+    make(Kind::Star, 7, 0, 6.0e11);
+    make(Kind::Station, 7, 50, 6.0e11);
+    kept = KeepRelevantContacts(all, 0, 12);
+    CHECK(has(kept, Kind::Anomaly, 900) && has(kept, Kind::Planet, 3) && !has(kept, Kind::Star, 0));
+    kept = KeepRelevantContacts(all, 0, 13);
+    CHECK(has(kept, Kind::Star, 0) && !has(kept, Kind::Station, 50));
+    CHECK(ContactRelevance(all[10], 0) == 0 && ContactRelevance(all[0], 0) == 1 && ContactRelevance(all[11], 0) == 3);
 }
 
 static Anomaly* FirstStructure(GameSession& g) {
@@ -5158,6 +5320,32 @@ static std::string PlayGolden() {
     return WriteSave(g.Snapshot());
 }
 
+// Clase y diseno por nave (3a.6, decision 12): una crucero y la de serie conviven con sus propias cifras.
+static void TestVesselClasses() {
+    Balance rules;
+    auto engine = MakeEngine(rules, 9);
+    GameSession g(*engine, rules, 9, GameModeId::Peaceful);
+    Run(g, 0.5);
+    const int cruiser = g.AddVessel(100.0, static_cast<int>(ShipClassId::Cruiser), static_cast<int>(ShipVariant::Normal));
+    const int plain = g.AddVessel(100.0);
+    const Vessel& a = g.VesselAt(0);
+    const Vessel& c = g.VesselAt(g.IndexOfVessel(cruiser));
+    const Vessel& p = g.VesselAt(g.IndexOfVessel(plain));
+    CHECK(a.rules.classId == ShipClassId::Frigate && p.rules.classId == ShipClassId::Frigate && p.rules.hull == rules.ship.hull);
+    CHECK(c.rules.classId == ShipClassId::Cruiser && c.rules.variant == ShipVariant::Normal);
+    CHECK(std::abs(c.rules.hull / rules.ship.hull - ShipClassOf(ShipClassId::Cruiser, ShipVariant::Normal).hull / ShipClassOf(ShipClassId::Frigate, ShipVariant::Light).hull) < 1e-9);
+    CHECK(c.rules.radius > a.rules.radius && c.ship.hull == c.rules.hull && a.ship.hull == rules.ship.hull);
+    // Las cifras que se leen son las de la nave en curso, y cambian con el foco.
+    CHECK(g.ShipSpec().classId == ShipClassId::Frigate);
+    CHECK(g.SetFocus(g.IndexOfVessel(cruiser)) && g.ShipSpec().classId == ShipClassId::Cruiser && g.ShipRadius() == c.rules.radius);
+    // Un diseno propio de una nave no toca el de las demas.
+    auto belly = std::make_shared<ShipDesign>(DesignOf(a.ship));
+    belly->dockPort = {0, 30, 450};
+    g.SetFocus(0);
+    const_cast<Vessel&>(g.VesselAt(g.IndexOfVessel(plain))).ship.design = belly;
+    CHECK(&DesignOf(p.ship) == belly.get() && &DesignOf(a.ship) == &CurrentShipDesign() && &DesignOf(c.ship) == &CurrentShipDesign());
+}
+
 // Dos naves en el mismo mundo, cada una con su mando (fase 3a de docs/multijugador.md).
 static void TestFleet() {
     using C = CommandType;
@@ -6510,6 +6698,144 @@ static int GoldenDifferences(const std::string& expected, const std::string& act
     return differences;
 }
 
+// ---- Estaciones en combate (docs/multijugador.md, 8 reglas 2 a 5; 9, paso P2) ---------------------
+
+// Una central atacada por una nave hostil. owner: de quien es; con otro, su duenio no esta en la partida.
+// Devuelve lo que perdio el escudo (fraccion) y lo que perdio el hostil (casco).
+struct StationFight {
+    double shieldLost = 0, hullLost = 0, alienHull = 0;
+};
+
+static StationFight FightAtStation(const std::string& owner) {
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 20261105, GameModeId::Normal);
+    PlaceStation(g);
+    const int id = g.Stations().All().back().id;
+    g.Stations().Find(id)->owner = owner;
+    const int foe = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 2.0e4);
+    // La central orbita a su estrella, lejos de la nave: el hostil se pone junto a ella.
+    {
+        Anomaly& a = g.Anomalies().back();
+        const World& w = g.GetWorld();
+        a.offset = g.StationPosition(*g.Stations().Find(id)) + Vec3d{800.0, 0.0, 0.0} - w.scene.WorldPosition(w.sectors[static_cast<std::size_t>(a.system)]);
+        a.home = a.offset;
+    }
+    StationFight out;
+    out.alienHull = g.Anomalies().back().hull + g.Anomalies().back().shieldCharge;  // su escudo cuenta: el dano pasa por el primero
+    for (int i = 0; i < 400 && g.Stations().Find(id)->shield >= 1.0; ++i) Run(g, 0.1);
+    Run(g, 10.0);  // y un poco mas, con las salvas en vuelo
+    const Station* s = g.Stations().Find(id);
+    out.shieldLost = 1.0 - s->shield;
+    out.hullLost = 1.0 - s->hull;
+    const Anomaly* a = nullptr;
+    for (const Anomaly& n : g.Anomalies())
+        if (n.id == foe) a = &n;
+    out.alienHull = a ? out.alienHull - (a->hull + a->shieldCharge) : out.alienHull;  // lo que perdio (o todo, si ya no esta)
+    return out;
+}
+
+static void TestStationCombat() {
+    const Balance rules;
+    StationNetwork net(rules.stations);
+    Inventory cargo;
+    cargo.Add(Resource::Metal, 1.0e4);
+    cargo.Add(Resource::Silicate, 1.0e4);
+    StationSite site;
+    site.star = 0;
+    const int id = net.Deploy(StationKind::Power, site, "c", {}, cargo);
+    CHECK(id > 0);
+    // Otra igual, para el duenio ausente. Las dos antes de tomar referencias: la lista puede moverse.
+    StationSite other;
+    other.star = 1;
+    const int twin = net.Deploy(StationKind::Power, other, "d", {}, cargo);
+    Station& s = *net.Find(id);
+    Station& absent = *net.Find(twin);
+    // Sale entera, de nivel 1, activa y sin duenio; el maximo sale del nivel: 30 fragatas ligeras.
+    CHECK(s.level == 1 && s.state == StationState::Active && s.hull == 1.0 && s.shield == 1.0 && s.owner.empty());
+    CHECK(std::abs(net.MaxHull(s) - 30.0 * kReferenceHull) < 1e-6);
+    CHECK(std::abs(net.MaxShield(s) - 30.0 * kReferenceHull) < 1e-6);
+    CHECK(net.Turrets(s) == 1);
+    s.level = 3;
+    CHECK(std::abs(net.MaxHull(s) - 90.0 * kReferenceHull) < 1e-6 && net.Turrets(s) == 3);
+    s.level = 1;
+
+    // Primero el escudo, luego el casco.
+    const double shield = net.MaxShield(s), hull = net.MaxHull(s);
+    StationHit hit = net.Hurt(id, shield * 0.25, true);
+    CHECK(std::abs(hit.shield - shield * 0.25) < 1e-6 && hit.hull == 0.0 && !hit.destroyed);
+    CHECK(std::abs(s.shield - 0.75) < 1e-12 && s.hull == 1.0);
+    hit = net.Hurt(id, shield * 0.75 + hull * 0.5, true);
+    CHECK(s.shield == 0.0 && std::abs(s.hull - 0.5) < 1e-9 && std::abs(hit.hull - hull * 0.5) < 1e-6);
+
+    // Con el duenio ausente recibe 1/10 del dano: el mismo golpe sobre otra estacion entera.
+    net.Hurt(twin, shield * 0.5, false);
+    CHECK(std::abs((1.0 - absent.shield) - 0.05) < 1e-12);
+    net.Hurt(twin, shield * 0.5, true);
+    CHECK(std::abs((1.0 - absent.shield) - 0.55) < 1e-12);
+
+    // Sin casco no desaparece: queda en escombros, en la lista, y ya no recibe ni produce.
+    hit = net.Hurt(id, hull, true);
+    CHECK(hit.destroyed && s.state == StationState::Debris && s.hull == 0.0);
+    CHECK(net.All().size() == 2 && net.Find(id) != nullptr);
+    CHECK(!net.Hurt(id, hull, true).destroyed && s.state == StationState::Debris);
+    s.yield.energyPerHour = 9.0e5;
+    s.yield.matterPerHour = 5.0;
+    net.Produce(2.0);
+    CHECK(s.storedAntimatter == 0.0 && s.stored.Get(Resource::StellarMatter) == 0.0);
+
+    // Un hostil ataca una central de verdad: sus proyectiles le bajan el escudo y sus torretas le responden.
+    const StationFight present = FightAtStation("local");
+    CHECK(present.shieldLost > 0.0 && present.hullLost == 0.0);
+    CHECK(present.alienHull > 0.0);  // y ella le quita casco al hostil
+    // Mismo combate, duenio ausente: exactamente la decima parte del dano.
+    const StationFight away = FightAtStation("ausente");
+    CHECK(away.shieldLost > 0.0 && std::abs(away.shieldLost / present.shieldLost - 0.1) < 1e-6);
+    std::printf("  escudo perdido: presente %.5f, ausente %.5f; casco del hostil -%.0f\n", present.shieldLost, away.shieldLost, present.alienHull);
+
+    // Ida y vuelta del guardado: nivel, estado, casco, escudo y duenio.
+    Balance world;
+    auto engine = MakeEngine(world);
+    GameSession g(*engine, world, 20261105, GameModeId::Normal);
+    PlaceStation(g);
+    const int mine = g.Stations().All().back().id;
+    std::string plain = WriteSave(g.Snapshot());
+    CHECK(plain.find("\ndefensa " + std::to_string(mine) + " 1 0 1 1 | local\n") != std::string::npos);  // desplegada: nivel 1, entera
+    Station& edited = *g.Stations().Find(mine);
+    edited.owner.clear();
+    CHECK(WriteSave(g.Snapshot()).find("\ndefensa ") == std::string::npos);  // sin nada que contar, no se escribe
+    edited.level = 4;
+    edited.state = StationState::Debris;
+    edited.hull = 0.0;
+    edited.shield = 0.125;
+    edited.owner = "ana maria";
+    const std::string text = WriteSave(g.Snapshot());
+    const std::optional<SaveData> back = ReadSave(text);
+    CHECK(back && back->world.stations.size() == 1);
+    if (back && !back->world.stations.empty()) {
+        const Station& r = back->world.stations.front();
+        CHECK(r.level == 4 && r.state == StationState::Debris && r.hull == 0.0 && r.shield == 0.125 && r.owner == "ana maria");
+        CHECK(WriteSave(*back) == text);
+    }
+    // Una partida de la version 13 se rechaza; la actual es la 14.
+    std::string why;
+    CHECK(kSaveVersion == 14);
+    CHECK(!ReadSave(WithVersion(text, 13), &why) && why.find("anterior") != std::string::npos);
+
+    // La instantanea de red lleva lo mismo, y ida y vuelta da los mismos bytes.
+    const SnapshotData snap = g.MakeSnapshot(0);
+    const Packet packet = EncodeSnapshot(snap);
+    SnapshotData got;
+    CHECK(DecodeSnapshot(packet, got) && EncodeSnapshot(got) == packet);
+    CHECK(got.stations.size() == 1);
+    if (!got.stations.empty()) {
+        const Station& r = got.stations.front();
+        CHECK(r.level == 4 && r.state == StationState::Debris && r.hull == 0.0 && r.shield == 0.125 && r.owner == "ana maria");
+    }
+    SnapshotData joined;
+    CHECK(JoinSnapshot(SplitSnapshot(snap), joined) && joined.stations.size() == 1 && joined.stations.front().owner == "ana maria");
+}
+
 static void TestGoldenGame() {
     const std::string first = PlayGolden();
     // Dos veces seguidas debe dar exactamente lo mismo: sin eso, la comparacion no vale nada.
@@ -6541,6 +6867,86 @@ static void TestGoldenGame() {
         out << first;
         std::printf("  %d lineas distintas. La partida de ahora queda en %s\n  Si el cambio es querido: epsilon_game_tests.exe --regenerar-dorada\n", differences, now.c_str());
     }
+}
+
+// La consola vive en la biblioteca comun y solo la usa el personal (Console.h).
+static void TestConsole() {
+    // Las categorias y quien puede usar comandos: moderador, administrador, dueño y desarrollador; el jugador no.
+    CHECK(!CanUseCommands(Rank::Player));
+    CHECK(CanUseCommands(Rank::Moderator));
+    CHECK(CanUseCommands(Rank::Admin));
+    CHECK(CanUseCommands(Rank::Owner));
+    CHECK(CanUseCommands(Rank::Developer));
+    Rank rank = Rank::Player;
+    CHECK(ParseRank("Moderador", rank) && rank == Rank::Moderator);
+    CHECK(ParseRank("admin", rank) && rank == Rank::Admin);
+    CHECK(ParseRank("dueno", rank) && rank == Rank::Owner);
+    CHECK(ParseRank("dueño", rank) && rank == Rank::Owner);
+    CHECK(ParseRank("dev", rank) && rank == Rank::Developer);
+    CHECK(!ParseRank("rey", rank));
+
+    Balance rules;
+    auto engine = MakeEngine(rules);
+    GameSession g(*engine, rules, 20261105, GameModeId::Normal);
+    TargetRef target;
+    RegisterGameCommands(engine->Commands(), g, target);
+    g.Step(GameSession::kFixedStep, {});
+
+    // Un jugador no ejecuta nada: ni los trucos del juego ni los del motor, y el mundo no cambia.
+    bool allowed = true;
+    CHECK(!g.Creative());
+    const std::string refusal = RunCommand(engine->Commands(), Rank::Player, "creativo si", &allowed);
+    CHECK(!allowed);
+    CHECK(!g.Creative());
+    CHECK(refusal.find("permiso") != std::string::npos);
+    const double timeScale = g.TimeScale();
+    RunCommand(engine->Commands(), Rank::Player, "tiempo 500", &allowed);
+    CHECK(!allowed && g.TimeScale() == timeScale);
+    const Vec3d where = g.Ship().position;
+    RunCommand(engine->Commands(), Rank::Player, "saltar planeta 30000", &allowed);
+    CHECK(!allowed && Length(g.Ship().position - where) == 0.0);
+    RunCommand(engine->Commands(), Rank::Player, "desactivar grano", &allowed);
+    CHECK(!allowed);
+
+    // Cada categoria de personal si.
+    const Rank staff[] = {Rank::Moderator, Rank::Admin, Rank::Owner, Rank::Developer};
+    for (const Rank r : staff) {
+        allowed = false;
+        g.SetCreative(false);
+        const std::string answer = RunCommand(engine->Commands(), r, "creativo si", &allowed);
+        CHECK(allowed);
+        CHECK(g.Creative());
+        CHECK(answer.find("Creativo activado") != std::string::npos);
+    }
+    // Y con el mismo texto que antes, el comando de siempre funciona: el juego sigue igual.
+    CHECK(RunCommand(engine->Commands(), Rank::Owner, "emisores 5") == "5");
+    CHECK(g.Ship().emitters == 5);
+    CHECK(RunCommand(engine->Commands(), Rank::Owner, "nave").find("Naves:") == 0);
+
+    // La lista de personal: quien no esta, es jugador; se guarda y se vuelve a leer.
+    RankBook book;
+    CHECK(book.Of("desconocido") == Rank::Player);
+    book.Set("ana", Rank::Moderator);
+    book.Set("luis", Rank::Developer);
+    book.Set("eva", Rank::Admin);
+    book.Set("eva", Rank::Player);  // la quita
+    CHECK(book.Of("ana") == Rank::Moderator && book.Of("luis") == Rank::Developer && book.Of("eva") == Rank::Player);
+    const std::string file = (std::filesystem::temp_directory_path() / "epsilon_rangos_prueba.tmp").string();
+    std::string error;
+    CHECK(book.Save(file, &error));
+    RankBook again;
+    CHECK(again.Load(file, &error));
+    CHECK(again.All().size() == 2 && again.Of("ana") == Rank::Moderator && again.Of("luis") == Rank::Developer);
+    {
+        std::ofstream out(file, std::ios::trunc);
+        out << "# comentario\nana moderador\nluis reyezuelo\n";
+    }
+    RankBook broken;
+    CHECK(!broken.Load(file, &error));
+    CHECK(broken.All().empty());
+    std::filesystem::remove(file);
+    RankBook missing;
+    CHECK(missing.Load(file, &error) && missing.All().empty());  // sin archivo, nadie tiene categoria
 }
 
 int main(int argc, char** argv) {
@@ -6586,6 +6992,7 @@ int main(int argc, char** argv) {
         {"Ordenes y paso fijo", TestOrdersAndFixedStep},
         {"Sellos de tiempo", TestTimeStamps},
         {"Flota: dos naves", TestFleet},
+        {"Flota: clase por nave", TestVesselClasses},
         {"Tripulacion: dos jugadores en una nave", TestCrew},
         {"Burbujas: naves en sistemas distintos", TestBubbles},
         {"Servidor y cliente en memoria", TestNet},
@@ -6593,10 +7000,12 @@ int main(int argc, char** argv) {
         {"Instantaneas por diferencias", TestSnapshotDeltas},
         {"Red (ENet) en esta maquina", TestNetwork},
         {"Red local y servidor sin jugador", TestLanAndServer},
+        {"Consola: solo el personal usa comandos", TestConsole},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},
         {"Dano estructural", TestStructuralDamage},
+        {"Cifras iniciales de balanceo", TestBalanceBudgets},
         {"Zonas del casco", TestHullZones},
         {"Zonas alienigenas y cinematica", TestAlienZones},
         {"Modelos de combate (fase E)", TestCombatModels},
@@ -6621,6 +7030,7 @@ int main(int argc, char** argv) {
         {"Economia", TestEconomy},
         {"Motores", TestDrive},
         {"Reglas de estaciones", TestStationRules},
+        {"Estaciones en combate", TestStationCombat},
         {"Anomalias", TestAnomalies},
         {"Partida completa", TestFullLoop},
         {"Animacion de la origami", TestOrigamiAnimation},
@@ -6645,6 +7055,7 @@ int main(int argc, char** argv) {
         {"Coste de la curvatura", TestWarpCost},
         {"Viaje con curvatura", TestWarpRoute},
         {"Escaner", TestScanner},
+        {"Radar pasivo", TestPassiveRadar},
         {"Primera estructura y eco frio", TestColdEcho},
         {"Modos y derrota", TestModes},
         {"Dialogos", TestDialogue},

@@ -354,6 +354,9 @@ std::string WriteWorld(const WorldSave& d) {
         out << ' ' << t.modules.size();
         for (const Module& m : t.modules) out << ' ' << static_cast<int>(m.kind) << ' ' << m.level;
         out << " | " << t.name << '\n';
+        // Defensa: solo si no es la de una estacion recien desplegada y sin duenio (docs/multijugador.md, 9.2).
+        if (t.level != 1 || t.state != StationState::Active || t.hull < 1.0 || t.shield < 1.0 || !t.owner.empty())
+            out << "defensa " << t.id << ' ' << t.level << ' ' << static_cast<int>(t.state) << ' ' << t.hull << ' ' << t.shield << " | " << t.owner << '\n';
         // La origami no orbita: su sitio y su orientacion van en una linea aparte.
         if (t.kind == StationKind::Shipyard)
             out << "lugar " << t.id << ' ' << t.site.offset << ' ' << t.attitude.x << ' ' << t.attitude.y << ' ' << t.attitude.z << ' ' << t.attitude.w << '\n';
@@ -437,6 +440,19 @@ std::optional<WorldSave> ReadWorld(const std::string& text, std::string* error) 
                 t.modules.push_back(module);
             }
             d.stations.push_back(std::move(t));
+        } else if (key == "defensa") {
+            int id = 0, level = 1, state = 0;
+            double hull = 1.0, shield = 1.0;
+            in >> id >> level >> state >> hull >> shield;
+            for (Station& t : d.stations) {
+                if (t.id != id) continue;
+                t.level = std::clamp(level, 1, 1000);  // el tope real, el de las reglas, lo aplica la red de estaciones
+                t.state = state >= 0 && state <= static_cast<int>(StationState::Folded) ? static_cast<StationState>(state) : StationState::Active;
+                t.hull = std::clamp(hull, 0.0, 1.0);
+                t.shield = std::clamp(shield, 0.0, 1.0);
+                t.owner = name;
+                break;
+            }
         } else if (key == "lugar") {
             int id = 0;
             in >> id;

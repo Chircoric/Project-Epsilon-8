@@ -53,8 +53,15 @@ struct Contact {
     eps::Vec3d position;
     double distance = 0;
     bool identified = false;
+    bool coarse = false;  // eco de masa a escala de sistema: solo se sabe que hay algo grande
     Stance stance = Stance::None;
 };
+
+// Lo que pesa un contacto cuando hay mas de los que caben: 0 es lo mas relevante (lo que puede
+// disparar o acercarse), luego el sistema actual y al final lo de otros sistemas.
+int ContactRelevance(const Contact& c, int currentSystem);
+// Se queda con los limit mas relevantes y los devuelve ordenados de cerca a lejos.
+std::vector<Contact> KeepRelevantContacts(std::vector<Contact> all, int currentSystem, std::size_t limit);
 
 // Un dron minero (Balance.h, DroneRules). Sale de su bahia, vuela al sitio, mina hasta llenarse,
 // vuelve, descarga en la bodega de la nave y repite mientras tenga sitio asignado.
@@ -281,6 +288,9 @@ struct Vessel {
     int bubble = 0;  // la burbuja en la que esta: indice en GameSession::bubbles_
     int settled = -1;  // el sistema dentro del que estaba al acabar el ultimo paso; -1: en espacio abierto
     ShipState ship;
+    // Clase y cifras de ESTA nave (decision 12, fase 3a.6): casco, radio, bodega, maniobra... La sesion
+    // guarda en rules_.ship las de serie, de las que parte cada nave nueva (RulesForClass).
+    ShipRules rules;
 
     // Vuelo, ruta y orbita.
     std::optional<TargetRef> autopilot, orbiting, tracking;
@@ -395,7 +405,7 @@ struct WorldState {
 
 // Una zona simulada: su reloj y lo que vuela o flota en ella.
 struct Bubble {
-    explicit Bubble(std::uint32_t seed) : rng(seed), fx(seed ^ 0x9E3779B9u) {}
+    explicit Bubble(std::uint32_t seed) : rng(seed), stationRng(seed ^ 0x51ED270Bu), fx(seed ^ 0x9E3779B9u) {}
     // Su mundo cargado: cada burbuja tiene su motor, con su origen flotante y sus sistemas. La primera
     // usa el que recibio la sesion; las demas, uno propio (owned) que hace la fabrica de motores.
     eps::Engine* engine = nullptr;
@@ -414,6 +424,7 @@ struct Bubble {
     // y solo lo usara el servidor; fx es para lo que solo se ve (como giran los trozos, por donde pasea
     // la tripulacion) y cada cliente tendra el suyo. Gastar de fx no cambia la partida.
     std::mt19937 rng;
+    std::mt19937 stationRng;  // la punteria y las recargas del combate de estaciones: aparte, para no mover la de las naves
     std::mt19937 fx;
     // La cubierta de la estacion donde hay alguien a pie.
     DeckPlan deck;
@@ -514,7 +525,8 @@ public:
     int IndexOfVessel(int id) const { return IndexOfId(id); }  // -1 si no existe
     // Una nave mas, a km del costado de la del foco, parada, con su jugador. Devuelve su id. Mientras
     // haya varias, ninguna puede salir del sistema donde estan (limite provisional hasta las burbujas).
-    int AddVessel(double km = 20.0);
+    // classId < 0: la clase de serie. Con clase, la nave sale con sus cifras (RulesForClass) y el diseno de serie.
+    int AddVessel(double km = 20.0, int classId = -1, int variant = 0);
     // Una orden para una nave concreta, por su id.
     CommandResult ApplyTo(int vesselId, const ShipCommand& command);
     GameSession(const GameSession&) = delete;  // guarda punteros a sus propias naves
@@ -636,7 +648,9 @@ public:
     void TrackTarget(const TargetRef& target);
     void StopTracking() { vessel_->tracking.reset(); }
     const std::optional<TargetRef>& Tracking() const { return vessel_->tracking; }
-    double ShipRadius() const { return rules_.ship.radius; }
+    double ShipRadius() const { return vessel_->rules.radius; }
+    // Las cifras y el diseno de la nave en curso (la del foco, fuera de Step).
+    const ShipRules& ShipSpec() const { return vessel_->rules; }
     eps::Vec3d ShipVelocity() const;             // en el mundo
     std::vector<GravitySource> GravitySources() const;  // astros que tiran de los proyectiles aqui
     int Kills() const { return pilot_->kills; }
@@ -682,6 +696,10 @@ public:
     bool Scanning() const { return vessel_->scanProgress >= 0.0; }
     double ScanProgress() const { return vessel_->scanProgress; }
     double ScanRange() const;
+    // Radar pasivo: km a los que se notan las naves, estructuras y anomalias, y a los que se notan los
+    // cuerpos grandes como eco de masa. Los dos dependen de la niebla; el segundo, ademas, del escaner.
+    double PassiveRange() const;
+    double PassiveBodyRange() const;
     double EchoRange() const;    // hasta donde oye el eco de lo frio: ScannerRules::echoFactor veces el alcance
     const std::string& LastScan() const { return vessel_->lastScan; }
     const EchoHint& Echo() const { return vessel_->echo; }
@@ -910,6 +928,13 @@ private:
     void UpdateCombat(double seconds);
     void StepProjectiles(double seconds);
     void FireAlien(Anomaly& a, const eps::Vec3d& position);
+    // Estaciones en combate (docs/multijugador.md, 8 reglas 2 a 4): los hostiles las atacan y ellas se defienden.
+    void UpdateStations(double seconds);
+    bool StationHosted(const Station& s) const;  // su sistema esta en la burbuja en curso, con una nave en vuelo
+    bool OwnerPresent(const Station& s) const;   // su duenio esta en la partida; sin el recibe 1/10 del dano
+    void HurtStation(Station& s, double amount, const std::string& source);
+    void FireAtStation(Anomaly& a, const eps::Vec3d& at, const eps::Vec3d& velocity);
+    void StationVolley(Station& s, const eps::Vec3d& at, const eps::Vec3d& velocity, const Anomaly& target);
     void OnAlienDestroyed(const Anomaly& a);  // alerta, rendicion
     // toward: direccion desde la nave hacia donde viene el golpe (los conos solo cubren la proa).
     // attacker: id de la anomalia que lo causa, o -1.
