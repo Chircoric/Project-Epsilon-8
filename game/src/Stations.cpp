@@ -87,8 +87,36 @@ double StationNetwork::MatterPerHour(const Station& s) const { return s.yield.ma
 double StationNetwork::AntimatterCapacity(const Station& s) const { return rules_.antimatterStorage * ModuleBonus(s, ModuleKind::Capacitor, rules_.capacitorBonus); }
 double StationNetwork::MatterCapacity(const Station& s) const { return rules_.matterStorage * ModuleBonus(s, ModuleKind::Capacitor, rules_.capacitorBonus); }
 
+double StationNetwork::MaxHull(const Station& s) const { return rules_.hullPerLevel * std::clamp(s.level, 1, rules_.maxLevel) * kReferenceHull; }
+double StationNetwork::MaxShield(const Station& s) const { return rules_.shieldPerLevel * std::clamp(s.level, 1, rules_.maxLevel) * kReferenceHull; }
+int StationNetwork::Turrets(const Station& s) const { return rules_.turretsPerLevel * std::clamp(s.level, 1, rules_.maxLevel); }
+
+StationHit StationNetwork::Hurt(int id, double amount, bool ownerPresent) {
+    StationHit hit;
+    Station* s = Find(id);
+    if (!s || !Vulnerable(s->state) || amount <= 0.0) return hit;
+    if (!ownerPresent) amount *= rules_.absentFactor;
+    // El escudo, primero: lo que no aguanta pasa al casco.
+    const double shield = s->shield * MaxShield(*s);
+    hit.shield = std::min(amount, shield);
+    s->shield = std::max(shield - hit.shield, 0.0) / MaxShield(*s);
+    hit.hull = amount - hit.shield;
+    if (hit.hull > 0.0) {
+        const double hull = s->hull * MaxHull(*s);
+        s->hull = std::max(hull - hit.hull, 0.0) / MaxHull(*s);
+        if (s->hull <= 0.0) {
+            s->hull = 0.0;
+            s->shield = 0.0;
+            s->state = StationState::Debris;
+            hit.destroyed = true;
+        }
+    }
+    return hit;
+}
+
 void StationNetwork::ProduceOne(Station& s, double hours) {
     if (s.kind == StationKind::Shipyard) return;  // no produce: guarda el material que se le entrega
+    if (s.state == StationState::Debris) return;   // los escombros no producen
     s.angle += hours * rules_.orbitRate;
     s.storedAntimatter = std::min(s.storedAntimatter + AntimatterPerHour(s) * hours, AntimatterCapacity(s));
     const double room = std::max(MatterCapacity(s) - s.stored.Get(Resource::StellarMatter), 0.0);

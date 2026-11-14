@@ -39,8 +39,9 @@ namespace game {
 // 12: el tutorial reorganizado, con otros pasos (la linea "tutorial" cuenta los nuevos).
 // 13: mundo y jugador en archivos distintos; las naves, en bloques "nave" dentro del mundo; sellos de
 // tiempo en estaciones y alerta; sin los huecos de las minas retiradas.
+// 14: estaciones con nivel, estado, casco y escudo (fracciones del maximo) y duenio (linea "defensa").
 // Solo se carga la version actual: una partida de otra version se rechaza con un mensaje, sin migrarla.
-inline constexpr int kSaveVersion = 13;
+inline constexpr int kSaveVersion = 14;
 
 // Una nave, dentro del mundo.
 struct ShipSave {

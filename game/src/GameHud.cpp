@@ -1,4 +1,4 @@
-#include "game/GameHud.h"
+﻿#include "game/GameHud.h"
 #include "game/Units.h"
 
 #include <SDL3/SDL.h>
@@ -373,12 +373,12 @@ float ShipPanel(const Ui& u, const GameSession& g, float x, float y) {
     SpeedGauge(u, g, x + 92.0f * s, y + 104.0f * s, 68.0f * s);
 
     const float mx = x + 182.0f * s, mw = w - 198.0f * s;
-    u.Meter(mx, y + 44.0f * s, mw, "ENERGÍA", ship.energy / rules.ship.energy, ship.energy < rules.ship.energy * 0.2 ? kHostile : kYellow, EnergyText(ship.energy));
+    u.Meter(mx, y + 44.0f * s, mw, "ENERGÍA", ship.energy / g.ShipSpec().energy, ship.energy < g.ShipSpec().energy * 0.2 ? kHostile : kYellow, EnergyText(ship.energy));
     // Hibrida no existe hasta sacar el emisor de la estructura; Hiper, hasta tener el segundo.
     const bool curves = HybridUnlocked(ship), hyper = HyperUnlocked(ship, rules.drive);
     const DriveMode curve = hyper ? DriveMode::Hyper : DriveMode::Warp;
-    u.Meter(mx, y + 86.0f * s, mw, "ANTIMATERIA", ship.antimatter / rules.ship.antimatterTank, !curves || CanCurve(ship, curve, rules.drive) ? kVoid : kHostile, MassText(ship.antimatter));
-    u.Meter(mx, y + 128.0f * s, mw, "CASCO", ship.hull / rules.ship.hull, ship.hull < rules.ship.hull * 0.3 ? kHostile : kAmber, Format("%.0f", ship.hull));
+    u.Meter(mx, y + 86.0f * s, mw, "ANTIMATERIA", ship.antimatter / g.ShipSpec().antimatterTank, !curves || CanCurve(ship, curve, rules.drive) ? kVoid : kHostile, MassText(ship.antimatter));
+    u.Meter(mx, y + 128.0f * s, mw, "CASCO", ship.hull / g.ShipSpec().hull, ship.hull < g.ShipSpec().hull * 0.3 ? kHostile : kAmber, Format("%.0f", ship.hull));
 
     // Cada boton, a la medida de su nombre: la letra es ancha.
     const float by = y + 184.0f * s, gap = 4.0f * s, bh = 30.0f * s;
@@ -466,7 +466,7 @@ float CargoPanel(const Ui& u, const GameSession& g, float x, float y) {
     const std::vector<int> owned = OwnedElements(g.Ship().elements, kShownElements);
     const float elementsBlock = 22.0f + 17.0f * static_cast<float>((owned.size() + 1) / 2) + 30.0f;  // titulo, filas y diagrama
     const float h = (164.0f + elementsBlock + 18.0f * static_cast<float>(shown)) * s;  // con la linea de los drones
-    const std::string code = MassText(g.Ship().cargo.Total()) + " / " + MassText(CargoCapacity(g.Ship(), g.Rules().ship));
+    const std::string code = MassText(g.Ship().cargo.Total()) + " / " + MassText(CargoCapacity(g.Ship(), g.ShipSpec()));
     if (u.Folded(HudPanel::Cargo)) {
         u.Panel(x, y, w, kFoldedHeight * s, "BODEGA", code.c_str(), static_cast<int>(HudPanel::Cargo));
         return kFoldedHeight * s;
@@ -598,8 +598,9 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
     const Mat4d toShip = ship.orientation.Conjugate().ToMatrix();
     int hovered = -1;
     float hoverX = 0, hoverY = 0, best = 9.0f * s;
-    struct Blip { float x, y, foot; int layer; bool beyond; ImU32 color; bool selected; };
+    struct Blip { float x, y, foot; int layer; bool beyond; ImU32 color; bool selected; bool coarse; };
     std::vector<Blip> blips;
+    int masses = 0;
     for (std::size_t i = 0; i < g.Contacts().size(); ++i) {
         const Contact& k = g.Contacts()[i];
         // En la nave arriba es -Y: el puente esta encima.
@@ -613,7 +614,8 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
         const float px = cx + static_cast<float>(nx) * reach * rx, foot = cy - static_cast<float>(nz) * reach * ry;
         const float py = foot - static_cast<float>(layer) * gap;
         const bool selected = target && k.target == *target;
-        blips.push_back({px, py, foot, layer, beyond, selected ? kYellow : ContactColor(k), selected});
+        blips.push_back({px, py, foot, layer, beyond, selected ? kYellow : ContactColor(k), selected, k.coarse});
+        masses += k.coarse ? 1 : 0;
         const float dx = u.in.mouseX - px, dy = u.in.mouseY - py, near = std::sqrt(dx * dx + dy * dy);
         if (u.in.cursor && near < best) {
             best = near;
@@ -626,8 +628,13 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
         if (b.layer != 0) u.d->AddLine(ImVec2(b.x, b.foot), ImVec2(b.x, b.y), (b.color & 0x00FFFFFFu) | 0x90000000u, 1.0f * s);
         u.d->AddCircleFilled(ImVec2(b.x, b.foot), 1.4f * s, (b.color & 0x00FFFFFFu) | 0x70000000u);
         const float r = (b.selected ? 4.2f : 3.0f) * s;
+        // Un eco de masa no tiene forma: un anillo ancho y tenue con un punto, sea cual sea su capa.
+        if (b.coarse) {
+            const ImU32 faint = (b.color & 0x00FFFFFFu) | (b.beyond ? 0x60000000u : 0xB0000000u);
+            u.d->AddCircle(ImVec2(b.x, b.y), r + 2.6f * s, faint, 20, 1.3f * s);
+            u.d->AddCircleFilled(ImVec2(b.x, b.y), 1.3f * s, faint);
+        } else if (b.layer > 0) {
         // Encima, un triangulo hacia arriba; debajo, hacia abajo; en el plano, un rombo.
-        if (b.layer > 0) {
             if (b.beyond) u.d->AddTriangle(ImVec2(b.x, b.y - r), ImVec2(b.x - r, b.y + r * 0.7f), ImVec2(b.x + r, b.y + r * 0.7f), b.color, 1.2f * s);
             else u.d->AddTriangleFilled(ImVec2(b.x, b.y - r), ImVec2(b.x - r, b.y + r * 0.7f), ImVec2(b.x + r, b.y + r * 0.7f), b.color);
         } else if (b.layer < 0) {
@@ -675,6 +682,14 @@ void Radar3D(const Ui& u, const GameSession& g, const TargetRef* target, float x
         if (u.in.clicked) u.actions.push_back({HudActionType::SelectContact, hovered});
     }
     u.Label(x + 16.0f * s, y + h - 22.0f * s, 10.5f, kMuted, u.in.cursor ? "Pincha una señal para fijarla" : "C: cursor para elegir señales");
+    // Leyenda de los ecos de masa, con el alcance a que se notan los cuerpos grandes.
+    if (masses > 0) {
+        const std::string text = Format("%d %s  %s", masses, masses == 1 ? "MASA" : "MASAS", Distance(g.PassiveBodyRange()).c_str());
+        const float tw = u.Width(10.5f, text);
+        const float lx = x + w - 16.0f * s - tw, ly = y + h - 22.0f * s;
+        u.d->AddCircle(ImVec2(lx - 9.0f * s, ly + 7.0f * s), 5.0f * s, (kUnknown & 0x00FFFFFFu) | 0xB0000000u, 16, 1.3f * s);
+        u.Label(lx, ly, 10.5f, kMuted, text);
+    }
 }
 
 float ContactList(const Ui& u, const GameSession& g, const TargetRef* target, float x, float y) {
@@ -700,7 +715,8 @@ float ContactList(const Ui& u, const GameSession& g, const TargetRef* target, fl
         if (selected || hover) u.d->AddRectFilled(ImVec2(x + 4.0f * s, line - 1.0f * s), ImVec2(x + w - 4.0f * s, line + rowH - 2.0f * s), Rgba(255, 170, 40, selected ? 0.22f : 0.12f));
         if (selected) u.Mark(Highlight::PinnedContact, x + 4.0f * s, line - 1.0f * s, w - 8.0f * s, rowH - 1.0f * s);
         if (hover && u.in.clicked) u.actions.push_back({HudActionType::SelectContact, static_cast<int>(i)});
-        u.d->AddQuadFilled(ImVec2(ix + 4.0f * s, line + 3.0f * s), ImVec2(ix + 8.0f * s, line + 7.0f * s), ImVec2(ix + 4.0f * s, line + 11.0f * s), ImVec2(ix, line + 7.0f * s), ContactColor(k));
+        if (k.coarse) u.d->AddCircle(ImVec2(ix + 4.0f * s, line + 7.0f * s), 3.6f * s, ContactColor(k), 12, 1.2f * s);  // eco de masa, como en el radar
+        else u.d->AddQuadFilled(ImVec2(ix + 4.0f * s, line + 3.0f * s), ImVec2(ix + 8.0f * s, line + 7.0f * s), ImVec2(ix + 4.0f * s, line + 11.0f * s), ImVec2(ix, line + 7.0f * s), ContactColor(k));
         u.LabelIn(NameFont(u, k), ix + 14.0f * s, line, 13.0f, selected ? kYellow : ContactColor(k), k.name);
         u.Right(ix + iw, line + 1.0f * s, 12.0f, kMuted, Distance(k.distance));
         line += rowH;
@@ -1210,7 +1226,7 @@ void TurnRing(const Ui& u, const GameSession& g, const Camera& camera, float wid
 
     // El giro de verdad: la proa se mueve hacia la flecha. Cuanto mas deprisa, mas larga y opaca.
     const Vec3d spin = ship.angularRate;
-    const double fraction = std::clamp(Length(spin) / std::max(g.Rules().ship.turnRate, 1e-6), 0.0, 1.0);
+    const double fraction = std::clamp(Length(spin) / std::max(g.ShipSpec().turnRate, 1e-6), 0.0, 1.0);
     const ImVec2 nose = screen(Cross(spin, heading));
     const float noseLen = std::sqrt(nose.x * nose.x + nose.y * nose.y);
     if (noseLen > 1e-5f && fraction > 0.01) {
@@ -1227,7 +1243,7 @@ void TurnRing(const Ui& u, const GameSession& g, const Camera& camera, float wid
     const Vec3d up = ship.orientation.ToMatrix().TransformDirection(Vec3d{0, -1, 0});
     const ImVec2 roof = screen(up), moving = screen(Cross(heading * roll, up));
     if (std::abs(roll) > 0.004 && roof.x * roof.x + roof.y * roof.y > 1e-6f) {
-        const float sweep = static_cast<float>(std::clamp(std::abs(roll) / g.Rules().ship.turnRate, 0.15, 1.0)) * 0.9f;
+        const float sweep = static_cast<float>(std::clamp(std::abs(roll) / g.ShipSpec().turnRate, 0.15, 1.0)) * 0.9f;
         const float side = roof.x * moving.y - roof.y * moving.x > 0.0f ? 1.0f : -1.0f;
         const float from = std::atan2(roof.y, roof.x), to = from + side * sweep;
         u.Arc(cx, cy, r + 9.0f * s, std::min(from, to), std::max(from, to), kVoid, 2.0f * s);
@@ -2417,7 +2433,7 @@ float ScanWindow(const Ui& u, const GameSession& g, float x, float y) {
             hit[b] = std::max(hit[b], strength);
         }
     }
-    const float turning = static_cast<float>(std::clamp(Length(ship.angularRate) / std::max(g.Rules().ship.turnRate, 1e-6), 0.0, 1.0));
+    const float turning = static_cast<float>(std::clamp(Length(ship.angularRate) / std::max(g.ShipSpec().turnRate, 1e-6), 0.0, 1.0));
     const bool over = u.in.cursor && u.in.mouseX >= x && u.in.mouseX <= x + w && u.in.mouseY >= y && u.in.mouseY <= y + h;
     const float beat = std::pow(0.5f + 0.5f * std::sin(t * kTau * 2.1f), 8.0f);  // un pulso, como un bombo
 
@@ -3166,7 +3182,7 @@ void Workshop(const Ui& u, const GameSession& g, float width, float height) {
     const float s = u.s, w = 1100.0f * s, h = 640.0f * s;
     const float x = (width - w) * 0.5f, y = (height - h) * 0.5f;
     const ShipState& ship = g.Ship();
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(g.Ship());
     u.d->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), Rgba(0, 0, 0, 0.45f));
     u.Panel(x, y, w, h, "TALLER", "MÓDULOS Y MOTOR");
     u.Label(x + 16.0f * s, y + 32.0f * s, 12.0f, kMuted, Format("Bodega: %.0f kt de metal, %.0f kt de silicato. Quitar un módulo devuelve la mitad de lo que costó.", ship.cargo.Get(Resource::Metal), ship.cargo.Get(Resource::Silicate)));
@@ -3234,7 +3250,7 @@ void Workshop(const Ui& u, const GameSession& g, float width, float height) {
     // Lo que dice la nave al montar, y lo que cambia.
     const std::string last = g.Log().empty() ? std::string() : g.Log().back();
     u.Label(x + 16.0f * s, y + h - 46.0f * s, 12.0f, kText, last);
-    u.Label(x + 16.0f * s, y + h - 26.0f * s, 11.0f, kMuted, Format("Bodega %.2f Mt   Antimateria %.0f kt   Impulso %.0f km/s   Torretas %d   Escáner x%.1f", CargoCapacity(ship, g.Rules().ship) / 1000.0, AntimatterCapacity(ship, g.Rules().ship), g.Rules().drive.impulseSpeed * fitted.speed, WorkingModules(ship, ShipModuleKind::Turret), 1.0 + kSensorBoost * WorkingModules(ship, ShipModuleKind::SensorArray)));
+    u.Label(x + 16.0f * s, y + h - 26.0f * s, 11.0f, kMuted, Format("Bodega %.2f Mt   Antimateria %.0f kt   Impulso %.0f km/s   Torretas %d   Escáner x%.1f", CargoCapacity(ship, g.ShipSpec()) / 1000.0, AntimatterCapacity(ship, g.ShipSpec()), g.Rules().drive.impulseSpeed * fitted.speed, WorkingModules(ship, ShipModuleKind::Turret), 1.0 + kSensorBoost * WorkingModules(ship, ShipModuleKind::SensorArray)));
     u.Right(x + w - 16.0f * s, y + h - 26.0f * s, 11.0f, kMuted, "Rueda > Taller para cerrar");
 }
 
@@ -3465,12 +3481,12 @@ float MiniShip(const Ui& u, const GameSession& g, float x, float y) {
     const std::size_t f = static_cast<std::size_t>(d.field);
     const double fieldCap = ShieldCapacity(rules.defense, d.field, d.shieldTier[f]);
     const double heat = d.heat / rules.thermal.limit;
-    const double cargo = ship.cargo.Total() / std::max(CargoCapacity(ship, rules.ship), 1e-9);
-    u.Bar(ix, line, iw, "Energía", ship.energy / rules.ship.energy, ship.energy < rules.ship.energy * 0.2 ? kHostile : kYellow);
+    const double cargo = ship.cargo.Total() / std::max(CargoCapacity(ship, g.ShipSpec()), 1e-9);
+    u.Bar(ix, line, iw, "Energía", ship.energy / g.ShipSpec().energy, ship.energy < g.ShipSpec().energy * 0.2 ? kHostile : kYellow);
     line += 42.0f * s;
-    u.Bar(ix, line, iw, "Antimateria", ship.antimatter / rules.ship.antimatterTank, kVoid);
+    u.Bar(ix, line, iw, "Antimateria", ship.antimatter / g.ShipSpec().antimatterTank, kVoid);
     line += 42.0f * s;
-    u.Bar(ix, line, iw, "Casco", ship.hull / rules.ship.hull, ship.hull < rules.ship.hull * 0.3 ? kHostile : kNeutral);
+    u.Bar(ix, line, iw, "Casco", ship.hull / g.ShipSpec().hull, ship.hull < g.ShipSpec().hull * 0.3 ? kHostile : kNeutral);
     line += 42.0f * s;
     const bool active = g.FieldActive();
     u.Bar(ix, line, iw, d.fieldOn ? FieldName(d) : "Escudo", d.fieldOn && fieldCap > 0.0 ? d.charge[f] / fieldCap : 0.0, active ? kSignal : kHostile,
@@ -3617,13 +3633,13 @@ float MiniDetails(const Ui& u, const GameSession& g, float x, float bottom, floa
     const std::size_t f = static_cast<std::size_t>(d.field);
     std::vector<std::pair<std::string, std::string>> items = {
         {"Velocidad", Speed(ship.speed)},
-        {"Energía", EnergyText(ship.energy) + " / " + EnergyText(rules.ship.energy)},
+        {"Energía", EnergyText(ship.energy) + " / " + EnergyText(g.ShipSpec().energy)},
         {"Antimateria", MassText(ship.antimatter)},
-        {"Casco", Format("%.0f / %.0f", ship.hull, rules.ship.hull)},
+        {"Casco", Format("%.0f / %.0f", ship.hull, g.ShipSpec().hull)},
         {"Escudo", d.fieldOn ? Format("%.0f / %.0f", d.charge[f], ShieldCapacity(rules.defense, d.field, d.shieldTier[f])) : std::string("apagado")},
         {"Conos de proa", Format("%.0f", d.charge[static_cast<std::size_t>(ShieldKind::Ablative)])},
         {"Calor", Format("%.0f %%  agua %.0f  N2 %.0f", d.heat / rules.thermal.limit * 100.0, d.water, d.nitrogen)},
-        {"Bodega", MassText(ship.cargo.Total()) + " / " + MassText(CargoCapacity(ship, rules.ship))},
+        {"Bodega", MassText(ship.cargo.Total()) + " / " + MassText(CargoCapacity(ship, g.ShipSpec()))},
     };
     for (int r = 0; r < static_cast<int>(Resource::Count); ++r) items.push_back({Name(static_cast<Resource>(r)), MassText(ship.cargo.Get(static_cast<Resource>(r)))});
     items.push_back({"Emisores E<0", Format("%d", ship.emitters)});

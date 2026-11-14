@@ -1,4 +1,4 @@
-#include "game/Ship.h"
+﻿#include "game/Ship.h"
 
 #include <algorithm>
 
@@ -33,18 +33,36 @@ const char* Name(DriveMode mode) {
     return names[static_cast<int>(mode)];
 }
 
-ShipState MakeShip(const Balance& rules) {
+const ShipDesign& DesignOf(const ShipState& ship) { return ship.design ? *ship.design : CurrentShipDesign(); }
+
+ShipRules RulesForClass(const ShipRules& base, ShipClassId id, ShipVariant variant) {
+    const ShipClass& from = ShipClassOf(base.classId, base.variant);
+    const ShipClass& to = ShipClassOf(id, variant);
+    ShipRules out = base;
+    out.classId = id;
+    out.variant = variant;
+    const double length = to.length / from.length;
+    out.hull = base.hull * to.hull / from.hull;
+    out.radius = base.radius * length;
+    out.bow = base.bow * length;
+    out.beam = base.beam * length;
+    return out;
+}
+
+ShipState MakeShip(const Balance& rules) { return MakeShip(rules, rules.ship); }
+
+ShipState MakeShip(const Balance& rules, const ShipRules& ship) {
     ShipState s;
-    s.energy = rules.ship.energy;
-    s.antimatter = rules.ship.startAntimatter;
-    s.hull = rules.ship.hull;
-    s.heatShieldTier = rules.ship.heatShieldTier;
+    s.energy = ship.energy;
+    s.antimatter = ship.startAntimatter;
+    s.hull = ship.hull;
+    s.heatShieldTier = ship.heatShieldTier;
     s.scannerTier = rules.scanner.startTier;
-    s.computerTier = rules.ship.computerTier;
-    s.weapons = DefaultWeapons(rules.ship);
+    s.computerTier = ship.computerTier;
+    s.weapons = DefaultWeapons(ship);
     s.defense = MakeDefense(rules.defense, rules.thermal);
-    s.cargo.Add(Resource::Silicate, rules.ship.startSilicate);
-    s.cargo.Add(Resource::Gas, rules.ship.startGas);
+    s.cargo.Add(Resource::Silicate, ship.startSilicate);
+    s.cargo.Add(Resource::Gas, ship.startGas);
     s.loadout.starter = true;  // sale con dos bahias de drones mineros
     s.loadout.starterBays = rules.armament.starterBays;
     FitToDesign(s);
@@ -52,7 +70,7 @@ ShipState MakeShip(const Balance& rules) {
 }
 
 void FitToDesign(ShipState& s) {
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(s);
     s.loadout.modules.resize(design.slots.size(), ShipModuleKind::None);
     s.loadout.ammo.resize(design.slots.size(), 0);
     s.loadout.cooldown.resize(design.slots.size(), 0.0);
@@ -78,14 +96,14 @@ void FitToDesign(ShipState& s) {
 bool PieceLost(const ShipState& s, int piece) { return piece >= 0 && piece < static_cast<int>(s.pieces.size()) && s.pieces[static_cast<std::size_t>(piece)] <= 0.0; }
 
 bool SlotWorking(const ShipState& s, int slot) {
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(s);
     if (slot < 0 || slot >= static_cast<int>(design.slots.size())) return false;
     const ModuleSlot& m = design.slots[static_cast<std::size_t>(slot)];
     return !ZoneLost(s.zones, m.zone) && !PieceLost(s, m.piece);
 }
 
 int WorkingModules(const ShipState& s, ShipModuleKind kind, int zone) {
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(s);
     int count = 0;
     for (std::size_t i = 0; i < s.loadout.modules.size() && i < design.slots.size(); ++i)
         if (s.loadout.modules[i] == kind && (zone < 0 || design.slots[i].zone == zone) && SlotWorking(s, static_cast<int>(i))) ++count;

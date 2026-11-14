@@ -141,7 +141,7 @@ void Wire(A& a, ShipState& s) {
 
 template <class A>
 void Wire(A& a, Contact& c) {
-    a(c.target); a(c.name); a(c.detail); a(c.position); a(c.distance); a(c.identified); a(c.stance);
+    a(c.target); a(c.name); a(c.detail); a(c.position); a(c.distance); a(c.identified); a(c.coarse); a(c.stance);
 }
 
 template <class A>
@@ -173,6 +173,7 @@ template <class A>
 void Wire(A& a, Station& s) {
     a(s.id); a(s.kind); a(s.site); a(s.name); a(s.modules); a(s.yield); a(s.stored); a(s.storedAntimatter); a(s.angle);
     a(s.deployAge); a(s.attitude); a(s.launch); a(s.producedUntil);
+    a(s.level); a(s.state); a(s.hull); a(s.shield); a(s.owner);
 }
 
 template <class A>

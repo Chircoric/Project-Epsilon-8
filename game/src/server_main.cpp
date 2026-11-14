@@ -13,17 +13,34 @@
 //   --no-tutorial     partida nueva: sin el tutorial para el primero que entre
 //   --save-every S    segundos entre guardados (120)
 //   --seconds S       se cierra solo pasados S segundos: para pruebas
+//   --ranks archivo   categorias del personal (por defecto, rangos.txt dentro de --world; sin ninguno, solo en memoria)
+//   --no-console      no lee la entrada estandar
 //
-// Se cierra con Ctrl+C, guardando antes.
+// Consola por la entrada estandar (docs/multijugador.md, 4.6): quien escribe en la terminal del servidor
+// es el dueño y puede usar todos los comandos del juego (los de game/Console.cpp: saltar, creativo, nivel,
+// aparecer...). Ademas:
+//   ayuda | jugadores | rangos | guardar | salir
+//   rango <id> <categoria>   da una categoria (moderador, administrador, dueño, desarrollador; jugador la quita)
+//   como <id> <orden...>     ejecuta la orden con la categoria de ese jugador: sin categoria de personal, se rechaza
+// Solo el personal puede usar comandos; las categorias las da el servidor, nunca el cliente.
+//
+// Se cierra con Ctrl+C o con "salir", guardando antes.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <filesystem>
+#include <iostream>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 
+#include "game/Console.h"
 #include "game/Net.h"
 #include "game/SaveGame.h"
 #include "game/Session.h"
@@ -37,10 +54,10 @@ std::atomic<bool> gStop{false};
 void OnInterrupt(int) { gStop = true; }
 
 struct Options {
-    std::string world, name = "Nebulosa";
+    std::string world, name = "Nebulosa", ranks;
     int port = kDefaultPort, players = 8, mode = 2;
     std::uint32_t seed = 20261105;
-    bool seedGiven = false, noTutorial = false;
+    bool seedGiven = false, noTutorial = false, noConsole = false;
     double saveEvery = 120.0, seconds = 0.0;
 };
 
@@ -60,9 +77,59 @@ Options Parse(int argc, char** argv) {
         } else if (a == "--no-tutorial") o.noTutorial = true;
         else if (a == "--save-every" && more) o.saveEvery = std::max(std::atof(argv[++i]), 1.0);
         else if (a == "--seconds" && more) o.seconds = std::atof(argv[++i]);
+        else if (a == "--ranks" && more) o.ranks = argv[++i];
+        else if (a == "--no-console") o.noConsole = true;
         else std::printf("Aviso: no conozco la opcion %s\n", a.c_str());
     }
     return o;
+}
+
+// Las lineas que llegan por la entrada estandar. Se leen en otro hilo (getline bloquea) y las ejecuta
+// el bucle principal, que es el unico que toca la partida.
+class StdinLines {
+public:
+    void Start() {
+        std::thread([this] {
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line.erase(0, 3);  // la marca UTF-8 que algunas terminales ponen delante
+                std::lock_guard<std::mutex> lock(mutex_);
+                lines_.push_back(line);
+            }
+            // Fin de la entrada (se cerro la tuberia): el servidor sigue; se para con Ctrl+C.
+        }).detach();
+    }
+    bool Next(std::string& out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lines_.empty()) return false;
+        out = std::move(lines_.front());
+        lines_.pop_front();
+        return true;
+    }
+
+private:
+    std::mutex mutex_;
+    std::deque<std::string> lines_;
+};
+
+std::vector<std::string> Words(const std::string& line) {
+    std::istringstream in(line);
+    std::vector<std::string> words;
+    for (std::string w; in >> w;) words.push_back(w);
+    return words;
+}
+
+// Lo que sigue a las n primeras palabras de la linea, tal cual.
+std::string After(const std::string& line, int n) {
+    std::size_t pos = 0;
+    for (int i = 0; i < n; ++i) {
+        pos = line.find_first_not_of(" \t", pos);
+        if (pos == std::string::npos) return {};
+        pos = line.find_first_of(" \t", pos);
+        if (pos == std::string::npos) return {};
+    }
+    const std::size_t start = line.find_first_not_of(" \t", pos);
+    return start == std::string::npos ? std::string() : line.substr(start);
 }
 
 }  // namespace
@@ -98,6 +165,21 @@ int main(int argc, char** argv) {
     GameSession session(engine, rules, options.seed, static_cast<GameModeId>(options.mode));
     session.SetEngineFactory([&] { return std::make_unique<Engine>(config); });
     session.Step(GameSession::kFixedStep, {});  // carga el primer sistema
+
+    // Los comandos del juego, los mismos que en el juego con ventana (game/Console.cpp).
+    TargetRef target;
+    RegisterGameCommands(engine.Commands(), session, target);
+    RankBook ranks;
+    std::string ranksFile = options.ranks;
+    if (ranksFile.empty() && !options.world.empty()) ranksFile = (std::filesystem::path(options.world) / "rangos.txt").string();
+    if (!ranksFile.empty()) {
+        std::string error;
+        if (!ranks.Load(ranksFile, &error)) {
+            std::printf("No se pudieron leer las categorias de %s: %s\n", ranksFile.c_str(), error.c_str());
+            return 1;
+        }
+        std::printf("Categorias del personal: %zu (%s)\n", ranks.All().size(), ranksFile.c_str());
+    }
 
     GameServer host(session);
     if (saved) {
@@ -136,7 +218,70 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
         lastSave = Clock::now();
     };
+
+    // ---- La consola: una linea de la entrada estandar ----
+    const auto say = [](const std::string& text) {
+        std::printf("%s\n", text.c_str());
+        std::fflush(stdout);
+    };
+    const auto rankOf = [&](const std::string& id) { return ranks.Of(id); };
+    const auto handle = [&](const std::string& line) {
+        const std::vector<std::string> w = Words(line);
+        if (w.empty()) return;
+        if (w[0] == "ayuda") {
+            say("Consola del servidor. Aqui eres el dueño: vale cualquier comando del juego (saltar, creativo, nivel, aparecer, tiempo...).\n"
+                "  jugadores | rangos | guardar | salir\n"
+                "  rango <id> <jugador|moderador|administrador|dueño|desarrollador>\n"
+                "  como <id> <orden...>   la orden con la categoria de ese jugador (sin categoria de personal, se rechaza)");
+        } else if (w[0] == "salir" || w[0] == "parar") {
+            gStop = true;
+        } else if (w[0] == "guardar") {
+            if (options.world.empty()) say("Este servidor no guarda: falta --world.");
+            else save("a peticion");
+        } else if (w[0] == "jugadores") {
+            std::string text = "Jugadores:";
+            for (int p = 0; p < session.PlayerCount(); ++p) {
+                const PlayerState& player = session.PlayerAt(p);
+                text += "\n  " + std::to_string(p + 1) + " " + player.name + " [" + player.id + "] " + Name(rankOf(player.id)) + (player.connected ? "" : " (fuera)");
+            }
+            say(text);
+        } else if (w[0] == "rangos") {
+            std::string text = "Personal:";
+            for (const auto& [id, rank] : ranks.All()) text += "\n  " + id + " " + Name(rank);
+            say(ranks.All().empty() ? "Personal: nadie" : text);
+        } else if (w[0] == "rango") {
+            Rank rank = Rank::Player;
+            if (w.size() != 3 || !ParseRank(w[2], rank)) {
+                say("Uso: rango <id> <jugador|moderador|administrador|dueño|desarrollador>");
+                return;
+            }
+            ranks.Set(w[1], rank);
+            say(w[1] + ": " + Name(rank));
+            if (!ranksFile.empty()) {
+                std::string error;
+                std::error_code ignored;
+                const std::filesystem::path folder = std::filesystem::path(ranksFile).parent_path();
+                if (!folder.empty()) std::filesystem::create_directories(folder, ignored);
+                if (!ranks.Save(ranksFile, &error)) say("Aviso: no se pudieron guardar las categorias: " + error);
+            }
+        } else if (w[0] == "como") {
+            if (w.size() < 3) {
+                say("Uso: como <id> <orden...>");
+                return;
+            }
+            const Rank rank = rankOf(w[1]);
+            bool allowed = false;
+            const std::string answer = RunCommand(engine.Commands(), rank, After(line, 2), &allowed);
+            say("[" + w[1] + ", " + Name(rank) + "] " + answer);
+        } else {
+            say(RunCommand(engine.Commands(), Rank::Owner, line));
+        }
+    };
+    StdinLines input;
+    if (!options.noConsole) input.Start();
+
     while (!gStop) {
+        for (std::string line; input.Next(line);) handle(line);
         const auto now = Clock::now();
         const double elapsed = std::chrono::duration<double>(now - last).count();
         last = now;

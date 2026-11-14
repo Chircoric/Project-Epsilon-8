@@ -110,6 +110,7 @@ if(EPSILON_BUILD_DEMOS AND TARGET epsilon_engine)
         game/src/Settings.cpp
         game/src/Session.cpp
         game/src/Net.cpp
+        game/src/Console.cpp
         game/src/Tutorial.cpp
         game/src/GameModels.cpp
         game/src/GameLayer.cpp)

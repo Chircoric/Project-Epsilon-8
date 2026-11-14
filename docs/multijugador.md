@@ -229,7 +229,7 @@ Cómo quedó:
 
 Formato del §5, versión 13, todavía con una nave y un jugador. Prueba de ida y vuelta: guardar, cargar y guardar da el mismo texto.
 
-### Fase 3a — Dos naves locales, una entrada por nave — **hecha el 13-11-2026, salvo el paso 3a.6**
+### Fase 3a — Dos naves locales, una entrada por nave — **hecha el 13-11-2026, incluido el paso 3a.6**
 
 Cómo quedó:
 
@@ -242,7 +242,7 @@ Cómo quedó:
 
 Lo que falta o es provisional:
 
-- **3a.6, clase y diseño por nave, no está hecho.** `CurrentShipDesign()` y `rules_.ship` siguen siendo globales: todas las naves son de la misma clase.
+- **3a.6, clase y diseño por nave, hecho (decisión 12).** `Vessel::rules` (`ShipRules`: clase, variante, casco, radio, bodega, maniobra…) sustituye a `rules_.ship` en todo `Session.cpp`; `rules_.ship` queda como la clase de serie de la que parte cada nave nueva. `ShipState::design` es el diseño de esa nave; si es nulo, vale `CurrentShipDesign()` (el diseño por defecto), así que una nave sin diseño propio sigue al que se cargue. `DesignOf(ship)` lo resuelve y lo usan `Ship.cpp`, la sesión, `GameLayer`, `GameHud` y `main`; `GameSession::ShipSpec()` da las cifras de la nave en curso. `AddVessel(km, clase, variante)` y `nave nueva [km] [clase 0-9] [variante 0-2]` crean naves de otra clase (`RulesForClass`: casco por la tabla `ShipClass`, radio y medidas por la eslora). Sin clase, todas son la de serie, como pedía la decisión 12; la partida dorada no cambió. **Límites:** la clase no va en el guardado (al cargar, todas vuelven a la de serie; meterla pide subir el formato), y una clase distinta usa el modelo y el diseño de la fragata. Prueba: «Flota: clase por nave».
 - Las otras naves se dibujan solo con el casco, y con las zonas dañadas de la nave del foco: sin sus módulos, estelas ni cráteres.
 - El origen del mundo y lo que carga el motor siguen a la nave del foco.
 - Con todas las naves perdidas, anomalías y combate se detienen, como antes con una.
@@ -258,7 +258,7 @@ Una sola burbuja; reloj según la regla 2 del §2.3.
 | 3a.3 | El mundo las ve a las dos: las anomalías eligen blanco, `Hurt` recibe la nave, los proyectiles llevan dueño, las naves chocan entre sí (o no: decisión 7), `Resolve` admite `Kind::Ship` para apuntarse y seguirse. |
 | 3a.4 | Reloj con dos naves: foco mínimo, exterior mínimo, tiempo propio por nave. Pruebas: una en combate y otra en crucero; una atracando y otra lejos. |
 | 3a.5 | Segunda entrada: `--cmd "nave 2 motor crucero"` y órdenes con marca de fotograma (ya existen los `timedCommands`) para pruebas sin manos; en ventana, una tecla cambia qué nave se lleva y se mira. |
-| 3a.6 | Diseño y clase **por nave** en lugar de globales. |
+| 3a.6 | Diseño y clase **por nave** en lugar de globales. **Hecho.** |
 | 3a.7 | Límite provisional: la segunda nave no puede salir del sistema de la primera (avisa y frena). Se quita en la fase 4. |
 
 ### Fase 3b — Dos entradas sobre la misma nave — **hecha el 13-11-2026, salvo el segundo mando físico**
@@ -375,6 +375,14 @@ Cómo quedó:
 - **En el juego**: `--host` se anuncia en la red local y `--connect lan` busca partidas, las lista y entra en la primera.
 - **Probado**: en las pruebas (anuncio y búsqueda, servidor que guarda y recupera a tres jugadores) y con `epsilon_server.exe` y el juego en dos procesos, en dos rondas: partida nueva, y la misma carpeta cargada otra vez.
 
+**La consola (hecha después, el 13-11-2026):**
+
+- **Los comandos viven en la biblioteca común**: `RegisterGameCommands` (`game/src/Console.cpp`, `game/Console.h`), que antes era `RegisterCommands` en `main.cpp`. Los registran el juego con ventana y `epsilon_server`; las pruebas los ejecutan sin GPU. El juego se comporta igual.
+- **Solo el personal usa comandos.** `Rank`: jugador < moderador < administrador < dueño < desarrollador. `CanUseCommands` es verdadero desde moderador. Todo texto que llegue al registro por una persona pasa por `RunCommand(registro, categoría, línea)`, que rechaza al jugador sin ejecutar nada (ni trucos del juego ni comandos del motor). La categoría la da el servidor: `RankBook`, por `PlayerState::id`, en `rangos.txt` dentro de la carpeta de la partida (o `--ranks`). Quien no figura es jugador.
+- **Entrada estándar de `epsilon_server`**: lo que se escribe en la terminal lo ejecuta el dueño (cualquier comando del juego). Además `ayuda`, `jugadores`, `rangos`, `guardar`, `salir`, `rango <id> <categoría>` (la guarda en `rangos.txt`) y `como <id> <orden…>` (la orden con la categoría de ese jugador). `--no-console` la desactiva.
+- **En el juego con ventana**: la consola (F1) es de quien tiene la partida (dueño); dentro de la partida de otro (`--connect` o desde el menú) eres jugador y no se ejecuta nada. `--cmd` y `--cmd-at` son la línea de órdenes de quien lanza el juego y no pasan por el control.
+- **Probado**: `TestConsole` (categorías, rechazo de cada orden sin efecto, las cuatro categorías de personal, lista de rangos con archivo) y a mano con `epsilon_server.exe` por la entrada estándar.
+
 **El menú (hecho después, el 13-11-2026):**
 
 - **El juego va siempre por servidor y cliente en memoria.** Lo que era `--loopback` es ahora lo normal, como preveía la fase 5; `--direct` deja el camino antiguo, sin servidor. Gracias a eso, abrir a la red es encender la escucha del servidor que ya está en marcha, y entrar en otra partida es cambiar la conexión del cliente.
@@ -389,7 +397,7 @@ Lo que falta:
 - **Entrar de tripulante desde el menú**: el botón entra siempre con nave propia. De tripulante, solo con `--connect ... --join crew`.
 - **Escribir una dirección en el menú**: solo se entra en lo que se encuentra en la red local; con dirección, `--connect`.
 - Entrar bloquea el juego hasta tres segundos mientras espera al servidor.
-- **La consola del servidor no está**: el plan decía comandos por la entrada estándar. Los comandos viven en `main.cpp` del juego; habría que sacarlos a la biblioteca común.
+- **Comandos de jugadores por la red**: la consola del servidor ya existe (ver abajo), pero un cliente aún no puede mandar texto de comando al servidor; cuando exista, tiene que pasar por `RunCommand` con la categoría que el servidor tenga anotada para ese `PlayerState::id`.
 - **El cliente tiene que usar la misma semilla** que el servidor (la de por defecto, si no se pasa `--seed`); si no, se le rechaza por «otra galaxia».
 - **Los puestos de la tripulación no se guardan**: al volver, cada uno ocupa los que estén libres.
 - La difusión solo se ha probado en esta máquina; con varias tarjetas de red puede hacer falta preguntar por cada una.
@@ -502,7 +510,7 @@ epsilon_server.exe --mundo mundo.sav --puerto 27300 --nombre "Nebulosa" --jugado
 - Bucle a 60 Hz con acumulador; duerme lo que sobra.
 - Guarda cada N minutos y al cerrar (Ctrl+C), en la carpeta que se le diga, no en `%APPDATA%`.
 - Sin jugadores, el mundo **se detiene**: con relojes por burbuja, sin naves no hay nada que mover.
-- Consola por la entrada estándar con los comandos de `engine.Commands()` que ya existen.
+- Consola por la entrada estándar con los comandos de `engine.Commands()` que ya existen — **hecha**, solo para el personal (ver fase 7).
 - «Crear partida» desde el juego es el mismo servidor dentro del proceso, en un hilo, con el anfitrión conectado por el transporte en memoria.
 
 Pendiente de comprobar: que `Engine` se construye sin recursos gráficos. Las pruebas ya lo hacen, así que debería.
@@ -606,15 +614,292 @@ Marcadas con ★ las que bloquean el arranque. En cada una, mi propuesta.
 |---|---|---|---|---|
 | 1 ★ | **Modelo de tiempo** | A manda la rápida · C dilatación como velocidad · D reloj por burbuja | **Decidido (13-11-2026): D, reloj por burbuja** (§2.3) | 1.7, 3a.4, 4 |
 | 2 ★ | **Reparto en cooperativo** | (a) puestos fijos: piloto, artillería, ingeniería/sensores · (b) todos pueden todo · (c) puestos, pero cualquiera puede ocupar uno libre | **Decidido (13-11-2026): (c)**; con dos jugadores, piloto + todo lo demás | 3b |
-| 3 | **Conocimiento** (sistemas, astros analizados) | por jugador · por equipo | Por equipo | 1.2, 2 |
-| 4 | **Estaciones y recursos** | comunes · de cada jugador, con permiso para los demás | Comunes en cooperativo; con dueño cuando haya varias naves | 2, 3a |
-| 5 ★ | **Perder la nave** sin vuelta atrás del mundo | (a) reaparece en la última estación propia donde atracó, con la penalización de bodega del modo · (b) nave nueva en el punto de inicio · (c) en modo realista, fuera de la partida | **Decidido (13-11-2026): (a)**; (c) para el modo realista | 1.6 |
+| 3 | **Conocimiento** (sistemas, astros analizados) | por jugador · por equipo | **Decidido (13-11-2026): por equipo; equipo = gremio (14-11-2026).** Lo que descubre uno lo sabe todo el gremio, y quien se va del gremio lo pierde. En solitario y LAN es automático mientras existan naves o estaciones | 1.2, 2 |
+| 4 | **Estaciones y recursos** | comunes · de cada jugador, con permiso para los demás | **Decidido (13-11-2026), detalle en [§8](#8-estaciones-gremios-y-defensa)**: cada jugador tiene las suyas, que solo él edita; los de su equipo las usan y se mueven libres por dentro. Hay una estación de gremio que construyen, mejoran y usan todos. Producción a partes iguales. Las estaciones no desaparecen por balanceo: se defienden, y con su dueño ausente reciben 1/10 del daño. *Por cerrar: ver §8.* | 2, 3a |
+| 5 ★ | **Perder la nave** sin vuelta atrás del mundo | (a) reaparece en la última estación propia donde atracó, con la penalización de bodega del modo · (b) nave nueva en el punto de inicio · (c) en modo realista, fuera de la partida | **Decidido (13-11-2026): (a)**; (c) para el modo realista. **Cambia con §8 (14-11-2026):** si la nave colapsa, la tripulación sale en una cápsula de escape a su estación individual; si no tiene, a la de gremio; si no, al lobby. Sin estaciones ni naves capitales, reaparece en el lobby. La muerte de la persona (§8, regla 16) manda al primer sistema con una nave inicial en todos los modos salvo el realista, donde se vuelve a una estación aliada o a la nave de un compañero | 1.6 |
 | 6 | **Nave de un jugador desconectado** | desaparece · se queda donde está, vulnerable · solo se puede salir atracado y queda a salvo | **Decidido (13-11-2026): desaparece y vuelve donde estaba, pero no en combate**: se queda parada y vulnerable hasta llevar `WorldRules::logoutCalm` (15 s reales) sin recibir ni hacer fuego y sin un hostil a tiro; si la destruyen antes, está perdida. En cooperativo la nave sigue mientras quede alguien conectado | 2, 6 |
-| 7 | **Entre naves de jugadores** | fuego amigo sí/no · choque entre naves sí/no · ¿habrá jugador contra jugador? | Sin fuego amigo, con choque, sin JcJ de momento | 3a.3 |
+| 7 | **Entre naves de jugadores** | fuego amigo sí/no · choque entre naves sí/no · ¿habrá jugador contra jugador? | Sin fuego amigo, con choque, sin JcJ de momento. **Cambia con §8 (14-11-2026):** habrá JcJ regulado por la facción NPC y treguas entre gremios | 3a.3 |
 | 8 | **Tutorial, creativo y consola** | tutorial por jugador en red o solo en solitario · quién puede usar la consola | Tutorial solo en solitario al principio; consola y creativo solo para el anfitrión | 1.2, 6 |
-| 9 | **Tamaño** | jugadores por nave · naves por mundo · ¿Internet o solo LAN? | 4 por nave, 8 naves, solo LAN y por IP (Internet pide atravesar el router: otro proyecto) | 6, 7 |
+| 9 | **Tamaño** | jugadores por nave · naves por mundo · ¿Internet o solo LAN? | **Decidido (13-11-2026), modificado el 14-11-2026: LAN e Internet.** **LAN:** sin límites; puede haber más de 4 personas por nave y no hay límite de naves por jugador. **Internet:** de supercarguero en adelante, hasta 30 personas por nave (cifras por clase en §8). Las naves que un jugador puede almacenar dependen de los módulos de hangar de su estación (máximo 4), su nivel, la tecnología del hangar y el volumen de cada nave; las no desplegadas quedan sin cargar dentro del hangar. Tope de naves activas del servidor: 200 (para probar). Internet exige interpolación, predicción del giro y reconexión (Fase 8) y resolver el paso por el router (NAT), que ENet no hace: queda por elegir entre reenvío de puerto manual, servidor de relevo o perforación de NAT | 6, 7, 8 |
 | 10 | **Cámara lenta del modo cinematográfico** en red | se pierde · solo si todos la tienen · siempre | Solo si todos los de la burbuja la tienen | 3a.4 |
 | 11 | **Orden** | completo (3a antes de la red) · atajo cooperativo (§6) | Completo, como pides; el atajo existe si quieres jugar antes | — |
-| 12 | **Naves distintas** | cada jugador elige clase al entrar · todos la misma al principio | Misma clase hasta la fase 3a.6 | 3a.6 |
+| 12 | **Naves distintas** | cada jugador elige clase al entrar · todos la misma al principio | Misma clase hasta la fase 3a.6 — **mecanismo hecho (3a.6)**: cada nave lleva su clase y diseño; por defecto todas la de serie. Falta la elección al entrar (fase 6) y guardar la clase | 3a.6 |
 
 Con las decisiones 1, 2 y 5 se puede empezar la fase 0, que no depende de ninguna, y entrar en la fase 1 sin rehacer nada.
+
+---
+
+## 8. Estaciones, gremios y defensa
+
+Estado: **diseño acordado entre el 13 y el 14-11-2026, sin código.**
+
+**Dos modos.** Casi todo este apartado (lobby, facción NPC, balizas, control del espacio, fama, créditos, mercado, gremios y estación de gremio) es del **modo Internet**. En el **modo un jugador y en LAN** no hay lobby ni apoyo de una facción: el jugador está solo contra la nebulosa. Ahí **no hay límite de estaciones ni de naves creadas**, aunque no hay acceso a una estación de gremio. En LAN, dos jugadores pueden ir en la **misma nave** si ambos entran a ella estando en una estación. En solitario y LAN el **conocimiento se comparte automáticamente** mientras existan naves o estaciones. La **cápsula de escape** se mantiene también en solitario y LAN. En solitario, si se destruye la nave, el jugador vuelve a la **estación o nave más cercana**; si no hay ninguna y no es el modo realista, recibe una **nave inicial nueva** con la mitad del inventario máximo.
+
+Punto de partida: `Station` (`Stations.h`) no tiene casco, vida ni defensas, así que hoy una estación no puede perderse. Hay dos tipos: la **central** (modular) y la **origami** o de anillo (nivel 1: un anillo de 1 km que fabrica con el material que se le entrega; todavía no es modular).
+
+### Reglas acordadas
+
+1. **Estaciones.** En el modo Internet, cada jugador tiene como mucho **una estación central y una origami** (límite 1 de cada tipo), y cada gremio **una** de gremio. En solitario y LAN no hay límite. Solo su dueño edita los módulos de las individuales. Los de su equipo pueden usarlas y moverse libremente por dentro, sin editar sus módulos. **No hay sistema de transporte**: quien quiera su estación cerca en los sistemas salvajes la mueve con él. Mover una estación necesita un **módulo especial de movimiento** y gasta mucha antimateria, **de 2 a 3 veces** lo que gastaría la nave. La **origami** puede **volver a plegarse y anclarse a la nave** del jugador, con tecnología 100 % humana.
+2. **No desaparecen por balanceo.** Una estación no se quita del mundo por ajuste de reglas: solo la destruyen jugadores o enemigos. Por eso necesitan casco y defensas propias.
+3. **Dueño ausente.** Mientras su dueño no está en la partida, la estación recibe **1/10 del daño**.
+4. **Se defiende sola.** Con su artillería de defensa. Que un grupo fuerte pueda destruirla es desafortunado pero equilibrado.
+5. **Escombros y reposición.** Al destruirse quedan sus escombros y no se pierde del todo, salvo que el jugador la deseche. Reponer la estación cuesta el **(100 % − control del espacio)** de los materiales totales de su coste.
+6. **Facción NPC reguladora** (nueva): regula las interacciones entre usuarios y fija el **control del espacio**, un porcentaje por sistema.
+   - **Al 100 %**, la facción ataca a los agresores enviando una flota.
+   - **Por debajo**, el equipo atacante solo recibe el **(100 % − control)** del botín de la nave, y el jugador solo repone el **(100 % − control)** del coste de su estación.
+   - **Cómo se reparte:** el sistema del lobby y el siguiente (los 2 primeros) están siempre al 100 %. Desde el segundo hay **balizas**, que aportan un 50 %. Cada baliza **desactivada** baja un **30 %** el control de los sistemas de alrededor, y así hasta el séptimo, que no tiene baliza. El efecto se **atenúa un 20 %** por cada sistema que se aleja de la baliza; la fórmula exacta sale del balanceo. **Las estaciones no bajan el control.**
+   - **Producción:** cuanto más lejos del lobby está una estación, más rápido y más produce.
+   - **Invasión:** cada día de vida real hay una invasión a cada baliza, y la defienden **naves NPC** de la facción. Solo se desactiva si los alienígenas hostiles **las vencen** y la inhabilitan atacándola; entonces el control de ese sistema baja **entre un 50 % y un 70 %**, según salga del balanceo. Si la baliza sigue **activa** tras la invasión no hay ataques; si está **inactiva**, las naves hostiles atacan las estaciones de ese sistema. El jugador puede **defender la baliza y repararla**; la recompensa por repararla la recibe en el lobby.
+   - **Agresor:** quien hace que el **casco o el escudo** de otro jugador o de su estación baje un **5 %** en **un día de juego**. Se cuenta con el reloj del sistema del objetivo. Lo mismo vale con naves y estaciones NPC.
+7. **Balizas.** Son de la especie alienígena hostil. Para un jugador, una baliza se puede:
+   - **Recapturar:** da créditos para el lobby (dinero), fama positiva y la certeza de que su estación allí estará bien. Sube el control un 50 %.
+   - **Destruir:** da materiales, antimateria y una **pieza easter egg** para fabricar un radar especial con una habilidad de ayuda. Es **muy difícil**: acude en su rescate la flota hostil y la de la facción NPC a la vez. El jugador pierde fama o adquiere fama negativa. La baliza queda desactivada y baja el control de alrededor (regla 6).
+   - **Radar especial** (hecho con la pieza easter egg): manda una **señal de auxilio de baliza** que atrae una flota grande de la facción NPC del lobby. Que ataquen o no al jugador depende de su fama; **siempre** atacan a las naves alienígenas hostiles. Consume **toda la energía** de la nave o estación del jugador y tiene un **enfriamiento de 7 días de juego** por jugador, contado con el reloj de la nave que lleva el radar.
+8. **Estación de gremio: una por equipo; equipo y gremio son lo mismo.** Muy superior y más grande que las demás; la construyen, modifican y usan todos los miembros. Arranca con **una pieza fabricada por cada miembro** en su estación de anillo. Coste total de las piezas: **el de un carguero**, dividido entre los miembros **presentes en ese momento**. La tecnología se comparte, pero el **paquete inicial** (planos y herramientas) para hacer las piezas es consumible. Mejorarla cuesta mucho más material.
+   - Si un miembro se va, **su pieza se queda**. Si aún no está construida, se rehacen las piezas según los miembros que quedan.
+   - **Tregua entre gremios:** usuarios de gremios distintos pueden elegir de común acuerdo una tregua que elimina el fuego amigo entre ellos.
+9. **Gestión del gremio.** Lo lleva un líder votado. El equipo puede cambiarlo si 1/4 lo pide, como mucho una vez por semana de **tiempo real**, para evitar abusos.
+10. **Producción repartida a partes iguales** entre los miembros, aporte cada uno lo que aporte. La parte de quien se va se reparte entre los que quedan.
+11. **Artillería de defensa**: categoría nueva de módulos de estación, con armamento superior exclusivo para estaciones. Solo hay armas **ligeras y pesadas**, como en las naves (sin medianas). Cada nivel de estación da **5 huecos de arma ligera y 1 de pesada**: el nivel 1 tiene 5 y 1, y el nivel 30 (máximo) tiene 150 y 30. **Los huecos van vacíos**: las armas se fabrican en los **módulos** de la propia estación. **Las armas de estación son las de las naves, del doble de tamaño y con el triple de daño.**
+12. **Escudos de estación.** Son modulares, como los de las naves. El principal consume **arena**; con más tecnología, gases para los plasmas, antimateria para los electromagnéticos, etc. Se regeneran mientras tengan con qué mantenerlos. Su consumo es un **múltiplo del daño que recibe el objeto atacado**, y el múltiplo se ajusta empíricamente.
+13. **Subir de nivel una estación** (la de gremio y las individuales, igual). Los jugadores depositan en sus almacenes los materiales y herramientas de la mejora. Cuando hay suficiente, empieza un **proceso de construcción** durante el cual la estación es **vulnerable**. Para que no sea injusto, el usuario puede **pagar una cuota a la facción NPC**, que depende del nivel de la flotilla que la proteja mientras se termina de construir.
+14. **Estación lobby.** Una ciudadela de enorme tamaño y defensas, en el sistema central. Recibe a las naves de los jugadores que acaban de entrar en el servidor. Ofrece: **reaparición**, **creación de gremios** y **comercio** sistemático y entre jugadores. Los precios sistemáticos se fijan empíricamente, balanceados con la minería.
+15. **Recursos de inicio.** Solo si el jugador se queda **sin naves ni estaciones activas** puede reclamarlos: una **nave de inicio** con la **mitad del inventario máximo** de la nave y solo **dos módulos de minería**. En esa nave no importa que esos módulos sean pesados.
+16. **Reaparición y cápsula de escape.** Si se pierden las estaciones y las naves capitales, el jugador reaparece en el lobby. Si una nave colapsa, los tripulantes salen en una **cápsula de escape** que los lleva a su estación individual; si no tienen, a la de gremio; y si no, a la del lobby. Si un grupo entero llevaba una sola nave, la prioridad es la **estación de gremio**, luego la estación amiga más cercana y luego el lobby.
+   - **Bodega:** se pierde cuando la nave se destruye. El jugador recupera en el lobby una parte que depende del control del sistema; el resto queda en los **restos de la nave** en ese sistema, y el jugador u otra persona puede recogerlo.
+   - **Muerte:** por ahora es solo la **nave destruida**; más adelante se añadirán interacciones a nivel de persona. La persona reaparece en el **primer sistema** (en Internet, el del **lobby**) con una **nave inicial** con las dos torretas de minería y la **estación origami**. Vale en **todos los modos excepto el realista**, donde el tripulante vuelve a una **estación aliada** o a la **nave de un compañero**.
+   - **Resumen de reaparición:** 1) nave destruida → la tripulación sale en cápsula a su estación individual, luego a la de gremio y luego al lobby (en solitario, a la estación o nave más cercana); 2) sin naves ni estaciones activas, salvo en el modo realista → primer sistema con una nave inicial, la origami y la mitad del inventario máximo.
+17. **Fama.** Se gana recapturando balizas y se pierde destruyéndolas. Fama positiva: descuentos y acceso a **skins y tecnologías exclusivas** de la facción NPC reguladora. Fama negativa, según lo grande que sea el número: **sobreprecios en el lobby** y, más grave, **ataques aleatorios** de las naves NPC de la facción del lobby, pero solo **fuera de los 2 primeros sistemas** alrededor del lobby.
+18. **Créditos y mercado.** Todos los jugadores empiezan con una **pequeña cantidad de créditos**. Se gastan en **tecnología básica y materiales** que vende el lobby. También son la **economía entre jugadores**: un jugador pone su producto en el **tablero de economía** del lobby y otros compran esa reserva. No hay límites de precio. El lobby cobra un **impuesto** que depende del nivel de fama; no se considera adónde va. Las ofertas del lobby son **eternas** en la mayoría de los casos; las de los jugadores **desaparecen una semana (de tiempo real) después de publicarse**, y quien vende **deposita el material en el lobby**. Se venden **por unidades**. Si la oferta caduca, el jugador tiene que **recoger en el lobby** lo que no se vendió.
+19. **Flota desplegada.** Un jugador puede desplegar a la vez **hasta dos naves de clase carguero o superior** y dar el mando de sus naves a **NPC de su propia tripulación**. Puede manejar cualquiera de ellas. Cada nave desplegada resta daño y resistencia a **todas** las naves del jugador: **20 %** por cada nave grande (carguero en adelante) y **(5 − nº de categorías por debajo del carguero) %** por las menores, es decir acorazado 4 %, destructor 3 %, crucero 2 %, fragata 1 %. Las **naves dron** son módulos y no cuentan. Las **corvetas** van aparte: se pueden desplegar **hasta 30** y su daño baja un **2 %** por cada corveta desplegada. Cada clase por debajo del carguero tiene un **tope de 30** naves, y el límite real es menor por la reducción de daño por numerosidad. Los topes y las penalizaciones cuentan **naves activas** (desplegadas), en todos los modos; **no hay límite de naves creadas**. Los porcentajes se suman y el daño no baja de 0 %: con una flota enorme hay que cuidar que no llegue a 0. Si destruyen la nave en la que va el jugador, pasa a la **más grande que tenga desplegada**. La única que **no pierde** daño por naves desplegadas es la **estación espacial**.
+20. **Bodega y peso.** Cada nave tiene una **capacidad máxima de almacenamiento**. Hay **módulos de almacén** que la amplían, a costa del hueco de módulo que ocupan y de un mayor coste de mover la nave. Cuanto más peso lleva, **más cuesta moverla**, así que llenar la bodega al máximo se penaliza. En el modo Internet el sistema de bodega se **reescribe en lo que haga falta** para que se pueda perder **en fracciones** (regla 16).
+21. **Tripulación NPC.** Los tripulantes son **aleatorios**, con estadísticas distintas y una categoría que sale de ellas. Las estadísticas son **Audacia, Tenacidad, Firmeza y Adaptabilidad** y afectan al **manejo**, la **resistencia**, el **daño** y la **regeneración de escudos** de la nave. El NPC al mando de cada nave es su **sub capitán** y da a la nave **mejoras del 1 % al 10 %**, según lo fuerte que sea en cada estadística. **Audacia** sube el daño, **Tenacidad** la resistencia, **Firmeza** la regeneración de escudos y **Adaptabilidad** el manejo. Cada nave tiene canónicamente **1000 tripulantes**, y solo **20** están capacitados para manejar una nave. Esos 20 son los de la **nave inicial**; se consiguen más con **módulos de las estaciones**: el **módulo de recepción de personal** recibe naves pequeñas de traslado y trae **10 personas capacitadas cada 30 días de juego**. Cada estación admite como máximo **20** de ese personal, y se puede **devolver personal a la Tierra**. Hace falta **un capacitado por nave desplegada**, así que este número limita la flota. Los capacitados que llegan cada 30 días tienen también estadísticas **aleatorias**, que siguen una **campana de Gauss** centrada en valores medios bajos: un tripulante con estadísticas muy altas es **extremadamente raro** y será **personal clave** para el jugador.
+22. **Hangares y naves por jugador.** En **LAN** no hay límite de naves por jugador ni de personas por nave. En **Internet**, las naves que un jugador puede tener almacenadas dependen de los **módulos de hangar** de su estación (**máximo 4**), de su **nivel**, de la **tecnología del hangar** (su volumen de almacén) y del **volumen de cada nave**: cuanto mayor es la nave, menos caben. Las naves **no desplegadas** se quedan **sin cargar dentro de los hangares**, para que el servidor no colapse. Hay un **tope de naves activas por servidor**, que se prueba empíricamente (cifra inicial en la tabla). En Internet, de **supercarguero** en adelante, una nave admite **hasta 30 personas**, pero **solo las 4 primeras son operativas**: las demás no hacen nada en la nave, aunque cuentan para el bonus de la regla 23. Las estaciones **no empiezan con hangares**: se construyen como módulos. Los drones no los maneja ningún usuario: son sobre todo módulos de torreta.
+23. **Más personas al mando, más fuerte.** Cuantas más personas hay dentro de una misma nave (operativas o no), más suben su daño y su resistencia, de forma **logarítmica**, para que sea justo. **El bonus no tiene tope propio**, ni en LAN ni en Internet: es cuestión de balanceo.
+
+### Por cerrar
+
+- **Cifras de balanceo:** la fórmula del control, la producción por distancia, la fama (escala y umbrales), el coste de mover estaciones y el de las invasiones se proponen como cifras iniciales para probar y se ajustan jugando.
+- **Origami:** replegarla y anclarla a la nave cambia cómo se despliega hoy (una sola vez).
+- **«Naves capitales»:** ¿la clase Capital o la nave principal del jugador?
+- **Cápsula de escape:** dijiste «nave gremial», puse **estación de gremio**.
+- **Bodega:** cuánto recupera en el lobby (propongo el porcentaje de control) y cómo encaja con la pérdida de bodega del modo (`cargoLoss`). Qué parte de `Inventory` y de las zonas de bodega interfiere con perderla en fracciones.
+- **Idea:** una «semana de ofertas» del lobby como easter egg.
+- **Hangares:** el volumen, los niveles y el tope de 4 módulos son cifras iniciales.
+- **Flota:** con un capacitado por nave desplegada, la flota empieza limitada a 20, frente al tope de 30 por clase.
+- **Modo realista sin aliados:** si se queda sin naves ni estaciones no recibe nave nueva; ¿la campaña acaba, como hoy con `permadeath`? La decisión 5 decía «fuera de la partida».
+- **Cifras de flotilla y de nivel:** ver propuesta abajo; se ajustan jugando.
+- **Nivel de estación:** no confundirlo con los 6 niveles de las estaciones alienígenas ni con el «nivel 1» de la origami.
+- **Coste de una nave:** hoy `Balance.h` no define cuánto cuesta una nave en materiales (las armas sí tienen masa). Hay que implementarlo, con un coste por clase y modelo (ligera, normal y pesada), y decidirlo **empíricamente**. La pieza del gremio se mide con el carguero.
+
+### Propuesta de cifras (para ajustar, no decidido)
+
+Como no hay un coste de nave en el código, todo va en múltiplos de **C** (el coste de un carguero normal). Cuando haya masas por clase, C se convierte en toneladas y el resto sale solo.
+
+| Concepto | Propuesta |
+|---|---|
+| Subir una estación individual del nivel n−1 al n | `0,05 × C × n^1,5`: nivel 2 = 0,14 C, nivel 10 = 1,6 C, nivel 30 = 8,2 C. Del 1 al 30 suma unas 100 C |
+| Estación de gremio | ×4 respecto a la individual (muy superior, mucho más material) |
+| Composición del coste | 85 % materiales a granel (baratos) y 15 % elementos raros (lo escaso, como acordado en `diseno-combate.md`) |
+| Planos y herramientas | Un paquete consumible cada 5 niveles |
+| Cuota de flotilla | Un porcentaje del coste de ese nivel: flotilla 1 = 5 %, 2 = 10 %, 3 = 20 %, 4 = 40 % |
+| Flotilla | Nivel 1: corvetas. 2: fragatas. 3: cruceros. 4: destructores. La cantidad de naves y su modelo se ajustan empíricamente y llevan un grado de aleatoriedad |
+| Ventana vulnerable | Duración fija de 15 min reales por mejora |
+
+Para ajustarlas con datos, conviene medir cuánto tarda un jugador en reunir una C con sus drones y partir de ahí (objetivo propuesto: nivel 5 en unas horas, nivel 30 en cientos).
+
+### Cifras iniciales de balanceo (para probar)
+
+Puntos de partida razonados, no decididos. Anclas del código: depósito de antimateria de la nave 120 kt para «unas veinte burbujas» (6 kt cada una), minería de 10 kt/h por dron, escala de tiempo 60 (1 min real = 1 h de juego), y las clases y el casco de `Balance.h`.
+
+**Control del espacio.** Anillo 0 es el sistema del lobby y anillo 1 el siguiente: siempre 100 %. Balizas desde el anillo 2 hasta el 6 (el 7 no tiene).
+
+| Anillo | 2 | 3 | 4 | 5 | 6 | 7 | 8 o más (salvaje) |
+|---|---|---|---|---|---|---|---|
+| Control base sin balizas | 70 | 55 | 40 | 25 | 15 | 10 | 0 |
+
+- `control = recorte(base + Σ balizas activas 50·a(d) − Σ balizas desactivadas 30·a(d), 0, 100)`, con `a(d) = 1 − 0,2·d` (d = sistemas de distancia a la baliza; con d ≥ 5 no afecta).
+- Prueba rápida: en el anillo 2 una baliza propia activa da 100 y desactivada da 40, una bajada de 60, dentro del 50–70 % pedido.
+- Invasión: una por baliza y día real.
+
+**Economía y producción**
+
+| Concepto | Cifra inicial |
+|---|---|
+| Producción de una estación según su anillo `k` (ritmo y capacidad) | ×(1 + 0,2·k): ×1,4 en el anillo 2, ×2,4 en el 7 y más allá |
+| Créditos iniciales | 1000 |
+| Material a granel en el lobby | compra del jugador 1 cr/kt, venta al lobby 0,5 cr/kt |
+| Elementos raros | 50 a 500 cr/kt según escasez |
+| Tecnología básica del lobby | 500 a 5000 cr |
+| Recapturar una baliza | +500 cr y +50 de fama |
+| Destruir una baliza | −100 de fama |
+| Impuesto del mercado | 5 % base; −1 punto por cada 200 de fama positiva (mínimo 2 %); +1 punto por cada 100 de fama negativa (máximo 15 %) |
+| Bodega recuperada en el lobby al perder la nave | `control` % de la bodega; el resto, en los restos |
+| Coste de mover según la carga | ×(1 + (carga ÷ capacidad)²): vacía ×1, a la mitad ×1,25, llena ×2 |
+| Capacidad de bodega | 3000 kt × casco relativo de la clase (fragata ligera 3000, carguero normal 90 000) |
+| Módulo de almacén | +25 % de la capacidad base de la nave, ocupa un hueco de módulo y suma un 10 % al coste de mover |
+| Penalización de flota | 20 % por nave grande; 4 %, 3 %, 2 % y 1 % de acorazado a fragata; corvetas aparte: 2 % cada una, máximo 30 (regla 19) |
+| Oferta de un jugador | caduca a los 7 días de tiempo real |
+| Volumen de una nave (UF = una fragata ligera) | casco relativo^0,8: corveta 0,2; fragata 1 a 1,3; crucero 3,2; destructor 4,7; acorazado 11; carguero 15; supercarguero 40; capital 96; capital suprema 600 |
+| Volumen de un módulo de hangar | 10 UF × nivel^1,5: nivel 1 = 10, nivel 5 = 112, nivel 10 = 316 (nivel máximo 10) |
+| Tecnología de hangar | +50 % de volumen por nivel de tecnología, hasta 5 |
+| Módulos de hangar por estación | máximo 4 |
+| Naves activas por servidor (Internet) | 200, para probar |
+| Personas por nave en Internet | corveta 2, fragata 4, crucero 6, destructor 8, acorazado 12, carguero 20, supercarguero o más 30 |
+| Mejora de un sub capitán | por estadística, 1 % + 9 % × (valor ÷ 100), con el valor de la campana de Gauss (fila siguiente). Categoría por la media de las cuatro: Recluta < 30, Veterano 30–50, Élite 50–65, Leyenda > 65 |
+| Estadística de un tripulante | campana de Gauss, media 40 y desviación 18, entre 0 y 100: ≥ 60 el 13 %, ≥ 70 el 4,8 %, ≥ 80 el 1,3 %, ≥ 90 el 0,27 % |
+| Bonus por personas a bordo | daño y resistencia ×(1 + 0,25 · ln n), con n todas las personas dentro de la nave: 2 = +17 %, 4 = +35 %, 10 = +58 %, 30 = +85 % |
+
+**Fama** (escala −1000 a +1000)
+
+| Fama | Efecto |
+|---|---|
+| ≥ 100 | 5 % de descuento en el lobby |
+| ≥ 300 | 10 % de descuento y skins |
+| ≥ 600 | 20 % de descuento y tecnologías exclusivas de la facción |
+| ≤ −100 | sobreprecio del 10 % |
+| ≤ −300 | sobreprecio del 25 % |
+| ≤ −500 | ataques aleatorios de las naves NPC fuera de los 2 primeros sistemas |
+
+**Estaciones y combate**
+
+| Concepto | Cifra inicial |
+|---|---|
+| Casco y escudo de una estación de nivel n | 30·n veces los de la fragata ligera: nivel 1 = 30, nivel 30 = 900 |
+| Daño con el dueño ausente | 1/10 |
+| Consumo del escudo por unidad de daño absorbida | arena ×2, gases ×1, antimateria ×0,5 (más tecnología, menos material) |
+| Mover una estación | 15 kt de antimateria por salto equivalente a una burbuja de la nave (2,5 × 6 kt) |
+| Flotilla de la facción | nivel 1: 3 corvetas; 2: 3 fragatas; 3: 4 cruceros; 4: 4 destructores; cantidad ±25 % al azar |
+| Ataque a estaciones con la baliza inactiva | 2 corvetas por estación y día de invasión |
+| Cuota de flotilla | ver propuesta de arriba (5 %, 10 %, 20 %, 40 % del coste del nivel) |
+
+Cómo ajustarlas: medir los créditos y kt que gana un jugador por hora real, y mover el precio del granel hasta que lo inicial tarde unos 30 minutos en gastarse.
+
+### Qué cambia en el código
+
+- `Station`: casco, escudo, dueño, equipo o gremio y nivel (hasta 30). Las estaciones guardan hoy `site`, módulos y producción, no vida. Tope de una por jugador y una por gremio.
+- `ModuleKind`: categoría de artillería de defensa (ligera y pesada), con huecos por nivel; módulo de fabricación de armas de estación; módulo de movimiento; escudos modulares con su munición (arena, gases, antimateria); la origami pasa a ser modular.
+- Origami que se repliega y se ancla a la nave; límite de una central y una origami por jugador.
+- Radar especial: señal de auxilio, flota NPC, gasto de toda la energía y enfriamiento de 7 días de juego.
+- Escombros: estado nuevo de la estación; el jugador puede repararla o desecharla.
+- Facción NPC reguladora y nivel de control del espacio por sistema, con balizas (recaptura, destrucción, propagación) y pérdida diaria por invasiones.
+- Fama y créditos (moneda del lobby), tablero de economía con impuesto por fama y la pieza easter egg del radar.
+- Restos de nave con la bodega que no se recupera en el lobby, recogibles por cualquiera.
+- Varias naves desplegadas con mando NPC y penalización de flota; paso del jugador a la nave más grande al perder la suya.
+- Capacidad de bodega por clase, módulos de almacén y coste de mover según la carga; la bodega se reescribe para perderse en fracciones.
+- Separar el modo Internet (lobby, facción, balizas, fama, mercado, gremios) del solitario y LAN (sin nada de eso, sin límite de estaciones).
+- Tripulantes NPC aleatorios con estadísticas (Audacia, Tenacidad, Firmeza, Adaptabilidad) y mejoras por nave; penalización propia de las corvetas (máximo 30) y tope de 30 por clase bajo el carguero.
+- Plantilla de 1000 tripulantes por nave, con 20 capacitados, y módulo de recepción de personal que renueva el personal emergente cada 30 días de juego.
+- Reaparición de la persona en el primer sistema con nave inicial y estación origami.
+- LAN: subir a la misma nave desde una estación, además de entrar de tripulante.
+- Módulos de hangar (máximo 4 por estación), volumen de cada nave y naves no desplegadas guardadas sin cargar; tope de naves activas por servidor y de personas por nave en Internet.
+- Gremio: líder, votos, cambio semanal en tiempo real, treguas entre gremios y reparto igual de la producción.
+- Botín y reposición escalados por `100 % − control`; flota de la facción al 100 %.
+- Construcción de mejora: estado vulnerable y cuota a la facción por flotilla.
+- Armas de estación: las de nave al doble de tamaño y ×3 de daño (`Balance.h`), fabricadas en módulos de la estación.
+- Estación lobby (ciudadela): reaparición, gremios, comercio, recursos de inicio.
+- Cápsula de escape al colapsar una nave y reaparición en el lobby.
+- Coste en materiales por clase y variante de nave (tabla nueva en `Balance.h`).
+- Combate: anomalías y especies hostiles pueden atacar estaciones; el daño se escala por presencia del dueño (cifra en `Balance.h`).
+- Guardado (§5): sección `gremio`, dueño y casco en `estacion`, control por sistema, fama y créditos; el formato 13 cambia.
+- Red: casco y estado de las estaciones van en la instantánea del mundo.
+
+## 9. Diseño técnico de estaciones
+
+Estado: **escrito el 14-11-2026, sin código.** Cubre las estaciones, su defensa, el control del espacio, las balizas y los gremios del §8. Quedan fuera, para un §10: tripulación NPC (regla 21), flota desplegada (19), hangares (22), bodega por clase (20), mercado y lobby (14, 18) y radar especial (7). Las cifras salen de las tablas del §8 y viven en `Balance.h`.
+
+**Idea guía:** fuera del modo Internet el control del espacio vale **0 en todas partes**. Así las fórmulas «(100 % − control)» funcionan igual en los tres modos (se paga y se saquea el 100 %) y no hacen falta dos caminos de código.
+
+### 9.1 Estructuras nuevas
+
+**Cambios en lo que ya existe**
+
+| Dónde | Campo nuevo | Para qué |
+|---|---|---|
+| `WorldRules` (`Balance.h`) | `internet` (bool, por defecto falso) | La bandera del modo Internet (9.3). Se fija al crear el mundo y se guarda |
+| `StationRules` (`Balance.h`) | casco y escudo por nivel (30·n fragatas ligeras), factor de dueño ausente (0,1), huecos por nivel (5 ligeras y 1 pesada), consumo de escudo por munición (arena 2, gases 1, antimateria 0,5), coste de mover (×2,5 la burbuja), armas de estación (×2 de tamaño, ×3 de daño), coste de nivel (0,05·C·n^1,5) y una **C provisional** en kt | Cifras iniciales para probar |
+| `StationKind` | `Guild = 3`, `Lobby = 4` | Estación de gremio y ciudadela. Los números siguen siendo los del guardado |
+| `ModuleKind` | a partir de 5: `Armory` (fabrica armas de estación), `Mover` (módulo de movimiento), `ShieldSand`, `ShieldGas`, `ShieldAntimatter` | `Fits` decide en qué estaciones cabe cada uno |
+| `Station` | `level` (1 a 30), `state`, `hull`, `shield`, `owner` (id de jugador, texto), `guild` (0 = ninguno), `buildUntil` (reloj en s, fin de la mejora), `mounts` (armas montadas), `shieldCooldown` (no se guarda) | Vida, dueño y nivel. El máximo de casco y escudo se calcula del nivel y los módulos, no se guarda |
+| `Projectile` (`Combat.h`) | `station` (id de la estación que lo disparó; 0 = ninguna), `targetStation` (-1 = ninguna) | Que una estación dispare y que se le pueda apuntar |
+| `Projectile::team` | se amplía: 3 = facción reguladora; en Internet, 100 + id de gremio para los jugadores | Fuego amigo por gremio y treguas. Una función `Hostile(a, b, mundo)` decide en un solo sitio |
+| `PlayerSave` | `credits`, `fame` | Solo cambian en Internet; en los demás modos quedan en su valor inicial |
+
+**Estructuras nuevas**
+
+- **`StationState`** (enumeración): `Active`, `Upgrading` (mejora en curso: vulnerable), `Debris` (escombros: casco 0, sigue en la lista), `Folded` (origami plegada y anclada a una nave; sin `site`, va con la nave).
+- **`DefenseMount`**: `weapon` (`WeaponKind`), `tier`, `heavy` (bool). No se guardan la recarga ni el blanco. Cuántos caben se calcula del nivel, no se guarda.
+- **`AggressionMark`**: `attacker` (id de jugador o de anomalía), `target` (estación o nave), `day` (día de juego del reloj del sistema del objetivo), `lost` (fracción de casco o escudo quitada ese día). Llega a 0,05 → agresor. Las marcas de días pasados se borran.
+- **`Beacon`**: `system`, `ring` (anillo desde el lobby), `active` (bool), `integrity` (0 a 1), `lastInvasion` (día real del servidor), `capturedBy` (id de jugador, informativo).
+- **`Guild`**: `id`, `name`, `leader`, `members` (ids de jugador), `truces` (ids de gremio), `station` (id; -1 sin construir), `pieces` (lista de `GuildPiece`), `leaderChangedAt` (fecha real, UTC), `recallVotes` (ids que piden cambiar de líder), `starterUsed` (paquete inicial consumido).
+- **`GuildPiece`**: `member`, `cost` (`Inventory`, su parte de C), `built` (bool).
+- **`Wreck`** (restos): `id`, `site`, `contents` (`Inventory` y antimateria), `fromStation` o `fromShip`, `createdAt` (reloj). Cualquiera puede recogerlos.
+- **Control del espacio**: un vector de porcentajes por sistema, **derivado** de los anillos y las balizas cada vez que cambia una baliza. No se guarda ni viaja por la red: cada lado lo recalcula.
+
+### 9.2 Guardado 14 e instantánea de red
+
+**Formato 14** (`kSaveVersion` 13 → 14; la 13 se rechaza, como hoy). Regla nueva: **una línea que vale su valor por defecto no se escribe**, para que una partida en solitario sin estaciones dañadas ni gremios cambie lo mínimo.
+
+| Documento | Entra | No entra |
+|---|---|---|
+| Mundo, cabecera | `internet` | el control (derivado) |
+| Mundo, cada `estacion` | `level`, `state`, `hull`, `shield`, `owner`, `guild`, `buildUntil`, una línea por arma montada | máximos, recargas, blancos, `deployAge`, `launch` |
+| Mundo, bloques nuevos | `baliza`, `gremio` (con sus piezas, votos y treguas), `restos`, `agresion` (solo las del día en curso) | — |
+| Jugador | `creditos`, `fama` | — |
+
+**Instantánea** (`SnapshotData` y `SplitSnapshot`). `kProtocolVersion` sube en cada paso que cambia su forma.
+
+- Trozo de **estaciones**: los mismos campos guardados, más el escudo y el casco máximos ya calculados (el cliente no tiene que conocer las reglas de módulos para pintar la barra).
+- Trozos nuevos: **balizas** (uno), **gremios** (uno por gremio), **restos** (uno). Cambian poco, así que por diferencias casi nunca viajan.
+- Trozo de cada **jugador**: créditos y fama.
+- Los proyectiles de estación van en el trozo de proyectiles con sus dos campos nuevos.
+- No viajan: el control (se recalcula), las marcas de agresión (solo las usa el servidor) ni las recargas.
+
+### 9.3 Qué reglas del §8 dependen de `WorldRules::internet`
+
+| Regla | Con la bandera (Internet) | Sin ella (solitario y LAN) |
+|---|---|---|
+| 1 | Una central y una origami por jugador, una de gremio por gremio; solo el dueño edita módulos | Sin límite; cualquiera de la partida edita |
+| 6, 7 | Facción, control, balizas, invasiones, agresor con flota | Control 0 en todo el mapa; sin balizas ni facción |
+| 8, 9, 10 | Gremios, estación de gremio, líder, votos, reparto, treguas | No existen |
+| 13 | Proceso de construcción **y** cuota a la facción | Solo el proceso de construcción (vulnerable igual) |
+| 14, 15, 18 | Lobby, recursos de inicio en el lobby, créditos y mercado | Nave inicial en el primer sistema (regla 16) |
+| 16 | Cápsula: estación propia → de gremio → lobby | Cápsula a la estación o nave más cercana |
+| 17 | Fama | No existe |
+| 20 (final), 22 | Bodega en fracciones; tope de naves por hangar | — |
+
+**Sin bandera, en todos los modos:** 2 (solo se pierden por daño), 3 (dueño ausente: en solitario nunca se da), 4, 5 (con control 0 se repone el 100 %), 11, 12, 13 (sin cuota), 19, 21 y 23.
+
+### 9.4 Pasos de implementación
+
+Cada paso compila, pasa `epsilon_game_tests` y `epsilon_tests`, y deja el juego jugable. Los que tocan cabeceras se compilan con `--clean-first`. Columna «Hecho»: se marca al terminar.
+
+| Paso | Hecho | Qué | Ficheros | Pruebas |
+|---|---|---|---|---|
+| P1 | [ ] | Cifras: `WorldRules::internet`, ampliación de `StationRules`, C provisional. Sin cambio de comportamiento | `Balance.h`, `game_tests.cpp` | Nivel 30 → 150 y 30 huecos; casco del nivel 1 = 30 fragatas ligeras; control 0 sin bandera. Partida dorada igual |
+| P2 | [x] | `StationState` y campos nuevos de `Station`; formato 14; trozo de estaciones de la instantánea | `Stations.h/.cpp`, `SaveGame.h/.cpp`, `Session.h` (`SnapshotData`), `Net.cpp`, `game_tests.cpp` | Ida y vuelta del guardado y de la instantánea; una 13 se rechaza. **La partida dorada cambia**: la versión pasa a 14 y las estaciones ganan `level` y `hull` (valores por defecto); nada más |
+| P3 | [ ] | Daño a estaciones: impacto de proyectil, escudo antes que casco, ×0,1 con el dueño ausente, casco 0 → `Debris` | `Combat.h/.cpp`, `Stations.cpp`, `Session.cpp` | Un proyectil baja escudo y luego casco; ausente recibe 1/10; destruida queda en la lista como escombros |
+| P4 | [ ] | Escudos modulares: tres módulos, regeneración que gasta `stored` | `Stations.h/.cpp`, `Balance.h` | Absorber X gasta 2X de arena; sin arena no se regenera; más módulos, más escudo máximo |
+| P5 | [ ] | Artillería: `DefenseMount`, `Armory` fabrica (coste ×2 de masa), disparo automático con `Solve` a lo hostil en alcance | `Stations.h/.cpp`, `Combat.cpp`, `Session.cpp`, `GameHud.cpp` | El nivel 1 rechaza la 6.ª ligera y la 2.ª pesada; dispara a un hostil y no a un amigo; daño ×3. Captura del disparo |
+| P6 | [ ] | Subir de nivel: depósito en almacenes, `Upgrading` hasta `buildUntil` por el reloj del sistema, máximos nuevos | `Stations.h/.cpp`, `Session.cpp`, `main.cpp` (comando `estacion nivel`) | Con material incompleto no empieza; completo empieza, es dañable y termina al sello; no retrocede con otro reloj |
+| P7 | [ ] | Escombros: reparar por (100 % − control) del coste o desechar (deja `Wreck`) | `Stations.cpp`, `Session.cpp`, `SaveGame.cpp` | Con control 0 cuesta el 100 %; con control 60, el 40 %; desechar crea restos recogibles |
+| P8 | [ ] | Límites y permisos por modo: 1+1 por jugador en Internet; editar módulos solo el dueño | `Stations.h/.cpp`, `Session.cpp`, `main.cpp` (opción `--internet`) | Internet rechaza la 2.ª central; solitario acepta 5; otro jugador usa pero no edita |
+| P9 | [ ] | Origami plegable (`Folded`, va con la nave) y `Mover` con antimateria ×2,5 | `Stations.cpp`, `Session.cpp`, `Ship.cpp`, `SaveGame.cpp` | Plegar y desplegar conserva módulos e inventario; mover sin `Mover` falla; gasto = 2,5 × burbuja |
+| P10 | [ ] | Control y agresor: `Beacon`, control derivado, `AggressionMark` con el día del sistema del objetivo, botín escalado; trozo de balizas | `Stations.h` o `Faction.h/.cpp` nuevo, `Session.cpp`, `SaveGame.cpp`, `Net.cpp` | Tabla del anillo 2: 100 con baliza activa, 40 desactivada; agresor justo al 5 %; botín ×(1 − control) |
+| P11 | [ ] | Facción e invasiones: invasión diaria por baliza (reloj real inyectable), flota NPC al 100 %, ataque a estaciones con la baliza inactiva; recapturar y destruir; créditos y fama | `Faction.cpp`, `Anomalies.cpp`, `SaveGame.cpp`, `Session.cpp` | Con un reloj falso: un día → una invasión; baliza perdida baja el control; recapturar da +500 cr y +50 de fama |
+| P12 | [ ] | Gremios: `Guild`, estación de gremio por piezas (C entre presentes), líder y votos semanales, treguas, reparto igual; trozos de gremio | `Guild.h/.cpp` nuevo, `Stations.cpp`, `Combat.cpp` (`Hostile`), `SaveGame.cpp`, `Net.cpp`, `main.cpp` | Piezas se rehacen si alguien se va antes de construir; 1/4 de votos cambia el líder una vez por semana real; tregua quita el fuego amigo; reparto igual |
+| P13 | [ ] | Interfaz y consola: barras de casco y escudo, estado, nivel, control del sistema, panel de gremio; comandos de prueba en `docs/pruebas.md` | `GameHud.cpp`, `main.cpp`, `docs/pruebas.md`, `game/README.md` | Prueba de texto del HUD donde la haya; capturas de una estación dañada, en mejora y en escombros |
+
+**P2, hecho el 14-11-2026** (con parte de P3 y una defensa provisional de P5): `Station` gana `level`, `state`, `hull`, `shield` (fracciones del máximo, que sale del nivel) y `owner`; `kSaveVersion` 14 (línea `defensa`, solo si no es el valor por defecto) y `kProtocolVersion` 2. Además: `StationNetwork::Hurt` (escudo, casco, ×0,1 con el dueño ausente, escombros que quedan en la lista); los proyectiles hostiles alcanzan estaciones (`StepProjectiles`); los hostiles armados las atacan y cada estación dispara con `nivel × turretsPerLevel` torretas de serie (×3 de daño) hasta que P5 monte armas por huecos. El combate de estaciones usa su propio generador (`Bubble::stationRng`). **Partida dorada:** además de la versión y la línea `defensa`, cambia un impacto en la nave, porque un hostil dispara ahora a la central junto a la que está atracada y un proyectil cruza la nave (probado: con ese disparo desactivado, la dorada es idéntica). Sin HUD todavía (P13).
+
+### 9.5 Riesgos
+
+- **Partida dorada.** Cambia en P2 por la versión. Con la regla de no escribir valores por defecto, P3 a P12 no deberían tocarla; si la tocan, es un fallo o hay que explicarlo.
+- **Procesador.** Una estación de nivel 30 tiene 180 armas; con `Solve` por arma y paso, unas pocas estaciones bastan para hundir los FPS en este equipo, que ya va limitado por la CPU. Mitigación: las armas iguales disparan en **baterías** con una sola solución, y el blanco se recalcula cada 0,5 s. Medir con `--no-vsync` en P5.
+- **Sistemas sin cargar.** Hoy las estaciones de un sistema descargado solo producen por sello. Daño, invasiones y ataques a estaciones lejanas no pueden simularse proyectil a proyectil: hará falta una **resolución resumida** (daño por día según la flota), que P11 debe dejar acotada.
+- **Tres relojes.** Reloj del sistema (producción, mejora, día del agresor), reloj de la nave (enfriamientos) y tiempo real (invasiones, votos, ofertas). Mezclarlos es el error más probable: cada campo dice en su comentario qué reloj usa, y el tiempo real se inyecta para poder probarlo.
+- **Equipos.** Ampliar `Projectile::team` toca la puntería de anomalías y especies. `Hostile()` centraliza la decisión; las pruebas de combate actuales tienen que seguir pasando sin cambios.
+- **Dueño como texto.** En solitario el dueño es `"local"`; si el jugador cambia de id en `ajustes.txt`, sus estaciones dejan de ser suyas. Sin bandera Internet, la propiedad no debe restringir nada.
+- **La C provisional.** Todo el coste de niveles y gremios cuelga de una cifra que aún no existe en el código; hasta tener coste por clase de nave, C es una constante a ajustar jugando.
+- **Ciudadela.** La estación lobby no puede caer: lleva una marca de indestructible para que la regla 2 no la alcance por accidente.
+- **Ninja y cabeceras.** P2, P5, P10 y P12 tocan cabeceras muy incluidas: `--clean-first` siempre.

@@ -92,12 +92,23 @@ struct ShipState {
     ShipLoadout loadout;         // modulos montados y motor de impulso (ShipModules.h)
     bool stationAboard = true;   // la estacion origami va plegada alrededor de las bodegas (Stations.h)
     std::vector<double> pieces;  // integridad de cada pieza del modelo, de 0 a 1; vacio = sin piezas
+    // Ranuras y piezas de ESTA nave (multijugador.md, 3a.6). Nula = la de CurrentShipDesign(), que es
+    // el diseno por defecto del juego: asi una nave sin diseno propio sigue al que se cargue.
+    std::shared_ptr<const ShipDesign> design;
 };
 
-ShipState MakeShip(const Balance& rules);
+// El diseno de esta nave: el suyo, o el de por defecto.
+const ShipDesign& DesignOf(const ShipState& ship);
 
-// Ajusta loadout y pieces a las ranuras y piezas de CurrentShipDesign(): lo que sobre se quita,
-// lo que falte entra vacio o entero.
+// Las cifras de una clase y variante, a partir de las de la nave de serie (la fragata ligera): casco
+// y medidas en proporcion a la eslora y al casco de la tabla ShipClass. El resto no cambia.
+ShipRules RulesForClass(const ShipRules& base, ShipClassId id, ShipVariant variant);
+
+ShipState MakeShip(const Balance& rules);
+ShipState MakeShip(const Balance& rules, const ShipRules& ship);
+
+// Ajusta loadout y pieces a las ranuras y piezas del diseno de la nave (DesignOf): lo que sobre se
+// quita, lo que falte entra vacio o entero.
 void FitToDesign(ShipState& ship);
 bool PieceLost(const ShipState& ship, int piece);
 // El modulo de esa ranura funciona: su zona sigue ahi y, si va montado en una pieza, la pieza tambien.

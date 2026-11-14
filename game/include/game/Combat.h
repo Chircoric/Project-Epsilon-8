@@ -49,6 +49,7 @@ struct Projectile {
     int owner = 0;          // id de la anomalia que lo lanzo; 0 = el jugador
     int target = -1;        // guiados: id de la anomalia; 0 = una nave de jugador (la de ship); -1 = ninguno
     int ship = 0;           // id de nave (Vessel::id): la que lo disparo si es de un jugador; si no, a la que apunta
+    int station = 0;        // id de la estacion que lo disparo; 0 = ninguna
     eps::Vec3d position;    // km
     eps::Vec3d velocity;    // km/s
     eps::Vec3d origin;      // desde donde salio: la estela y el haz parten de aqui

@@ -377,6 +377,18 @@ La rueda del ratón acerca cambiando el enfoque, no moviendo la cámara: así la
 
 Los sensores normales ven lo que emite. Las estructuras abandonadas llevan eones apagadas: para ellas hace falta el barrido de microondas y ultravioleta.
 
+El radar pasivo tiene dos niveles:
+
+| Nivel | Qué nota | Alcance (niebla media) |
+|---|---|---|
+| Contacto | Naves, estructuras, anomalías y cualquier astro | 8·10⁷ km; no crece con el escáner, y lo frío sigue sin aparecer hasta un barrido |
+| Eco de masa | Estrellas, planetas de más de 10²² kg y cinturones, como «señal sin identificar» (anillo en el radar y en la lista) | 2·10⁹ km (unas 13 UA) con el escáner 1; cada nivel suma un 80 % y cada antena un 30 %. Una estrella de un sistema sin localizar, a 10 veces eso |
+
+La niebla acorta o alarga los dos por igual (de ×0,56 a ×2,2). En el radar, la leyenda «N MASAS» da cuántos ecos hay y a qué distancia llegan. Caben 24 señales; si hay más, se quedan por relevancia y no por distancia: primero naves y anomalías, después las estrellas y estaciones del sistema en que se está, sus astros conocidos, sus ecos de masa y, al final, lo de otros sistemas. Las cifras están en `ShipRules` de `Balance.h`.
+
+![Radar pasivo con escáner 1](../docs/radar_1e11.png)
+![Radar pasivo con escáner 5](../docs/radar_1e11_escaner5.png)
+
 Tampoco se conoce otro sistema hasta que un barrido lo localiza o se llega a él. Al empezar solo aparece el tuyo.
 
 **Sin barrido no se sabe nada de un astro**: es una señal sin identificar, sin recursos ni datos, y no se puede desplegar en él. El barrido analiza todo lo que hay a unas 40 UA en este sistema. Análisis, en la rueda, abre sus datos:

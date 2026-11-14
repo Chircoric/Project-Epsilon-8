@@ -1,4 +1,4 @@
-#include "game/GameLayer.h"
+﻿#include "game/GameLayer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1340,7 +1340,7 @@ void GameLayer::DrawModules(const FrameContext& c, FramePacket& out, const Vec3d
         out.meshes.push_back(m);
     };
 
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(session_.Ship());
     for (std::size_t i = 0; i < design.slots.size() && i < ship.loadout.modules.size(); ++i) {
         const ShipModuleKind kind = ship.loadout.modules[i];
         const ModuleSlot& s = design.slots[i];
@@ -1487,7 +1487,7 @@ void GameLayer::DrawScaffold(const FrameContext& c, FramePacket& out, const Stat
 void GameLayer::DrawDrones(const FrameContext& c, FramePacket& out, const SceneLight& light) const {
     (void)light;
     const ShipState& ship = session_.Ship();
-    const ShipDesign& design = CurrentShipDesign();
+    const ShipDesign& design = DesignOf(session_.Ship());
     if (!assets_.drone) return;
     const auto glowAt = [&](const Vec3d& at, float metres, float minPixels, const Color& tint, std::uint32_t id) {
         const Vec3f view = c.viewRotation.TransformDirection(Vec3f(at - c.cameraPosition));
