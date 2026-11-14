@@ -6100,6 +6100,154 @@ static void TestNetwork() {
     CHECK(host.Clients() == 0 && server.VesselAt(1).phase == GamePhase::Away && !server.PlayerAt(1).connected);
 }
 
+// Partidas en la red local y servidor sin jugador propio (fase 7 de docs/multijugador.md).
+static void TestLanAndServer() {
+    Balance rules;
+    // Quien abre una partida contesta a quien pregunta por difusion.
+    if (NetworkAvailable()) {
+        std::string error;
+        std::unique_ptr<LanBeacon> beacon = AnnounceOnLan(&error);
+        if (!beacon) {
+            std::printf("  (no se pudo abrir el anuncio: %s; puede que haya un servidor abierto)\n", error.c_str());
+        } else {
+            LanGame mine;
+            mine.port = 27391;
+            mine.name = "Prueba de red local";
+            mine.players = 1;
+            mine.maxPlayers = 4;
+            mine.mode = 3;
+            std::atomic<bool> stop{false};
+            std::thread pump([&] {
+                while (!stop) {
+                    beacon->Pump(mine);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            });
+            const std::vector<LanGame> found = FindLanGames(0.8);
+            stop = true;
+            pump.join();
+            const LanGame* game = nullptr;
+            for (const LanGame& g : found)
+                if (g.port == mine.port && g.name == mine.name) game = &g;
+            CHECK(game != nullptr);
+            if (game) CHECK(!game->address.empty() && game->players == 1 && game->maxPlayers == 4 && game->mode == 3);
+            int same = 0;
+            for (const LanGame& g : found) same += g.port == mine.port && g.name == mine.name ? 1 : 0;
+            CHECK(same == 1);  // contesta por difusion y por 127.0.0.1, pero cuenta una vez
+        }
+    }
+
+    // Un servidor sin jugador propio: la nave de salida espera al primero que entre, y el mundo, quieto.
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "epsilon_prueba_servidor";
+    const std::string folder = path.string();
+    std::filesystem::remove_all(path);
+    const double dt = GameSession::kFixedStep;
+    Hello eva, luis, nuevo;
+    eva.id = "eva";
+    eva.name = "Eva";
+    eva.join = JoinAs::OwnShip;
+    luis.id = "luis";
+    luis.name = "Luis";
+    luis.join = JoinAs::Crew;
+    nuevo.id = "nuevo";
+    nuevo.join = JoinAs::OwnShip;
+    std::size_t known = 0;
+    {
+        auto engineS = MakeEngine(rules, 9), engineA = MakeEngine(rules, 9), engineB = MakeEngine(rules, 9);
+        GameSession server(*engineS, rules, 9, GameModeId::Peaceful), first(*engineA, rules, 9, GameModeId::Peaceful), second(*engineB, rules, 9, GameModeId::Peaceful);
+        server.SetEngineFactory([&] { return MakeEngine(rules, 9); });
+        server.Step(dt, {});
+        server.PlayerLeft(0);
+        GameServer host(server);
+        host.SetSaveFolder(folder);
+        for (int i = 0; i < 5; ++i) host.Update(dt);
+        CHECK(server.VesselAt(0).phase == GamePhase::Away && host.Clients() == 0);
+        const double waiting = server.WorldTime();
+        for (int i = 0; i < 30; ++i) host.Update(dt);
+        CHECK(server.SimTime() == waiting || server.WorldTime() == waiting);  // sin nadie, el reloj no corre
+
+        // El primero en llegar se queda con esa nave: no se crea otra.
+        auto linkA = MakeMemoryLink(), linkB = MakeMemoryLink();
+        host.Add(linkA.first);
+        GameClient clientA(first, linkA.second, eva);
+        const auto round = [&](int count) {
+            for (int i = 0; i < count; ++i) {
+                first.Step(dt, {});
+                second.Step(dt, {});
+                host.Update(dt);
+                clientA.Update();
+            }
+        };
+        round(10);
+        CHECK(clientA.Ready() && server.VesselCount() == 1 && server.PlayerCount() == 1);
+        CHECK(server.PlayerAt(0).id == "eva" && server.PlayerAt(0).connected && server.PlayerAt(0).seats == kAllSeats && server.VesselAt(0).phase == GamePhase::Flying);
+        CHECK(first.VesselId() == 1 && first.Phase() == GamePhase::Flying && server.SimTime() > waiting);
+        // Un tripulante entra en su nave.
+        host.Add(linkB.first);
+        GameClient clientB(second, linkB.second, luis);
+        for (int i = 0; i < 10; ++i) {
+            round(1);
+            clientB.Update();
+        }
+        CHECK(clientB.Ready() && server.PlayerCount() == 2 && server.VesselCount() == 1 && second.VesselId() == 1);
+        server.MarkScanned(0);  // lo que averiguan
+        round(5);
+        known = server.PlayerAt(0).scanned.size();
+        CHECK(known > 0 && server.PlayerAt(1).scanned.size() == known);
+
+        // Guardar: el mundo y un archivo por cada jugador que ha entrado.
+        std::string error;
+        CHECK(host.Save(&error));
+        CHECK(std::filesystem::exists(path / "mundo.sav") && std::filesystem::exists(path / "jugadores" / "eva.sav") && std::filesystem::exists(path / "jugadores" / "luis.sav"));
+        int files = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(path / "jugadores")) files += entry.is_regular_file() ? 1 : 0;
+        CHECK(files == 2);
+        const std::optional<PlayerSave> crew = LoadPlayer(folder, "luis");
+        CHECK(crew && crew->ship == 1 && crew->scanned.size() == known && !LoadPlayer(folder, "nadie"));
+    }
+
+    // Otro dia, el servidor arranca con esa carpeta: el mundo vuelve sin nadie dentro, y cada uno, al
+    // entrar, recupera su nave y lo que sabia.
+    {
+        auto engineS = MakeEngine(rules, 9), engineA = MakeEngine(rules, 9), engineB = MakeEngine(rules, 9), engineC = MakeEngine(rules, 9);
+        GameSession server(*engineS, rules, 9, GameModeId::Peaceful), first(*engineA, rules, 9, GameModeId::Peaceful), second(*engineB, rules, 9, GameModeId::Peaceful),
+            third(*engineC, rules, 9, GameModeId::Peaceful);
+        server.SetEngineFactory([&] { return MakeEngine(rules, 9); });
+        server.Step(dt, {});
+        std::string error;
+        const std::optional<WorldSave> world = LoadWorld(folder, &error);
+        CHECK(world && world->ships.size() == 1);
+        if (!world) return;
+        CHECK(server.RestoreWorld(*world, &error));
+        CHECK(server.VesselCount() == 1 && server.VesselAt(0).phase == GamePhase::Away && !server.PlayerAt(0).connected && server.PlayerAt(0).scanned.empty());
+        GameServer host(server);
+        host.SetSaveFolder(folder);
+        for (int i = 0; i < 10; ++i) host.Update(dt);
+        CHECK(server.VesselAt(0).phase == GamePhase::Away);
+
+        auto linkA = MakeMemoryLink(), linkB = MakeMemoryLink(), linkC = MakeMemoryLink();
+        host.Add(linkA.first);
+        GameClient clientA(first, linkA.second, eva);
+        host.Add(linkB.first);
+        GameClient clientB(second, linkB.second, luis);
+        host.Add(linkC.first);
+        GameClient clientC(third, linkC.second, nuevo);
+        for (int i = 0; i < 15; ++i) {
+            first.Step(dt, {});
+            host.Update(dt);
+            clientA.Update();
+            clientB.Update();
+            clientC.Update();
+        }
+        CHECK(clientA.Ready() && clientB.Ready() && clientC.Ready() && host.Clients() == 3);
+        CHECK(first.VesselId() == 1 && second.VesselId() == 1 && third.VesselId() == 2);  // el nuevo, con nave propia
+        CHECK(server.VesselCount() == 2 && server.PlayerCount() == 3 && server.VesselAt(0).phase == GamePhase::Flying);
+        CHECK(first.ScannedCount() == static_cast<int>(known) && second.ScannedCount() == static_cast<int>(known));  // lo que sabian
+        CHECK(server.PlayerAt(0).id == "eva" && server.PlayerAt(0).name == "Eva");
+    }
+    std::filesystem::remove_all(path);
+}
+
 // Produccion y alerta por sello de tiempo (fase 1.7 de docs/multijugador.md): da igual cada cuanto se
 // mire una estacion o un sistema; lo que cuenta es el reloj con el que se mira.
 static void TestTimeStamps() {
@@ -6341,6 +6489,7 @@ int main(int argc, char** argv) {
         {"Servidor y cliente en memoria", TestNet},
         {"Desconexion: salir del mundo, pero no en combate", TestDisconnect},
         {"Red (ENet) en esta maquina", TestNetwork},
+        {"Red local y servidor sin jugador", TestLanAndServer},
         {"Armamento humano", TestHumanArmament},
         {"Propulsores, estela y luz", TestThrustersAndLight},
         {"Modulos de la nave", TestShipModules},

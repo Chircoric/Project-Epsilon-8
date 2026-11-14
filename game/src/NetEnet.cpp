@@ -8,7 +8,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
+#include <string>
+#include <thread>
 
 #include "game/Net.h"
 
@@ -159,6 +164,129 @@ private:
 }  // namespace
 
 bool NetworkAvailable() { return true; }
+
+// ---- Partidas en la red local --------------------------------------------------------------------
+// Un datagrama de pregunta, "EPSILON-NEBULOSA? <protocolo>", a la direccion de difusion; cada servidor
+// contesta al que pregunta con "EPSILON-NEBULOSA! <protocolo> <puerto> <jugadores> <maximo> <modo> <nombre>".
+
+namespace {
+
+constexpr const char* kAsk = "EPSILON-NEBULOSA?";
+constexpr const char* kAnswer = "EPSILON-NEBULOSA!";
+
+ENetSocket OpenDatagram(bool broadcast) {
+    const ENetSocket s = enet_socket_create(ENET_SOCKET_TYPE_DATAGRAM);
+    if (s == ENET_SOCKET_NULL) return s;
+    enet_socket_set_option(s, ENET_SOCKOPT_NONBLOCK, 1);
+    enet_socket_set_option(s, ENET_SOCKOPT_REUSEADDR, 1);
+    if (broadcast) enet_socket_set_option(s, ENET_SOCKOPT_BROADCAST, 1);
+    return s;
+}
+
+class EnetBeacon final : public LanBeacon {
+public:
+    explicit EnetBeacon(ENetSocket socket) : socket_(socket) {}
+    ~EnetBeacon() override { enet_socket_destroy(socket_); }
+    void Pump(const LanGame& info) override {
+        char in[128];
+        ENetAddress from;
+        ENetBuffer buffer;
+        for (int i = 0; i < 32; ++i) {  // como mucho, unas cuantas preguntas por fotograma
+            buffer.data = in;
+            buffer.dataLength = sizeof(in) - 1;
+            const int got = enet_socket_receive(socket_, &from, &buffer, 1);
+            if (got <= 0) return;
+            in[got] = '\0';
+            if (std::strncmp(in, kAsk, std::strlen(kAsk)) != 0) continue;
+            if (std::strtoul(in + std::strlen(kAsk), nullptr, 10) != kProtocolVersion) continue;  // otra version: no se le contesta
+            const std::string reply = std::string(kAnswer) + " " + std::to_string(kProtocolVersion) + " " + std::to_string(info.port) + " " + std::to_string(info.players) + " " +
+                                      std::to_string(info.maxPlayers) + " " + std::to_string(info.mode) + " " + info.name;
+            ENetBuffer out;
+            out.data = const_cast<char*>(reply.data());
+            out.dataLength = reply.size();
+            enet_socket_send(socket_, &from, &out, 1);
+        }
+    }
+
+private:
+    ENetSocket socket_;
+};
+
+}  // namespace
+
+std::unique_ptr<LanBeacon> AnnounceOnLan(std::string* error) {
+    const auto fail = [&](const char* why) -> std::unique_ptr<LanBeacon> {
+        if (error) *error = why;
+        return nullptr;
+    };
+    if (!EnsureEnet()) return fail("no se pudo iniciar la red");
+    const ENetSocket socket = OpenDatagram(false);
+    if (socket == ENET_SOCKET_NULL) return fail("no se pudo abrir el anuncio en la red local");
+    ENetAddress address;
+    address.host = ENET_HOST_ANY;
+    address.port = static_cast<enet_uint16>(kDiscoveryPort);
+    if (enet_socket_bind(socket, &address) != 0) {
+        enet_socket_destroy(socket);
+        return fail("no se pudo abrir el anuncio en la red local");
+    }
+    return std::make_unique<EnetBeacon>(socket);
+}
+
+std::vector<LanGame> FindLanGames(double seconds) {
+    std::vector<LanGame> found;
+    if (!EnsureEnet()) return found;
+    const ENetSocket socket = OpenDatagram(true);
+    if (socket == ENET_SOCKET_NULL) return found;
+    const std::string ask = std::string(kAsk) + " " + std::to_string(kProtocolVersion);
+    const auto send = [&](enet_uint32 host) {
+        ENetAddress to;
+        to.host = host;
+        to.port = static_cast<enet_uint16>(kDiscoveryPort);
+        ENetBuffer out;
+        out.data = const_cast<char*>(ask.data());
+        out.dataLength = ask.size();
+        enet_socket_send(socket, &to, &out, 1);
+    };
+    ENetAddress loopback;
+    enet_address_set_host(&loopback, "127.0.0.1");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    auto nextAsk = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (std::chrono::steady_clock::now() >= nextAsk) {  // se repite: un datagrama se puede perder
+            send(ENET_HOST_BROADCAST);
+            send(loopback.host);  // y a esta misma maquina, que la difusion no siempre alcanza
+            nextAsk += std::chrono::milliseconds(300);
+        }
+        char in[256];
+        ENetAddress from;
+        ENetBuffer buffer;
+        buffer.data = in;
+        buffer.dataLength = sizeof(in) - 1;
+        const int got = enet_socket_receive(socket, &from, &buffer, 1);
+        if (got <= 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        in[got] = '\0';
+        if (std::strncmp(in, kAnswer, std::strlen(kAnswer)) != 0) continue;
+        LanGame game;
+        unsigned protocol = 0;
+        int used = 0;
+        if (std::sscanf(in + std::strlen(kAnswer), "%u %d %d %d %d %n", &protocol, &game.port, &game.players, &game.maxPlayers, &game.mode, &used) < 5 || protocol != kProtocolVersion) continue;
+        game.name = in + std::strlen(kAnswer) + used;
+        char ip[64] = "";
+        enet_address_get_host_ip(&from, ip, sizeof(ip));
+        game.address = ip;
+        bool known = false;
+        for (LanGame& g : found) {
+            // La misma partida puede contestar por dos caminos (difusion y 127.0.0.1): cuenta una vez.
+            if (g.port == game.port && g.name == game.name && (g.address == game.address || game.address == "127.0.0.1" || g.address == "127.0.0.1")) known = true;
+        }
+        if (!known) found.push_back(std::move(game));
+    }
+    enet_socket_destroy(socket);
+    return found;
+}
 
 std::unique_ptr<NetListener> ListenOn(int port, int maxClients, std::string* error) {
     const auto fail = [&](const char* why) -> std::unique_ptr<NetListener> {

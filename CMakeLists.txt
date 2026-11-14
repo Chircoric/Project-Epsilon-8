@@ -126,6 +126,10 @@ if(EPSILON_BUILD_DEMOS AND TARGET epsilon_engine)
         endif()
         target_compile_definitions(epsilon_game_logic PUBLIC EPSILON_WITH_ENET)
     endif()
+
+    # El servidor sin ventana: solo la logica del juego y la red, sin SDL ni GPU.
+    add_executable(epsilon_server game/src/server_main.cpp)
+    target_link_libraries(epsilon_server PRIVATE epsilon_game_logic)
     if(MSVC)
         target_compile_options(epsilon_game_logic PRIVATE /W4 /permissive-)
     endif()

@@ -364,7 +364,24 @@ Lo que falta o es provisional:
 
 Biblioteca `epsilon_net` con ENet. `--servidor [puerto]` y `--conectar ip[:puerto]`. Saludo: versión, suma de `Balance`, semilla, identidad del jugador. Entrada tardía y desconexión limpia.
 
-### Fase 7 — LAN y servidor dedicado
+### Fase 7 — LAN y servidor dedicado — **hecha el 13-11-2026, salvo el menú**
+
+Cómo quedó:
+
+- **Descubrimiento en la red local.** Quien abre una partida contesta en el puerto 27301 a quien pregunta por difusión (`AnnounceOnLan`, `FindLanGames` en `NetEnet.cpp`). La pregunta lleva la versión del protocolo; la respuesta, puerto, jugadores, máximo, modo y nombre. La pregunta va también a 127.0.0.1, y una partida que contesta por los dos caminos cuenta una vez.
+- **Servidor sin ventana**: `epsilon_server.exe` (`game/src/server_main.cpp`), que enlaza solo la lógica del juego y la red, sin SDL. Opciones `--world`, `--port`, `--name`, `--players`, `--mode`, `--seed`, `--no-tutorial`, `--save-every`, `--seconds`. Bucle a 60 pasos por segundo; guarda cuando la partida lo pide, cada cierto tiempo si hay alguien, cuando se va el último y al cerrar con Ctrl+C. Sin nadie dentro, el mundo no avanza.
+- **Sin jugador propio.** En una partida nueva, la nave de salida espera fuera del mundo y es para el primero que entre. En una guardada (`GameSession::RestoreWorld`), todas las naves quedan fuera hasta que entra su jugador.
+- **Cada jugador recupera lo suyo.** El servidor tiene la carpeta de la partida (`GameServer::SetSaveFolder`): al entrar alguien lee `jugadores/<id>.sav`, lo devuelve a su nave y le restaura lo que conocía y su tutorial; `GameServer::Save` escribe el mundo y el archivo de cada jugador que ha entrado. Vale también para `--host` en el juego, que ahora guarda a los invitados.
+- **En el juego**: `--host` se anuncia en la red local y `--connect lan` busca partidas, las lista y entra en la primera.
+- **Probado**: en las pruebas (anuncio y búsqueda, servidor que guarda y recupera a tres jugadores) y con `epsilon_server.exe` y el juego en dos procesos, en dos rondas: partida nueva, y la misma carpeta cargada otra vez.
+
+Lo que falta:
+
+- **El menú no está hecho.** No hay «Crear partida» ni «Partidas en red local» en la interfaz: todo va por opciones al lanzar el juego. Hacerlo pide poder abrir o entrar en una partida con el juego ya arrancado, y hoy eso se decide al arrancar.
+- **La consola del servidor no está**: el plan decía comandos por la entrada estándar. Los comandos viven en `main.cpp` del juego; habría que sacarlos a la biblioteca común.
+- **El cliente tiene que usar la misma semilla** que el servidor (la de por defecto, si no se pasa `--seed`); si no, se le rechaza por «otra galaxia».
+- **Los puestos de la tripulación no se guardan**: al volver, cada uno ocupa los que estén libres.
+- La difusión solo se ha probado en esta máquina; con varias tarjetas de red puede hacer falta preguntar por cada una.
 
 Descubrimiento por difusión, lista de partidas en el menú, `epsilon_server.exe` sin ventana.
 

@@ -299,6 +299,11 @@ bool DecodeSnapshot(const Packet& packet, SnapshotData& out) { return Decode(Mes
 
 #ifndef EPSILON_WITH_ENET
 // Compilado sin ENet: no hay red, solo el transporte en memoria.
+std::unique_ptr<LanBeacon> AnnounceOnLan(std::string* error) {
+    if (error) *error = "este juego se compiló sin red";
+    return nullptr;
+}
+std::vector<LanGame> FindLanGames(double) { return {}; }
 bool NetworkAvailable() { return false; }
 std::unique_ptr<NetListener> ListenOn(int, int, std::string* error) {
     if (error) *error = "este juego se compiló sin red";
@@ -344,6 +349,30 @@ void GameServer::Greet(Peer& peer, const Hello& hello) {
         return false;
     };
     if (player >= 0 && taken(player)) return Refuse(peer, "Ese jugador ya está en la partida.");
+    // Lo que guardo la ultima vez, si la partida tiene carpeta: dice que nave lleva.
+    std::optional<PlayerSave> saved;
+    if (player < 0 && !saveFolder_.empty()) saved = LoadPlayer(saveFolder_, id);
+    // Un sitio libre: un jugador sin dueño (nadie ha entrado nunca por el) y sin conexion.
+    const auto vacant = [&](int p) { return !session_.PlayerAt(p).connected && session_.PlayerAt(p).id.rfind("local", 0) == 0 && !taken(p); };
+    if (player < 0 && saved) {
+        // Su nave sigue en el mundo: vuelve a ella.
+        const int vessel = session_.IndexOfVessel(saved->ship);
+        for (int p = 0; p < session_.PlayerCount() && player < 0; ++p)
+            if (vessel >= 0 && session_.PlayerAt(p).vessel == vessel && vacant(p)) player = p;
+        if (player >= 0) {
+            session_.RestorePlayer(player, *saved);
+            session_.PlayerBack(player);
+        }
+    }
+    if (player < 0 && hello.join != JoinAs::Crew) {
+        // Una nave que espera a alguien (la de un servidor recien abierto): es para el primero que llegue.
+        for (int p = 0; p < session_.PlayerCount() && player < 0; ++p)
+            if (vacant(p) && session_.VesselAt(session_.PlayerAt(p).vessel).phase == GamePhase::Away) player = p;
+        if (player >= 0) {
+            session_.NamePlayer(player, id, name);
+            session_.PlayerBack(player);
+        }
+    }
     if (player < 0) {
         const int hostShip = session_.VesselAt(session_.PlayerAt(0).vessel).id;
         if (hello.join == JoinAs::Host && !taken(0)) player = 0;
@@ -357,8 +386,10 @@ void GameServer::Greet(Peer& peer, const Hello& hello) {
             player = session_.AddPlayer(name, hostShip);
         }
         if (player < 0) return Refuse(peer, "No hay sitio en la partida.");
+        if (saved) session_.RestorePlayer(player, *saved);  // entra por un sitio nuevo, pero con lo que sabia
         session_.NamePlayer(player, id, name);
     } else {
+        session_.NamePlayer(player, id, name);
         session_.PlayerBack(player);  // vuelve: su nave reaparece donde estaba
     }
     peer.player = player;
@@ -404,6 +435,32 @@ void GameServer::Read(Peer& peer) {
     }
 }
 
+bool GameServer::OpenToNetwork(int port, const std::string& name, int maxClients, std::string* error) {
+    std::unique_ptr<NetListener> listener = ListenOn(port, maxClients, error);
+    if (!listener) return false;
+    listener_ = std::move(listener);
+    announced_.port = port;
+    announced_.name = name;
+    announced_.maxPlayers = maxClients;
+    beacon_ = AnnounceOnLan();  // si no se puede, la partida sigue abierta: se entra con la direccion
+    return true;
+}
+
+// El mundo una vez, y el archivo de cada jugador que haya entrado alguna vez.
+bool GameServer::Save(std::string* error) {
+    if (saveFolder_.empty()) {
+        if (error) *error = "la partida no tiene carpeta";
+        return false;
+    }
+    if (!SaveWorld(saveFolder_, session_.Snapshot().world, error)) return false;
+    bool ok = true;
+    for (int p = 0; p < session_.PlayerCount(); ++p) {
+        if (session_.PlayerAt(p).id.rfind("local-", 0) == 0) continue;  // un sitio por el que no ha entrado nadie
+        ok = SavePlayer(saveFolder_, session_.SnapshotPlayer(p), error) && ok;
+    }
+    return ok;
+}
+
 void GameServer::SendSnapshots() {
     for (Peer& peer : peers_) {
         if (peer.player < 0 || !peer.link->Open()) continue;
@@ -417,6 +474,12 @@ int GameServer::Update(double realSeconds, float focalPixels) {
     if (listener_) {
         listener_->Pump();
         while (std::shared_ptr<Transport> arrived = listener_->Accept()) Add(std::move(arrived));
+    }
+    if (beacon_) {
+        announced_.players = 0;
+        for (int p = 0; p < session_.PlayerCount(); ++p) announced_.players += session_.PlayerAt(p).connected ? 1 : 0;
+        announced_.mode = static_cast<int>(session_.Mode());
+        beacon_->Pump(announced_);
     }
     for (std::size_t i = 0; i < peers_.size(); ++i) Read(peers_[i]);
     // Las conexiones que se han cerrado: su jugador se queda sin nadie al mando (GameSession::PlayerLeft).

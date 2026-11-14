@@ -549,6 +549,12 @@ public:
     void PlayerLeft(int player);
     void PlayerBack(int player);
     bool InCombat(int vessel) const;  // ha estado en combate hace menos de logoutCalm
+    // Lo que un jugador guardo (su archivo de la partida) pasa a ese jugador: nombre, lo que conoce, su
+    // tutorial y sus cuentas. No toca en que nave va.
+    void RestorePlayer(int player, const PlayerSave& saved);
+    // Un mundo guardado sin nadie dentro, para un servidor: todas las naves quedan fuera hasta que entre
+    // su jugador.
+    bool RestoreWorld(const WorldSave& world, std::string* error = nullptr);
     // El identificador y el nombre de un jugador cualquiera (el servidor, al entrar uno nuevo).
     void NamePlayer(int player, const std::string& id, const std::string& name) {
         players_[static_cast<std::size_t>(player)].id = SafePlayerId(id);

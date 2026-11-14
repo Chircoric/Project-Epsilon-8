@@ -13,6 +13,7 @@
 //   --no-vsync         dibuja sin esperar al monitor
 //   --fixed-step       la partida avanza a pasos fijos de 1/60 s, como lo hara el servidor
 //   --host [puerto]    abre la partida a la red: juegas tu y pueden entrar otros (puerto 27300 si no se dice)
+//   --connect lan      busca partidas abiertas en la red local y entra en la primera
 //   --connect ip[:puerto]  entra en la partida de otro. Con --join ship (por defecto) llevas una nave propia;
 //                      con --join crew vas de tripulante en la del anfitrion. --name dice como te llamas
 //   --loopback         servidor y cliente en este mismo proceso: la partida la simula un servidor y lo que
@@ -906,6 +907,19 @@ int Run(Options options) {
                     port = std::atoi(address.c_str() + colon + 1);
                     address = address.substr(0, colon);
                 }
+                // "lan": se pregunta en la red local y se entra en la primera partida que conteste.
+                if (address == "lan") {
+                    const std::vector<LanGame> games = FindLanGames(1.5);
+                    for (const LanGame& g : games)
+                        std::printf("Partida en la red local: \"%s\" en %s:%d, %d de %d jugadores, modo %s\n", g.name.c_str(), g.address.c_str(), g.port, g.players, g.maxPlayers,
+                                    ModeInfo(static_cast<GameModeId>(std::clamp(g.mode, 0, 4))).name);
+                    if (games.empty()) {
+                        std::printf("No hay ninguna partida abierta en la red local.\n");
+                        return 1;
+                    }
+                    address = games.front().address;
+                    port = games.front().port;
+                }
                 std::string problem;
                 std::shared_ptr<Transport> link = ConnectTo(address, port, 5.0, &problem);
                 if (!link) {
@@ -934,9 +948,10 @@ int Run(Options options) {
                 std::printf("Loopback: servidor y cliente en memoria%s\n", client->Ready() ? "" : " (sin respuesta del servidor)");
                 if (options.hostPort > 0) {
                     std::string problem;
-                    if (std::unique_ptr<NetListener> listener = ListenOn(options.hostPort, 8, &problem)) {
-                        host->Listen(std::move(listener));
-                        std::printf("Partida abierta a la red en el puerto %d\n", options.hostPort);
+                    // Quien entre recupera lo suyo de la carpeta de la partida, y se guarda con los demas.
+                    if (!savePath.empty()) host->SetSaveFolder(savePath);
+                    if (host->OpenToNetwork(options.hostPort, "Partida de " + playerName, 8, &problem)) {
+                        std::printf("Partida abierta a la red en el puerto %d, anunciada en la red local\n", options.hostPort);
                     } else {
                         std::printf("Aviso: no se pudo abrir la partida a la red: %s\n", problem.c_str());
                     }
@@ -1263,7 +1278,8 @@ int Run(Options options) {
             const auto writeGame = [&] {
                 if (savePath.empty() || !playing) return;
                 std::string problem;
-                if (SaveGame(savePath, authority.Snapshot(), &problem)) return;
+                // Con la partida abierta a la red se guardan tambien los archivos de los demas jugadores.
+                if (host && options.hostPort > 0 ? host->Save(&problem) : SaveGame(savePath, authority.Snapshot(), &problem)) return;
                 std::printf("Aviso: no se pudo guardar: %s\n", problem.c_str());
                 authority.Announce("No se pudo guardar la partida.");
             };
