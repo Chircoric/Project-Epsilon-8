@@ -108,6 +108,12 @@ std::filesystem::path FilePath(const std::string& utf8);  // las rutas van en UT
 bool SaveGame(const std::string& folder, const SaveData& data, std::string* error = nullptr);
 std::optional<SaveData> LoadGame(const std::string& folder, const std::string& playerId, std::string* error = nullptr);
 void DeleteGame(const std::string& folder);  // el mundo y todos sus jugadores
+// Las dos mitades por separado, para un servidor con varios jugadores: el mundo una vez y cada jugador
+// en su archivo. LoadPlayer no da error si ese jugador no tiene archivo: devuelve vacio.
+bool SaveWorld(const std::string& folder, const WorldSave& world, std::string* error = nullptr);
+bool SavePlayer(const std::string& folder, const PlayerSave& player, std::string* error = nullptr);
+std::optional<WorldSave> LoadWorld(const std::string& folder, std::string* error = nullptr);
+std::optional<PlayerSave> LoadPlayer(const std::string& folder, const std::string& playerId);
 // El identificador de un jugador, limpio para usarlo como nombre de archivo.
 std::string SafePlayerId(const std::string& id);
 

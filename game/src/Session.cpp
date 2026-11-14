@@ -2762,6 +2762,16 @@ int GameSession::AddPlayer(const std::string& name, int vesselId) {
             p.seats |= bit;
         }
     }
+    // Si a bordo no habia nadie conectado, los puestos estan todos libres y la nave, fuera del mundo:
+    // el que entra los ocupa y la nave vuelve.
+    bool alone = true;
+    for (const PlayerState& other : players_) alone = alone && (&other == &p || other.vessel != vessel || !other.connected);
+    if (alone) {
+        p.seats = kAllSeats;
+        Vessel& ship = fleet_[static_cast<std::size_t>(vessel)];
+        ship.leaving = false;
+        if (ship.phase == GamePhase::Away) ship.phase = GamePhase::Flying;
+    }
     UsePlayer(focusPlayer_);
     return index;
 }
@@ -4866,6 +4876,43 @@ int GameSession::AboardConnected(int vessel) const {
 }
 
 bool GameSession::InCombat(int vessel) const { return fleet_[static_cast<std::size_t>(vessel)].combatAge < rules_.world.logoutCalm; }
+
+void GameSession::RestorePlayer(int player, const PlayerSave& saved) {
+    if (player < 0 || player >= static_cast<int>(players_.size())) return;
+    const World& w = bubbles_.front().engine->GetWorld();
+    PlayerState& p = players_[static_cast<std::size_t>(player)];
+    p.id = SafePlayerId(saved.id);
+    p.name = saved.name;
+    p.analysisUsed = saved.analysisUsed;
+    p.cursorUsed = saved.cursorUsed;
+    p.kills = saved.kills;
+    p.collected = saved.collected;
+    p.known = saved.knownSystems;
+    p.known.resize(w.state.size(), 0);
+    p.known[0] = 1;
+    p.visited = saved.visitedSystems;
+    p.visited.resize(w.state.size(), 0);
+    p.visited[0] = 1;
+    p.scanned = std::set<std::uint64_t>(saved.scanned.begin(), saved.scanned.end());
+    if (p.dialogue.StepCount() == 0) p.dialogue.Start(MakeTutorial());
+    p.dialogue.Resume(saved.tutorialStep);
+}
+
+bool GameSession::RestoreWorld(const WorldSave& world, std::string* error) {
+    SaveData data;
+    data.world = world;
+    if (!data.world.ships.empty()) data.player.ship = data.world.ships.front().id;
+    if (!Restore(data, error)) return false;
+    // Nadie ha entrado todavia: ninguna nave esta en el mundo y ningun jugador tiene dueño.
+    for (std::size_t i = 0; i < fleet_.size(); ++i) {
+        if (fleet_[i].phase == GamePhase::Flying) fleet_[i].phase = GamePhase::Away;
+        players_[i].connected = false;
+        players_[i].seats = 0;
+        players_[i].id = "local-" + std::to_string(fleet_[i].id);
+        players_[i].dialogue.Stop();
+    }
+    return true;
+}
 
 void GameSession::PlayerLeft(int player) {
     if (player < 0 || player >= static_cast<int>(players_.size())) return;

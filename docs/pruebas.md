@@ -74,6 +74,7 @@ out\build\x64-sdl-release\epsilon_game_tests.exe --solo-dorada
 | `--size W H` | Tamaño de la ventana. Por defecto, 1600 × 900 |
 | `--no-vsync` | Sin sincronización vertical. **Imprescindible para medir FPS** |
 | `--host [puerto]` | Abre la partida a la red (puerto 27300 si no se dice). Juegas tú y pueden entrar otros. El servidor no se para aunque estés en pausa |
+| `--connect lan` | Busca partidas abiertas en la red local, las lista en la salida y entra en la primera |
 | `--connect ip[:puerto]` | Entra en la partida de otro. No carga ni guarda nada: la partida es del servidor. Si no puede entrar, lo dice y sale |
 | `--join ship\|crew` | Con `--connect`: con nave propia junto a la del anfitrión (por defecto) o de tripulante en la suya |
 | `--name Nombre` | Cómo te llamas en la partida. Con `--frames`, además hace de identificador, para poder probar con varios procesos |
@@ -178,6 +179,24 @@ epsilon_game.exe --connect 127.0.0.1 --name Eva
 ```
 
 Sin manos, con `--frames` en los dos (más fotogramas en el anfitrión, para que siga abierto mientras el otro entra): `--host --frames 1700 --mode 2 --no-tutorial --name Ana --cmd-at 1650 nave` y `--connect 127.0.0.1 --name Eva --frames 600 --screenshot cliente.png`. Al salir el cliente, `nave` en el anfitrión enseña su nave como `ausente`.
+
+**Servidor sin ventana.** `epsilon_server.exe` lleva la partida sin gráficos; se cierra con Ctrl+C, guardando antes:
+
+```bash
+epsilon_server.exe --world mi_partida --name "Nebulosa" --port 27300
+```
+
+| Opción | Qué hace |
+|---|---|
+| `--world carpeta` | La partida (`mundo.sav` y `jugadores/`). Si existe, la sigue. Sin esta opción, no se guarda |
+| `--port N` | Puerto de juego (27300). El anuncio en la red local va siempre por el 27301 |
+| `--name "texto"` | Cómo se anuncia |
+| `--players N` | Conexiones a la vez (8) |
+| `--mode N`, `--seed N`, `--no-tutorial` | Solo para una partida nueva. Los que entren tienen que usar la misma semilla |
+| `--save-every S` | Segundos entre guardados (120) |
+| `--seconds S` | Se cierra solo pasado ese tiempo: para pruebas |
+
+Para probarlo sin manos: `epsilon_server.exe --world prueba.sav --seconds 22 --no-tutorial` en un proceso y, dos segundos después, `epsilon_game.exe --connect lan --name Eva --frames 500 --screenshot cliente.png` en otro. Lanzándolo dos veces seguidas con la misma carpeta, la segunda vez el servidor dice `Partida de prueba.sav` y el jugador recupera su nave.
 
 Receta (dos naves en sistemas distintos): `--cmd "nave nueva" --cmd-at 60 "nave 2 viajar 3" --cmd-at 120 nave --cmd-at 140 "nave ver 2"` manda la segunda a SYS-3 y pasa a llevarla; la captura es ya la de su mundo. `nave` enseña que van en burbujas distintas.
 

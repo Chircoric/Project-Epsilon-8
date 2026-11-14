@@ -62,6 +62,26 @@ std::unique_ptr<NetListener> ListenOn(int port, int maxClients, std::string* err
 // Bloquea hasta timeoutSeconds esperando al servidor.
 std::shared_ptr<Transport> ConnectTo(const std::string& host, int port, double timeoutSeconds, std::string* error = nullptr);
 
+// ---- Partidas en la red local (fase 7) ----
+// Quien abre una partida contesta a quien pregunta por difusion en kDiscoveryPort; asi el que quiere
+// entrar no tiene que saber ninguna direccion.
+inline constexpr int kDiscoveryPort = 27301;
+struct LanGame {
+    std::string address;       // de donde llego la respuesta
+    int port = kDefaultPort;   // el puerto de juego
+    std::string name;
+    int players = 0, maxPlayers = 0;
+    int mode = 0;              // GameModeId
+};
+class LanBeacon {
+public:
+    virtual ~LanBeacon() = default;
+    virtual void Pump(const LanGame& info) = 0;  // contesta a las preguntas que hayan llegado
+};
+std::unique_ptr<LanBeacon> AnnounceOnLan(std::string* error = nullptr);
+// Pregunta y espera respuestas durante ese tiempo. Bloquea.
+std::vector<LanGame> FindLanGames(double seconds);
+
 inline constexpr std::uint32_t kProtocolVersion = 1;
 
 enum class MessageType : std::uint8_t { Hello = 1, Welcome, Refused, Controls, Command, Snapshot };
@@ -99,6 +119,14 @@ public:
 
     void Add(std::shared_ptr<Transport> link);  // una conexion nueva; el jugador llega con su Hello
     void Listen(std::unique_ptr<NetListener> listener) { listener_ = std::move(listener); }  // y las que lleguen por la red
+    // Abre la partida a la red: escucha en ese puerto y se anuncia en la red local con ese nombre. false
+    // si no pudo abrir el puerto; no poder anunciarse no es un error (se puede entrar con la direccion).
+    bool OpenToNetwork(int port, const std::string& name, int maxClients, std::string* error = nullptr);
+
+    // La carpeta de la partida (SaveGame.h). Con ella, quien entra recupera lo suyo (jugadores/<id>.sav:
+    // su nave, lo que conoce, su tutorial) y Save() escribe el mundo y el archivo de cada jugador.
+    void SetSaveFolder(const std::string& folder) { saveFolder_ = folder; }
+    bool Save(std::string* error = nullptr);
     // Lee lo que haya llegado, avanza los pasos de 1/60 s que quepan en realSeconds y, tras cada
     // snapshotEvery pasos, manda una instantanea a cada cliente. Devuelve los pasos dados.
     int Update(double realSeconds, float focalPixels = 800.0f);
@@ -123,6 +151,9 @@ private:
 
     GameSession& session_;
     std::unique_ptr<NetListener> listener_;
+    std::unique_ptr<LanBeacon> beacon_;
+    LanGame announced_;
+    std::string saveFolder_;
     std::vector<Peer> peers_;
     double pending_ = 0;
     std::uint64_t tick_ = 0;

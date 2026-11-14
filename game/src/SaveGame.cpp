@@ -646,6 +646,41 @@ std::optional<SaveData> LoadGame(const std::string& folder, const std::string& p
     return data;
 }
 
+bool SaveWorld(const std::string& folder, const WorldSave& world, std::string* error) {
+    std::error_code problem;
+    std::filesystem::create_directories(PlayerFolder(folder), problem);
+    if (problem) {
+        if (error) *error = problem.message();
+        return false;
+    }
+    return WriteFileAtomic(WorldFile(folder), WriteWorld(world), error);
+}
+
+bool SavePlayer(const std::string& folder, const PlayerSave& player, std::string* error) {
+    std::error_code problem;
+    std::filesystem::create_directories(PlayerFolder(folder), problem);
+    if (problem) {
+        if (error) *error = problem.message();
+        return false;
+    }
+    return WriteFileAtomic(PlayerFile(folder, player.id), WritePlayer(player), error);
+}
+
+std::optional<WorldSave> LoadWorld(const std::string& folder, std::string* error) {
+    const std::optional<std::string> text = ReadFile(WorldFile(folder));
+    if (!text) {
+        if (error) *error = "sin partida guardada";
+        return std::nullopt;
+    }
+    return ReadWorld(*text, error);
+}
+
+std::optional<PlayerSave> LoadPlayer(const std::string& folder, const std::string& playerId) {
+    const std::optional<std::string> text = ReadFile(PlayerFile(folder, playerId));
+    if (!text) return std::nullopt;
+    return ReadPlayer(*text);
+}
+
 void DeleteGame(const std::string& folder) {
     std::error_code ignored;
     std::filesystem::remove(WorldFile(folder), ignored);
