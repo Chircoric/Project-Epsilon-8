@@ -2,13 +2,13 @@
 
 Copyright (C) 2026 Chircoric.
 
-Epsilon-Z (el motor y el juego Nebulosa) usa dos licencias, según lo que sea cada cosa.
+Epsilon-Z (el motor y el juego Nebulosa) usa tres licencias, según lo que sea cada cosa.
 
 | Qué | Licencia | Texto |
 |---|---|---|
 | **Código**: `engine/`, `game/src`, `game/include`, `tests/`, `demo/`, `tools/`, shaders `.hlsl`, `CMakeLists.txt`, `cmake/` y los scripts `construir_*.py` | **GNU AGPL v3** (`AGPL-3.0-only`) | [LICENSE](LICENSE) |
 | **Recursos propios**: modelos (`.gltf`, `.bin`, `.blend`), texturas, sprites, sonidos y capturas, más la documentación de `docs/` | **CC BY-SA 4.0** (`CC-BY-SA-4.0`) | [LICENSES/CC-BY-SA-4.0.txt](LICENSES/CC-BY-SA-4.0.txt) |
-| **Fuentes tipográficas** de `game/assets/fonts/` (Audiowide, Rubik Glitch, Hangul) | **SIL OFL 1.1**, de sus autores; cada una con su `OFL-*.txt` | `game/assets/fonts/` |
+| **Fuentes tipográficas** de `game/assets/fonts/`: **Epsilon Basics** (propia, generada con `tools/fuente_epsilon.py`) y Rubik Glitch y Hangul (de terceros) | **SIL OFL 1.1**; cada una con su `OFL-*.txt` | `game/assets/fonts/` |
 
 Cada archivo de código lleva su cabecera `SPDX-License-Identifier`.
 

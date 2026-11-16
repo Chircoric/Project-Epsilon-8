@@ -21,7 +21,7 @@ using Kind = TargetRef::Kind;
 namespace {
 
 constexpr float kTau = 6.2831853f;
-constexpr float kLeftWidth = 372.0f;   // Audiowide es una letra ancha: los paneles dejan sitio
+constexpr float kLeftWidth = 372.0f;   // ancho de los paneles de la izquierda: dejan sitio a la letra
 constexpr float kHeadingSpacing = 0.18f;  // separacion extra entre letras de una cabecera, en partes de su tamano
 constexpr float kObjectiveTop = 112.0f;  // el objetivo del tutorial, bajo el nombre del sistema
 constexpr float kCursorNotice = kObjectiveTop + 48.0f;  // y el aviso del cursor, bajo el objetivo
@@ -2902,7 +2902,7 @@ void CreditsPanel(const Ui& u, float x, float y, float w) {
     };
     row("PROGRAMACIÓN Y DISEÑO", "Alumno UNAQ");
     row("LÍNEA DE JUEGOS", "Epsilon-0 a Epsilon-Z, sobre la Nebulosa Naranja");
-    row("LETRAS", "Audiowide (Astigmatic), Rubik Glitch (NaN, Luke Prowse)");
+    row("LETRAS", "Epsilon Basics (Chircoric), Rubik Glitch (NaN, Luke Prowse)");
     row("LOGOTIPO", "Hangul (Sébastien Hayez)");
     u.Label(ix, line, 11.0f, kMuted, "Las tres letras tienen licencia SIL Open Font License 1.1.");
     MenuButton(u, x + w - 238.0f * s, y + h - 52.0f * s, 220.0f * s, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
@@ -3726,9 +3726,9 @@ bool GameHud::Initialize(SdlGpuBackend& backend, const std::string& fontFolder) 
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
-    // Fuentes con licencia OFL, que permite incluirlas en el juego: Audiowide para leer y para los
-    // titulos, Rubik Glitch para lo alienigena y Hangul para el logotipo. Sus licencias van en la
-    // misma carpeta.
+    // Fuentes con licencia OFL, que permite incluirlas en el juego: Epsilon Basics (propia, hecha con
+    // tools/fuente_epsilon.py) para leer y para los titulos, Rubik Glitch para lo alienigena y Hangul
+    // para el logotipo. Sus licencias van en la misma carpeta.
     const auto load = [&](const char* file, float size) -> ImFont* {
         const std::string path = fontFolder + "/" + file;
         SDL_PathInfo info;
@@ -3738,8 +3738,8 @@ bool GameHud::Initialize(SdlGpuBackend& backend, const std::string& fontFolder) 
         }
         return io.Fonts->AddFontFromFileTTF(path.c_str(), size);
     };
-    ImFont* text = load("Audiowide-Regular.ttf", 24.0f);
-    ImFont* title = load("Audiowide-Regular.ttf", 64.0f);
+    ImFont* text = load("EpsilonBasics-Regular.ttf", 24.0f);
+    ImFont* title = load("EpsilonBasics-Regular.ttf", 64.0f);
     ImFont* alien = load("RubikGlitch-Regular.ttf", 32.0f);
     ImFont* logo = load("Hangul.otf", 96.0f);  // solo el EPSILON del menu
     if (!text) text = io.Fonts->AddFontDefault();

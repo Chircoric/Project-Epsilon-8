@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Chircoric
-"""Genera la fuente angular de Epsilon («Epsilon Sans») con FontForge, sin dibujar nada a mano.
+"""Genera la fuente angular de Epsilon («Epsilon Basics») con FontForge, sin dibujar nada a mano.
 
 Uso (con el Python que trae FontForge):
     "C:\\Program Files\\FontForgeBuilds\\bin\\ffpython.exe" tools/fuente_epsilon.py ^
-        --salida game/assets/fonts/EpsilonSans-Regular.ttf --muestra muestra.png
+        --salida game/assets/fonts/EpsilonBasics-Regular.ttf --muestra muestra.png
 
 Cada letra se define como unas pocas líneas rectas (el «esqueleto») sobre una cuadrícula en
 milésimas de em. El script las engrosa con un trazo de 84 unidades, recorta lo que sobresale
@@ -338,12 +338,16 @@ def construir(salida):
     f = fontforge.font()
     f.em = 1000
     f.ascent, f.descent = 800, 200
-    f.fontname = "EpsilonSans-Regular"
-    f.familyname = "Epsilon Sans"
-    f.fullname = "Epsilon Sans Regular"
+    f.fontname = "EpsilonBasics-Regular"
+    f.familyname = "Epsilon Basics"
+    f.fullname = "Epsilon Basics Regular"
     f.weight = "Regular"
     f.version = "0.1"
-    f.copyright = "Copyright (C) 2026 Chircoric"
+    f.copyright = "Copyright (c) 2026 Chircoric (https://github.com/Chircoric/Project-Epsilon-8)"
+    # Licencia de la fuente: SIL OFL 1.1, sin nombre reservado (el texto está en OFL-EpsilonBasics.txt).
+    f.appendSFNTName("English (US)", "License", "This Font Software is licensed under the SIL Open Font "
+                     "License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org")
+    f.appendSFNTName("English (US)", "License URL", "https://openfontlicense.org")
     f.os2_weight = 400
     f.os2_fstype = 0
     # Por defecto FontForge toma estos valores como desplazamientos sobre ascent/descent: hay que
@@ -493,8 +497,8 @@ def muestra(font, ruta):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Genera la fuente angular Epsilon Sans.")
-    ap.add_argument("--salida", default=os.path.join("game", "assets", "fonts", "EpsilonSans-Regular.ttf"))
+    ap = argparse.ArgumentParser(description="Genera la fuente angular Epsilon Basics.")
+    ap.add_argument("--salida", default=os.path.join("game", "assets", "fonts", "EpsilonBasics-Regular.ttf"))
     ap.add_argument("--muestra", help="ruta de un PNG con la fuente dibujada")
     a = ap.parse_args()
     f = construir(a.salida)

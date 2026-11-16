@@ -113,7 +113,7 @@ El usuario quiere que **las naves y las estaciones tengan interior** y que **las
 
 - No copiar `GameHud.cpp`, `GameHud.h`, `Session.*`, `OnFoot.*` ni `GameLayer.*` de Genesis enteros: `GameHud.h` incluye `genesis/MissionRunner.h` y la `Session.h` de Genesis, que aquí no existen; son ~1 088 líneas distintas en 125 bloques, casi todo traje, misiones y textos por clave.
 - No quitar combate, galaxia, nebulosas ni los modelos `alien_*`, `torretas`, `dron`, `bahia_drones`.
-- No cambiar el espacio de nombres `eps`, la línea base de vcpkg ni las fuentes (Audiowide, Rubik Glitch, Hangul son idénticas en los dos).
+- No cambiar el espacio de nombres `eps`, la línea base de vcpkg ni las fuentes (Genesis aún usa Audiowide; aquí la sustituye Epsilon Basics, no la traigas).
 - No subir al repositorio audios de `ui/` ni modelos pesados sin avisar del tamaño.
 
 ## 6. Orden recomendado y qué preguntar al usuario

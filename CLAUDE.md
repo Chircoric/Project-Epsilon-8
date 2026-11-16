@@ -6,7 +6,7 @@ Motor gráfico propio (C++20, SDL3 + SDL_GPU sobre Direct3D 12, Dear ImGui como 
 
 - Habla con el usuario en **español**, y escribe en español los textos del juego, los comentarios y la documentación.
 - **Unidades reales**: distancias en km, energía en EJ/ZJ/YJ, potencia en W, masa en t/kt/Mt (`game/include/game/Units.h`). Las cifras de juego viven en `game/include/game/Balance.h`.
-- **Licencias** (detalle en `LICENCIAS.md`): el código es **AGPL-3.0-only** y todo archivo nuevo de código lleva la cabecera `SPDX-License-Identifier: AGPL-3.0-only` y `Copyright (C) 2026 Chircoric`. Los **modelos, texturas y sonidos son propios** (hechos o sintetizados aquí), bajo **CC BY-SA 4.0**, con su `LICENCIA*.txt` al lado. De terceros solo se admite **CC0**, anotado antes en la tabla de `LICENCIAS.md` con autor, origen y la licencia que declara el archivo. **Nunca CC BY, CC BY-SA, GPL ni «gratis para uso comercial».** Las únicas excepciones son las fuentes tipográficas OFL de `game/assets/fonts/`, con su licencia al lado (se sustituirán por fuentes propias).
+- **Licencias** (detalle en `LICENCIAS.md`): el código es **AGPL-3.0-only** y todo archivo nuevo de código lleva la cabecera `SPDX-License-Identifier: AGPL-3.0-only` y `Copyright (C) 2026 Chircoric`. Los **modelos, texturas y sonidos son propios** (hechos o sintetizados aquí), bajo **CC BY-SA 4.0**, con su `LICENCIA*.txt` al lado. De terceros solo se admite **CC0**, anotado antes en la tabla de `LICENCIAS.md` con autor, origen y la licencia que declara el archivo. **Nunca CC BY, CC BY-SA, GPL ni «gratis para uso comercial».** Las únicas excepciones son las fuentes tipográficas OFL de `game/assets/fonts/`, con su licencia al lado. Epsilon Basics es propia y OFL 1.1; Rubik Glitch y Hangul son de terceros (OFL) y se sustituirán por fuentes propias.
 - No subas compilados ni partidas: `out/`, `.vs/`, `*.sav` y `*.blend1` están en `.gitignore`.
 - Tras un cambio: compila, pasa las pruebas y, si se ve en pantalla, saca una captura y mírala antes de darlo por hecho.
 
@@ -16,7 +16,7 @@ Motor gráfico propio (C++20, SDL3 + SDL_GPU sobre Direct3D 12, Dear ImGui como 
 |---|---|
 | `engine/` | El motor: astrofísica, galaxia, render (`SdlGpuBackend`), comandos, funciones |
 | `game/` | El juego: `Session` (reglas), `Ship`, `Stations`, `Anomalies`, combate, defensa, `GameHud` (interfaz), `main.cpp` (opciones y comandos de consola) |
-| `game/assets/` | Fuentes (Audiowide, Rubik Glitch, Hangul) y modelos glTF |
+| `game/assets/` | Fuentes (Epsilon Basics, Rubik Glitch, Hangul) y modelos glTF |
 | `tests/` | `engine_tests.cpp` y `game_tests.cpp` |
 | `docs/` | Capturas, `astrofisica.md` y **`pruebas.md`**: todas las opciones, comandos y recetas de prueba |
 
