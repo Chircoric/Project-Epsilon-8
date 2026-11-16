@@ -56,6 +56,7 @@ epsilon_add_module(core
     engine/src/Camera.cpp
     engine/src/Features.cpp
     engine/src/FrameBuilder.cpp
+    engine/src/GpuProbe.cpp
     engine/src/Humanoid.cpp
     engine/src/JobSystem.cpp
     engine/src/SceneGraph.cpp
@@ -233,6 +234,7 @@ if(EPSILON_WITH_SDL)
             target_link_libraries(epsilon_game PRIVATE epsilon_game_logic epsilon_sdl imgui::imgui)
             # Las fuentes, la nave (modelos/nave.gltf, con sus texturas) y los sonidos viajan junto al ejecutable.
             add_custom_command(TARGET epsilon_game POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/game/diagnostico.bat $<TARGET_FILE_DIR:epsilon_game>/diagnostico.bat
                 COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/fonts $<TARGET_FILE_DIR:epsilon_game>/fonts
                 COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/modelos $<TARGET_FILE_DIR:epsilon_game>/modelos
                 COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/game/assets/audio/ui $<TARGET_FILE_DIR:epsilon_game>/audio/ui)

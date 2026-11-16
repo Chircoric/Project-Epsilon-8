@@ -24,6 +24,7 @@
 #include "epsilon/Camera.h"
 #include "epsilon/Engine.h"
 #include "epsilon/FrameBuilder.h"
+#include "epsilon/GpuProbe.h"
 #include "epsilon/JobSystem.h"
 #include "epsilon/Kepler.h"
 #include "epsilon/SceneGraph.h"
@@ -2544,8 +2545,57 @@ static void TestSky() {
     CHECK(Length(sum) / 400.0f < 0.15f);  // distribucion sin sesgo marcado
 }
 
+// La sonda de GPU: los nombres y los textos del aviso. La consulta real depende de la maquina,
+// asi que solo se comprueba que no falle y que sea coherente consigo misma.
+static void TestGpuProbe() {
+    CHECK(FeatureLevelName(0xb0) == "11_0");
+    CHECK(FeatureLevelName(0xc1) == "12_1");
+    CHECK(FeatureLevelName(0xc2) == "12_2");
+    CHECK(FeatureLevelName(0) == "?");
+    CHECK(ShaderModelName(0x60) == "6.0");
+    CHECK(ShaderModelName(0x65) == "6.5");
+    CHECK(ShaderModelName(0) == "?");
+
+    // Una tarjeta inventada: no pide ni ventana ni Windows.
+    GpuAdapterInfo old;
+    old.name = "Tarjeta de prueba";
+    old.integrated = true;
+    old.d3d12 = true;
+    old.featureLevel = 0xb1;
+    old.shaderModel = 0x51;
+    const std::string line = DescribeAdapter(old);
+    CHECK(line.find("Tarjeta de prueba") != std::string::npos);
+    CHECK(line.find("integrada") != std::string::npos);
+    CHECK(line.find("D3D12 11_1") != std::string::npos);
+    CHECK(line.find("shaders 5.1") != std::string::npos);
+
+    GpuAdapterInfo none;
+    none.name = "Sin D3D12";
+    CHECK(DescribeAdapter(none).find("sin Direct3D 12") != std::string::npos);
+
+    GpuReport failing;
+    failing.adapters.push_back(old);
+    failing.problem = "Ninguna tarjeta gráfica admite Direct3D 12 con shaders de modelo 6.0.";
+    const std::string advice = ExplainGpuFailure(failing);
+    CHECK(advice.find("Tarjeta de prueba") != std::string::npos);
+    CHECK(advice.find("modelo 6.0") != std::string::npos);
+    CHECK(advice.find("controlador") != std::string::npos);
+
+    // La consulta real: coherente, y si dice que sirve hay una tarjeta real que lo cumple.
+    const GpuReport real = ProbeGpu();
+    CHECK(real.supported || !real.problem.empty());
+    if (real.supported) {
+        bool found = false;
+        for (const GpuAdapterInfo& a : real.adapters) found = found || (!a.software && a.d3d12 && a.shaderModel >= 0x60);
+        CHECK(found);
+    }
+    for (const GpuAdapterInfo& a : real.adapters) CHECK(!a.d3d12 || a.featureLevel >= 0xb0);
+    std::printf("  %s", FormatGpuReport(real).c_str());
+}
+
 int main() {
     const struct { const char* name; void (*fn)(); } tests[] = {
+        {"Sonda de la tarjeta gráfica", TestGpuProbe},
         {"Algebra de matrices", TestMatrixAlgebra},
         {"Legado: CalcularProyeccion", TestLegacyProjectionGolden},
         {"Legado: espacio de recorte", TestClipSpaceMatchesLegacy},

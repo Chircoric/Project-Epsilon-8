@@ -73,6 +73,7 @@ out\build\x64-sdl-release\epsilon_game_tests.exe --solo-dorada
 | `--screenshot a.png` | Guarda el último fotograma. Requiere `--frames` |
 | `--size W H` | Tamaño de la ventana. Por defecto, 1600 × 900 |
 | `--no-vsync` | Sin sincronización vertical. **Imprescindible para medir FPS** |
+| `--diagnostico` | Informe de la máquina (hilos, memoria, tarjetas gráficas con su nivel de Direct3D 12 y de shaders y el controlador) y una prueba de 300 fotogramas en calidad Baja a 1280 × 720, que termina con los FPS y un veredicto. Lo que se pida a mano (`--quality`, `--size`, `--frames`) se respeta. Para pasárselo a un amigo, `diagnostico.bat` (junto al `.exe`) lo ejecuta y deja `diagnostico.txt` |
 | `--host [puerto]` | Abre la partida a la red (puerto 27300 si no se dice). Juegas tú y pueden entrar otros. El servidor no se para aunque estés en pausa |
 | `--connect lan` | Busca partidas abiertas en la red local, las lista en la salida y entra en la primera |
 | `--connect ip[:puerto]` | Entra en la partida de otro. No carga ni guarda nada: la partida es del servidor. Si no puede entrar, lo dice y sale |

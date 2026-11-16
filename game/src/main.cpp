@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <map>
 #include <random>
@@ -52,6 +53,7 @@
 #include <vector>
 
 #include "epsilon/Engine.h"
+#include "epsilon/GpuProbe.h"
 #include "epsilon/SdlGpuBackend.h"
 #include "game/Armament.h"
 #include "game/Console.h"
@@ -81,6 +83,7 @@ struct Options {
     std::string shipModel;         // .glb o .gltf de la nave; vacio = buscarlo junto al ejecutable
     std::vector<std::string> commands;
     bool vsync = true, debug = false, noTutorial = false, cursor = false, fixedStep = false, loopback = false;
+    bool diagnostic = false;     // --diagnostico: informe de la maquina y una prueba corta en calidad Baja
     bool direct = false;         // --direct: sin servidor ni cliente
     int hostPort = 0;            // > 0: la partida se abre a la red en ese puerto
     std::string connect;         // ip[:puerto] del servidor al que entrar
@@ -132,6 +135,7 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--fixed-step") o.fixedStep = true;
         else if (a == "--loopback") o.loopback = true;
         else if (a == "--direct") o.direct = true;
+        else if (a == "--diagnostico") o.diagnostic = true;
         else if (a == "--host") {
             o.hostPort = kDefaultPort;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') o.hostPort = std::atoi(argv[++i]);
@@ -162,7 +166,44 @@ Options ParseOptions(int argc, char** argv) {
             o.height = std::atoi(argv[++i]);
         }
     }
+    if (o.diagnostic) {
+        // La prueba de un equipo modesto: calidad Baja a 1280x720, sin sincronizar, sin guardar nada.
+        // Lo que el usuario haya pedido a mano (calidad, tamaño, fotogramas) se respeta.
+        if (o.frames == 0) o.frames = 300;
+        o.vsync = false;
+        o.noTutorial = true;
+        if (o.mode < 0) o.mode = 2;
+        if (o.quality < 0) o.quality = 0;
+        if (o.width == 1600 && o.height == 900) o.width = 1280, o.height = 720;
+    }
     return o;
+}
+
+// El juego no ha podido abrir la tarjeta gráfica. Quien lo abre con doble clic no ve la consola, así
+// que se dice en una ventana y se guarda el informe para poder enviarlo.
+void ReportGpuFailure(const std::string& sdlError, bool interactive) {
+    std::string text = ExplainGpuFailure(ProbeGpu()) + "\nError de SDL: " + sdlError + "\n";
+    std::printf("%s", text.c_str());
+    if (!interactive) return;
+    if (char* folder = SDL_GetPrefPath("Epsilon", "Nebulosa")) {
+        const std::string where = std::string(folder) + "diagnostico.txt";
+        SDL_free(folder);
+        std::ofstream out(FilePath(where));
+        if (out) {
+            out << text;
+            text += "\nEste informe se ha guardado en:\n" + where + "\nEnvíelo a quien le dio el juego.\n";
+        }
+    }
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Nebulosa: no se puede iniciar", text.c_str(), nullptr);
+}
+
+// --diagnostico, antes de abrir nada: la máquina y su tarjeta, en un texto que se pueda enviar.
+void PrintDiagnostic() {
+    std::printf("== Diagnóstico de Nebulosa ==\n");
+    std::printf("Procesador: %d hilos | memoria: %d MB\n", SDL_GetNumLogicalCPUCores(), SDL_GetSystemRAM());
+    std::printf("%s", FormatGpuReport(ProbeGpu()).c_str());
+    std::printf("Prueba: calidad Baja, 1280x720, sin sincronización vertical\n");
+    std::fflush(stdout);
 }
 
 TextureId MakeHullTexture(SdlGpuBackend& backend) {
@@ -226,6 +267,7 @@ int Run(Options options) {
         std::printf("SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+    if (options.diagnostic) PrintDiagnostic();
 
     // Las partidas viven en la carpeta de datos del usuario, no junto al ejecutable.
     // Una partida es una carpeta: mundo.sav y jugadores/<id>.sav (SaveGame.h).
@@ -286,6 +328,7 @@ int Run(Options options) {
         SdlGpuBackend backend;
         if (!backend.Initialize(window, options.debug)) {
             std::printf("Backend: %s\n", backend.LastError().c_str());
+            ReportGpuFailure(backend.LastError(), options.frames == 0);
             exitCode = 1;
         } else {
             Balance rules;  // la eslora cambia si la nave viene de un .glb
@@ -1623,6 +1666,11 @@ int Run(Options options) {
             std::printf("Driver: %s\n", backend.DriverName().c_str());
             std::printf("Fotogramas: %llu  Presentados: %llu  Media: %.1f FPS\n", static_cast<unsigned long long>(rendered), static_cast<unsigned long long>(backend.PresentedFrames()), static_cast<double>(rendered) / total.count());
             std::printf("Mallas: %zu  Esferas: %zu  Sprites: %zu  Lineas: %zu  Nubes: %zu\n", packet.stats.meshesVisible, packet.stats.spheresVisible, packet.stats.spritesVisible, packet.stats.linesVisible, packet.nebulae.size());
+            if (options.diagnostic) {
+                const double fps = static_cast<double>(rendered) / total.count();
+                std::printf("Resultado: %.0f FPS en calidad Baja. %s\n", fps,
+                            fps >= 60.0 ? "Fluido: sobra para jugar." : fps >= 30.0 ? "Jugable." : fps >= 20.0 ? "Justo: se notará lento." : "Demasiado lento para jugar bien.");
+            }
             for (const std::string& line : session.Log()) std::printf("Registro: %s\n", line.c_str());
             if (!backend.LastError().empty()) std::printf("Ultimo error: %s\n", backend.LastError().c_str());
             if (backend.PresentedFrames() == 0) exitCode = 1;
