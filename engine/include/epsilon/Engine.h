@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Engine.h - Fachada: reune los modulos en una sola clase. Es lo unico que necesita un juego.
 //
 //   eps::Engine engine(config);

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // SciFiHud.h - Interfaz de estilo ciencia ficcion dibujada con Dear ImGui.
 //
 // Solo usa ImGui como lienzo y para las fuentes: no hay ventanas ni botones, asi que no

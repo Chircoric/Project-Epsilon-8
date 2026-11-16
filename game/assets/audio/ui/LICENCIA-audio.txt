@@ -1,6 +1,11 @@
 Sonidos de la interfaz de Nebulosa
 ==================================
 
+Licencia: Creative Commons Atribucion-CompartirIgual 4.0 (CC BY-SA 4.0).
+    SPDX-License-Identifier: CC-BY-SA-4.0
+    Copyright (C) 2026 Chircoric
+    Texto legal: LICENSES/CC-BY-SA-4.0.txt del repositorio.
+
 ui_click, ui_hover, ui_confirmar, ui_error, ui_panel, ui_radar_barrido
     Sintetizados para el juego con tools/sfx_ui.py. Son originales: no llevan muestras de terceros
     y no tienen licencia externa.

@@ -29,7 +29,7 @@ git -C "C:\Users\Admin\Desktop\Paralelo NASA SPACE APPS\engineer-genesis-22" sho
 
 ## 3. Reglas que siguen valiendo aquí
 
-Las de `CLAUDE.md` de esta carpeta: español, unidades reales, solo recursos con licencia que permita incluirlos y con su licencia al lado, no subir `out/`, `.vs/`, `*.sav`, `*.blend1`. Compilar con `vcvars64.bat`, `--clean-first` tras tocar un header, renombrar el `.exe` si está abierto. **Un cambio está terminado cuando compila, pasa `epsilon_game_tests` y `epsilon_tests` con `0 fallos` y, si se ve, se sacó una captura y se miró.**
+Las de `CLAUDE.md` de esta carpeta: español, unidades reales, solo recursos propios bajo CC BY-SA 4.0 y código AGPL-3.0-only (ver `LICENCIAS.md`), no subir `out/`, `.vs/`, `*.sav`, `*.blend1`. Compilar con `vcvars64.bat`, `--clean-first` tras tocar un header, renombrar el `.exe` si está abierto. **Un cambio está terminado cuando compila, pasa `epsilon_game_tests` y `epsilon_tests` con `0 fallos` y, si se ve, se sacó una captura y se miró.**
 
 Trabaja en una **rama nueva**, por ejemplo `tarea/interfaz-genesis`. `main` estaba limpio al escribir esto.
 
@@ -82,6 +82,7 @@ Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comen
 - **Textos por clave (ES/EN/FR).** El HUD de Genesis llama a `Tr()`/`Tf()` 125 veces (`genesis/Text.h`, tablas en `data/textos/*.tsv`); el de Epsilon-Z, cero veces. Dos caminos: (a) dejar los textos en español como están, o (b) traer `genesis/Text.h` + `data/textos` y migrar. **No migres a ciegas**: es un cambio grande y el usuario no lo pidió todavía.
 
 ### Fase 5 — Modelos de personas
+- **Aviso de licencia (16-11-2026):** Epsilon-Z solo admite modelos, texturas y sonidos propios, bajo CC BY-SA 4.0 (ver `LICENCIAS.md`). Si algún modelo de personas de Genesis es de terceros (CC BY o cualquier otra licencia), **no se trae**. Antes de copiar nada, leer `CREDITOS-modelos.txt` de Genesis y traer solo lo que sea obra propia; el resto hay que hacerlo de nuevo.
 - `Models.cpp` es **idéntico** en los dos motores, y Epsilon-Z ya tiene `LoadGltfModel` (`GameModels.cpp:370`). Los `.gltf` de tripulantes cargan sin tocar el cargador.
 - Traer de `engineer-genesis-22\game\assets\modelos\`: `<id>.gltf/.bin` y sus texturas de `texturas\` (`ingeniera`, `kwame`, `mei`, `erik`, `amara`, `arjun`, `nino`; versiones `_eva` solo si hay traje) y **`CREDITOS-modelos.txt`**. Los modelos CC BY exigen conservar el crédito; copia solo las líneas de lo que traigas.
 - Formato exacto que pide el motor: `docs/GUIA_MODELOS_PERSONAS.md` de Genesis (piezas rígidas con nombres fijos, 14 empties de articulación `art_*`, +Y arriba, un material por pieza, texturas `nombre_color/normal/orm.png`). Se puede leer `engine/include/epsilon/Humanoid.h` y `OnFoot.cpp` de Epsilon-Z para ver cómo se pintan hoy las personas.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // SdlGpuBackend.h - Backend de GPU sobre SDL_GPU (Direct3D 12).
 //
 // Reglas de hilos de SDL_GPU:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // nebula.hlsl - Nubes volumetricas (DXIL, Shader Model 6.0).
 //
 // Se avanza por cada rayo sumando luz y restando transparencia. Corre a media resolucion: una

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Chircoric
 # epsilon_add_shader(<fuente> <perfil> <funcion> <variable> <cabecera>)
 # Compila un shader a DXIL y genera una cabecera con el bytecode. Un juego la usa para sus
 # propios efectos y se los pasa a SdlGpuBackend::AddPostEffect.

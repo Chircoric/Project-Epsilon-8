@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // DemoStation.h - Una estacion hecha solo con la API de modelos, para probar la escala humana.
 //
 // Todas sus medidas estan en metros. Un juego real la cargaria de un .glb con LoadGltf y

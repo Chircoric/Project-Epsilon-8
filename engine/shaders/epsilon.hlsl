@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // epsilon.hlsl - Shaders del backend SDL_GPU (DXIL, Shader Model 6.0).
 //
 // Registros que exige SDL_GPU en Direct3D 12:

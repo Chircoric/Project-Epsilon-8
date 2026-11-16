@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Settings.h - Configuracion del jugador: calidad grafica, pantalla completa y sincronizacion.
 //
 // Se guarda aparte de la partida, en texto, para que valga en todas. Cada nivel de calidad es un

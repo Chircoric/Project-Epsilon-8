@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Economy.h - Recursos, yacimientos y lo que aporta cada estrella.
 //
 // Lo que produce un sitio sale de los datos que el motor ya genera: un planeta rico en hierro da

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // system_report.cpp - Genera un sistema solar e imprime sus datos y ecuaciones. No usa GPU.
 //
 //   epsilon_system                semilla 1 y estrella al azar

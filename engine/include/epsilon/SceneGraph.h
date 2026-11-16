@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // SceneGraph.h - Jerarquia de transformaciones: galaxia > sistema > planeta > luna.
 //
 // Mundo(hijo) = Mundo(padre) * Local(hijo)

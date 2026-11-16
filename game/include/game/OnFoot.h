@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // OnFoot.h - A pie: las cubiertas de las estaciones y la gente que las pisa.
 //
 // Todo va en metros, con Y hacia arriba, como en el motor de personas (Humanoid.h). Una cubierta

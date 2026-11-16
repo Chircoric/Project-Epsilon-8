@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Collisions.h - Choques entre cuerpos y sus explosiones.
 //
 // Las orbitas son funciones del tiempo, asi que un choque es un instante que se puede calcular:

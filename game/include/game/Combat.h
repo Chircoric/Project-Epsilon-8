@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Combat.h - Armas, proyectiles y la balistica que los dirige.
 //
 // Nada de esto conoce la sesion: son funciones sobre vectores, asi que se prueban solas.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Net.h - Servidor y cliente: la partida la simula uno y los demas la miran y mandan ordenes.
 //
 // El servidor (GameServer) tiene la sesion de verdad. Cada cliente (GameClient) tiene otra GameSession

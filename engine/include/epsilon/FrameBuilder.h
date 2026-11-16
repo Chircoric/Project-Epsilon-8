@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // FrameBuilder.h - Convierte la escena en un FramePacket usando todos los nucleos.
 //
 // Sustituye a GRAFICOS::DibujarVista3D, que en un solo hilo mezclaba transformaciones,

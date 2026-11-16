@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 #include "epsilon/SciFiHud.h"
 
 #include <SDL3/SDL.h>

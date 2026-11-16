@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Models.h - Modelos 2D y 3D a escala humana. No depende del modulo astral.
 //
 // Todo aqui se mide en metros. Un LocalSpace es una burbuja de coordenadas locales enganchada

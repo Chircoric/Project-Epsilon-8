@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Mesh.h - Datos de una malla. No sabe nada de la GPU ni de como se cargo.
 //
 // Vive en el nucleo porque es el contrato entre quien produce mallas (modulo de modelos) y

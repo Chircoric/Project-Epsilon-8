@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // JobSystem.h - Reparto de trabajo en paralelo, sin dependencias externas.
 //
 // El resultado no depende del hilo que ejecuta cada tramo: los tramos se calculan solo

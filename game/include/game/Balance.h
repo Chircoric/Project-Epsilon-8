@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Balance.h - Todas las cifras del juego, en un solo sitio.
 //
 // Nada de lo que hay aqui esta decidido todavia: son valores provisionales para que las

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // sphere.hlsl - Esferas calculadas por pixel (DXIL, Shader Model 6.0).
 //
 // No hay malla. El vertex shader coloca un cuadro que atraviesa el centro de la esfera y

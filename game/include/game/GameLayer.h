@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // GameLayer.h - Lo que el juego anade a cada fotograma.
 //
 //   Modelos de la nave, las estaciones y las anomalias.

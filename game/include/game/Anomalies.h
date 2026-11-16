@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Anomalies.h - Lo que hay escondido en la nebulosa.
 //
 //   Naves y estaciones alienigenas, hostiles o neutrales.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // mesh.hlsl - Mallas opacas con instancias (DXIL, Shader Model 6.0).
 //
 // Sirve igual para un tornillo y para un asteroide: la instancia trae su posicion respecto a

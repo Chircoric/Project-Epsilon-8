@@ -10,6 +10,10 @@ Para usarlo en otro juego, empieza por [Usarlo como librería](#usarlo-como-libr
 
 El juego que usa este motor está en [game/](game/README.md).
 
+## Licencia
+
+El código es software libre bajo la [GNU AGPL v3](LICENSE). Los modelos, texturas, sonidos y la documentación son obra propia bajo [CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt), y las fuentes tipográficas conservan su licencia OFL. El detalle, las librerías de terceros y lo que implica la AGPL para un servidor en línea están en [LICENCIAS.md](LICENCIAS.md).
+
 ## Compilar en Visual Studio 2026
 
 1. Abre esta carpeta con **Archivo > Abrir > Carpeta**.

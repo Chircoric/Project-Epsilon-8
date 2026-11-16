@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // UiSounds.h - Efectos de sonido de la interfaz (clic, hover, confirmar, error, panel).
 //
 // Los WAV se cargan en memoria al empezar. Cada efecto tiene su propio flujo hacia el dispositivo

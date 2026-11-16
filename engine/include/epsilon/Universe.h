@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Universe.h - Convierte sistemas generados en una escena y los carga solo cuando hacen falta.
 //
 // Las estrellas siempre existen. Los planetas de un sistema se crean al acercarse y se

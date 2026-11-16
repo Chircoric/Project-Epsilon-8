@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // SoftwareBackend.h - Backend de referencia por CPU.
 //
 // Aplica a cada FramePacket las mismas matrices que aplicara el vertex shader y guarda el

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Tutorial.h - Dialogos con objetivos.
 //
 // Un paso son unas lineas que se leen y una condicion que el jugador debe cumplir. La escena no

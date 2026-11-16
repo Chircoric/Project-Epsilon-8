@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Pruebas del motor. No necesitan ventana, GPU ni librerias externas.
 // Las pruebas "legado" comparan contra copias literales de las formulas del juego original.
 #include <algorithm>

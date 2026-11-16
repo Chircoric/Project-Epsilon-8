@@ -1,4 +1,6 @@
-﻿// Console.cpp - Los comandos de consola del juego y las categorias de quien puede usarlos.
+﻿// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
+// Console.cpp - Los comandos de consola del juego y las categorias de quien puede usarlos.
 #include "game/Console.h"
 
 #include <algorithm>

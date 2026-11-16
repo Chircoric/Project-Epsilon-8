@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // demo.cpp - Ejemplo de uso del motor sin ventana.
 //
 //   epsilon_demo render salida.bmp   dibuja una galaxia procedural con el backend de CPU

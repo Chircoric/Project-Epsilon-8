@@ -1,4 +1,6 @@
-﻿#include "game/GameHud.h"
+﻿// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
+#include "game/GameHud.h"
 #include "game/Units.h"
 
 #include <SDL3/SDL.h>

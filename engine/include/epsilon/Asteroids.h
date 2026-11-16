@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Asteroids.h - Cinturones y campos de asteroides calculados bajo demanda.
 //
 // Un cinturon real tiene millones de rocas separadas por cientos de miles de kilometros. Aqui

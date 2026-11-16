@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // minimal_game.cpp - Lo minimo para un juego nuevo sobre la libreria.
 //
 // Un hilo, una camara fija y una galaxia completa: sistemas con carga bajo demanda, orbitas,

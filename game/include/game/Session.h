@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Session.h - Una partida: une la nave, las estaciones, las anomalias y el universo.
 //
 // No conoce la ventana. Recibe lo que hace el jugador y deja listo lo que hay que mostrar, asi

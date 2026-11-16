@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // BlackHole.h - Formulas de los dos tipos de agujero negro.
 //
 //   Schwarzschild: no rota. Horizonte, esfera de fotones y sombra son circulos exactos.

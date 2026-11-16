@@ -6,7 +6,7 @@ Motor gráfico propio (C++20, SDL3 + SDL_GPU sobre Direct3D 12, Dear ImGui como 
 
 - Habla con el usuario en **español**, y escribe en español los textos del juego, los comentarios y la documentación.
 - **Unidades reales**: distancias en km, energía en EJ/ZJ/YJ, potencia en W, masa en t/kt/Mt (`game/include/game/Units.h`). Las cifras de juego viven en `game/include/game/Balance.h`.
-- **Solo fuentes y recursos cuya licencia permita incluirlos en un juego** (OFL o similar), con su licencia al lado. Las licencias de escritorio no valen.
+- **Licencias** (detalle en `LICENCIAS.md`): el código es **AGPL-3.0-only** y todo archivo nuevo de código lleva la cabecera `SPDX-License-Identifier: AGPL-3.0-only` y `Copyright (C) 2026 Chircoric`. Los **modelos, texturas y sonidos son solo propios** (hechos o sintetizados aquí), bajo **CC BY-SA 4.0**, con su `LICENCIA*.txt` al lado. No se añaden texturas, modelos ni sonidos de terceros, ni siquiera CC0 o gratuitos. Las únicas excepciones son las fuentes tipográficas OFL de `game/assets/fonts/`, con su licencia al lado.
 - No subas compilados ni partidas: `out/`, `.vs/`, `*.sav` y `*.blend1` están en `.gitignore`.
 - Tras un cambio: compila, pasa las pruebas y, si se ve en pantalla, saca una captura y mírala antes de darlo por hecho.
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // post.hlsl - Etapa final de la imagen (DXIL, Shader Model 6.0).
 //
 //   Escena HDR > bloom > composicion a 8 bits > efectos del juego > interfaz > pantalla.

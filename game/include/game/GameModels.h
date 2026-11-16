@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // GameModels.h - Modelos provisionales del juego, hechos por codigo y medidos en metros.
 //
 // Son maquetas: dan silueta y tamano a cada cosa, y se sustituyen cargando un .glb con

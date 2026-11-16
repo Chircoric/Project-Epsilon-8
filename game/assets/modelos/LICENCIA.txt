@@ -1,0 +1,13 @@
+Modelos y texturas de Nebulosa (Epsilon-Z)
+==========================================
+
+Todo lo de esta carpeta (modelos .gltf y .bin, y las texturas de texturas/) es obra original
+de Chircoric, bajo la licencia Creative Commons Atribucion-CompartirIgual 4.0 (CC BY-SA 4.0).
+
+SPDX-License-Identifier: CC-BY-SA-4.0
+Copyright (C) 2026 Chircoric
+
+Texto legal: LICENSES/CC-BY-SA-4.0.txt del repositorio, o https://creativecommons.org/licenses/by-sa/4.0/legalcode.es
+
+Las texturas (color, normal y orm) se generan por codigo; no hay texturas de terceros.
+Los fuentes .blend y los scripts de construccion estan en assets/modelos/ del repositorio.

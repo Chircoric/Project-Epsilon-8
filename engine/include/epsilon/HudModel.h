@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // HudModel.h - Que muestra la interfaz en cada momento. No dibuja ni conoce ninguna libreria.
 //
 // La simulacion rellena un HudFrame y lo entrega junto al FramePacket. Asi el hilo principal

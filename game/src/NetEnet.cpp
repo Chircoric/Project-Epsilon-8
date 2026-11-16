@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // NetEnet.cpp - El transporte de red, sobre ENet (UDP con canales fiables y no fiables).
 //
 // Va aparte de Net.cpp porque enet.h arrastra las cabeceras de Windows. Si el proyecto se configura sin

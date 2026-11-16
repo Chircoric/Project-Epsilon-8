@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Pruebas del juego. Juegan partidas enteras sin ventana ni GPU.
 #include <algorithm>
 #include <atomic>

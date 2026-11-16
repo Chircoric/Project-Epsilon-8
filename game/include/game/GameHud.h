@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // GameHud.h - Interfaz de la partida.
 //
 // Dear ImGui solo se usa como lienzo y para las fuentes: los paneles y botones son propios. Con

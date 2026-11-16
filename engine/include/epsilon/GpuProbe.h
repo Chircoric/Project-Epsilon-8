@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // GpuProbe.h - Que tarjetas graficas hay y si sirven para este motor, sin crear ventana ni SDL.
 //
 // El motor solo usa Direct3D 12 con shaders de modelo 6.0 (SdlGpuBackend). Una tarjeta integrada

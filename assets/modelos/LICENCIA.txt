@@ -1,0 +1,11 @@
+Fuentes de los modelos de Nebulosa (Epsilon-Z)
+==============================================
+
+Archivos .blend, texturas, sprites (.png), catalogo.tsv y capturas de esta carpeta:
+obra original de Chircoric, bajo CC BY-SA 4.0.
+
+    SPDX-License-Identifier: CC-BY-SA-4.0
+    Copyright (C) 2026 Chircoric
+    Texto legal: LICENSES/CC-BY-SA-4.0.txt del repositorio.
+
+Scripts construir_*.py (y los de tools/): son codigo, bajo AGPL-3.0-only, con su cabecera SPDX.

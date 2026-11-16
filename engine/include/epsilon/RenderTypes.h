@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // RenderTypes.h - El contrato entre la simulacion y el backend grafico.
 //
 // FramePacket es una copia inmutable de lo que se debe dibujar. No contiene punteros al

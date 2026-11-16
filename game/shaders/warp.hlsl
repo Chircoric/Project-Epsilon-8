@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // warp.hlsl - Lo que se ve desde dentro de la curvatura.
 //
 // Cerca de c, la aberracion relativista empuja todo el cielo hacia delante: luz que llegaba

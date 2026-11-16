@@ -1,4 +1,6 @@
-﻿// main.cpp - El juego en una ventana.
+﻿// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
+// main.cpp - El juego en una ventana.
 //
 // Controles: raton = rumbo, W/S = mando, 1/2/3/4 = impulso, crucero, curvatura, hiper.
 //            Tab = siguiente objetivo, F = ruta asistida, X = pararla, Espacio = frenar y mantenerse.

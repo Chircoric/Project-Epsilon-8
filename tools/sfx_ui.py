@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Chircoric
 """Genera efectos de sonido de interfaz de Nebulosa por síntesis (sin samples de terceros).
 
 Uso (con cualquier Python 3):

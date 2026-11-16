@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // epsilon_server - La partida de Nebulosa sin ventana: un servidor al que entran los jugadores.
 //
 // No dibuja nada ni necesita tarjeta grafica: lleva el mundo, escucha en un puerto, se anuncia en la

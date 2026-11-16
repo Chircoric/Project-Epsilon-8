@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Humanoid.h - Cuerpos de tamano humano: andar, correr, saltar y chocar.
 //
 // El universo va en kilometros; esto va en metros, con Y hacia arriba, dentro de un recinto. Quien lo

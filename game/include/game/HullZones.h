@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // HullZones.h - El casco por zonas: donde pega cada golpe, que se rompe y que se pierde.
 //
 // Cada zona lleva su integridad, de 1 (entera) a 0 (deshecha). Un golpe con direccion cae en la

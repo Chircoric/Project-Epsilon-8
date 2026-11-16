@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Ship.h - La nave: motores, manejo, energia y casco.
 //
 //   Impulso:    hidrogeno ionizado, para maniobrar. Funciona incluso sin energia, muy despacio.

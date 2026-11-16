@@ -1,4 +1,6 @@
-﻿#include "game/Ship.h"
+﻿// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
+#include "game/Ship.h"
 
 #include <algorithm>
 

@@ -1,3 +1,5 @@
+REM SPDX-License-Identifier: AGPL-3.0-only
+REM Copyright (C) 2026 Chircoric
 @echo off
 rem Diagnostico de Nebulosa: dice que tarjeta grafica tiene este equipo, si el juego puede abrirla
 rem y cuantos fotogramas por segundo da en calidad Baja. Deja el resultado en diagnostico.txt

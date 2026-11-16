@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Console.h - Los comandos de consola del juego y quien puede usarlos.
 //
 // Antes vivian en main.cpp, atados a la ventana. Ahora estan en la biblioteca comun: los usan el juego

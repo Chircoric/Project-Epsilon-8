@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // AstroLayers.h - Lo que el modulo astral aporta a cada fotograma.
 //
 // El juego elige que capas usa anadiendolas a FrameInput::layers.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Chircoric
 cmake_minimum_required(VERSION 3.25)
 project(EpsilonEngine VERSION 0.2.0 LANGUAGES CXX)
 

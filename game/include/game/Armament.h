@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Armament.h - Armamento humano (docs/diseno-combate.md, fase B): reglas de montaje, costes y defensa puntual.
 //
 // Son funciones sobre los datos de ArmamentRules (Balance.h), asi que se prueban solas. La sesion

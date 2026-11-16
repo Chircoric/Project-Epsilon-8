@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Layer.h - Punto de union entre los modulos y el fotograma.
 //
 // El nucleo no conoce orbitas, asteroides ni modelos. Cada modulo aporta una capa que anade

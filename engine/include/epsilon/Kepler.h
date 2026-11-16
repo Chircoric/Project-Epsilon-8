@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Kepler.h - Orbitas elipticas como funcion pura del tiempo.
 //
 // Unidades: kilometros, segundos y radianes. Masa como mu = G * M, en km^3/s^2.

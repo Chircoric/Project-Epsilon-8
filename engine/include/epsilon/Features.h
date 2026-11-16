@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Features.h - Interruptores del motor y consola de comandos.
 //
 // Cada modulo consulta su interruptor en cada fotograma: apagar algo elimina su trabajo, no

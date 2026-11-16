@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // window_demo.cpp - Simulador de sistemas solares en una ventana real.
 //
 //   Hilo principal:   eventos de SDL, swapchain y comandos de GPU.

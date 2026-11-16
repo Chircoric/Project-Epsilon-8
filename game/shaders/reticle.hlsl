@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // reticle.hlsl - Punto de mira y rumbo apuntado, con el color inverso de lo que tienen detras.
 //
 // Se dibuja sobre la imagen ya terminada porque ningun color fijo se veria en todas partes:

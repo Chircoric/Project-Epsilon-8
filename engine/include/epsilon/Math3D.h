@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Math3D.h - Algebra lineal del motor.
 //
 // Convenciones (las mismas de GRAFICOS::CalcularProyeccion):

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // ShipModules.h - La nave por modulos: ranuras, modulos, motores de impulso y piezas.
 //
 //   Ranuras exteriores: los anclajes del modelo (nodos vacios "hp_..." del .glb, como hp_torreta_3).

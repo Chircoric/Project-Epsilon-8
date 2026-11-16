@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // scanlines.hlsl - Ejemplo de efecto propio del juego: pantalla de cabina.
 //
 // Contrato de SdlGpuBackend::AddPostEffect: recibe la imagen en t0/s0 de space2 y estos

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Defense.h - Escudos, calor y refrigeracion de la nave.
 //
 // Cinco defensas con ventajas cruzadas (ver DefenseRules en Balance.h):

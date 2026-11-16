@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Astro.h - Constantes fisicas y generador de sistemas solares.
 //
 // Solo produce datos: no sabe nada de la escena ni de la GPU. El juego convierte un

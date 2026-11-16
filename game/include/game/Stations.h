@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Stations.h - Estaciones automaticas que despliega la nave.
 //
 //   (La estacion de mineria ya no existe: la mineria la hacen los drones, GameSession::DeployDrones.

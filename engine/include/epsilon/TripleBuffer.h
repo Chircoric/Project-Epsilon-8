@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // TripleBuffer.h - Entrega sin bloqueos del ultimo fotograma: un productor, un consumidor.
 //
 // La simulacion escribe en una ranura y la publica. El render toma siempre la publicacion

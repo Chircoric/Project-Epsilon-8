@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Chircoric
 # Torretas humanas y naves alienígenas (fase E de docs/diseno-combate.md), para Nebulosa.
 #
 # Se ejecuta dentro de Blender con combate.blend abierto:

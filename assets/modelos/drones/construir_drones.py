@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Chircoric
 # Dron minero y su bahía, para Nebulosa.
 #
 # Se ejecuta dentro de Blender con drones.blend abierto:

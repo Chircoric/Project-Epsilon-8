@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // blackhole.hlsl - Lente gravitacional y disco de acrecion (DXIL, Shader Model 6.0).
 //
 // Cada pixel sigue la trayectoria curva de un rayo de luz, en radios de Schwarzschild:

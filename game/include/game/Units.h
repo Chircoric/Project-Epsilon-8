@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // Units.h - Las cifras del juego en unidades reales.
 //
 // Por dentro siguen siendo numeros comodos, los de Balance.h. Aqui se dice que significan:

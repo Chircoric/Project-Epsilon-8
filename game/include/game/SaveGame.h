@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Chircoric
 // SaveGame.h - Partidas guardadas: el mundo en un archivo y cada jugador en el suyo.
 //
 // Una partida es una carpeta:
