@@ -2666,12 +2666,12 @@ void ContractingLines(const Ui& u, float mid, float half, float top, float botto
     }
 }
 
-// El logotipo de Epsilon-Z, en Epsilon Xeno: letra ancha, espaciada y de holograma, que ya viene
+// El logotipo de Epsilon Infinite, en Epsilon Xeno: letra ancha, espaciada y de holograma, que ya viene
 // estirada y con su barra de escritura ajena bajo cada letra. Aqui solo se inclina hacia delante,
 // como si fuera rapido, y se le puede dar un estiramiento extra (stretch) desde x, que es su borde
 // izquierdo o, con centered, su centro.
 void Logo(const Ui& u, float x, float y, float size, bool centered) {
-    const std::string title = "EPSILON-Z";
+    const std::string title = "EPSILON INFINITE";
     const float stretch = 1.0f, slant = 0.22f;
     const float width = u.WidthIn(u.logo, size, title);
     const float left = std::floor(centered ? x - width * 0.5f : x), top = std::floor(y);
@@ -2828,7 +2828,7 @@ void ArchivePanel(const Ui& u, float x, float y, float w, float h) {
         ">> ESTADO: EXPANSIÓN ACTIVA",
         ">> COMPONENTES: H 70 %   He 28 %   Au",
         ">> EPSILON-0 ... EPSILON-Y: CERRADOS",
-        ">> EPSILON-Z: ABIERTO",
+        ">> EPSILON INFINITE: ABIERTO",
     };
     constexpr int kLines = static_cast<int>(sizeof(lines) / sizeof(lines[0]));
     const double typing = std::max(u.in.pageClock - 0.25, 0.0) * 46.0;  // letras por segundo
@@ -3021,7 +3021,7 @@ float GraphicsPanel(const Ui& u, float x, float y, float w) {
 
 void CreditsPanel(const Ui& u, float x, float y, float w) {
     const float s = u.s, h = 330.0f * s;
-    u.Panel(x, y, w, h, "CRÉDITOS", "EPSILON-Z");
+    u.Panel(x, y, w, h, "CRÉDITOS", "EPSILON INFINITE");
     const float ix = x + 18.0f * s;
     float line = y + 40.0f * s;
     const auto row = [&](const char* role, const char* who) {
@@ -3030,7 +3030,7 @@ void CreditsPanel(const Ui& u, float x, float y, float w) {
         line += 44.0f * s;
     };
     row("PROGRAMACIÓN Y DISEÑO", "Alumno UNAQ");
-    row("LÍNEA DE JUEGOS", "Epsilon-0 a Epsilon-Z, sobre la Nebulosa Naranja");
+    row("LÍNEA DE JUEGOS", "Epsilon-0 a Epsilon Infinite, sobre la Nebulosa Naranja");
     row("LETRAS", "Epsilon Basics y Epsilon Holo (Chircoric)");
     row("LOGOTIPO", "Epsilon Xeno (Chircoric)");
     u.Label(ix, line, 11.0f, kMuted, "Las tres letras son propias, con licencia SIL Open Font License 1.1.");
@@ -3198,7 +3198,7 @@ void Menu(const Ui& u, float width, float height) {
     const float lineY = 132.0f * s;
     u.d->AddLine(ImVec2(left, lineY), ImVec2(left + 520.0f * s, lineY), kAmber, 3.0f * s);
     u.d->AddRectFilled(ImVec2(left + 520.0f * s, lineY - 5.0f * s), ImVec2(left + 530.0f * s, lineY + 5.0f * s), kHot);
-    const std::string status = "SISTEMA: EN LÍNEA  //  NEBULOSA NARANJA  //  EPSILON-Z";
+    const std::string status = "SISTEMA: EN LÍNEA  //  NEBULOSA NARANJA  //  EPSILON INFINITE";
     u.Label(left, lineY + 12.0f * s, 12.5f, kMuted, status + (std::fmod(u.t, 1.0) < 0.5 ? "_" : ""));
 
     // Carta y archivo a la izquierda; datos arriba a la derecha. Ceden sitio en ventanas pequenas.
@@ -3229,7 +3229,7 @@ void Menu(const Ui& u, float width, float height) {
             MenuButton(u, bx, by, bw, bh, "PARTIDA EN RED", u.in.net.joined ? "En la partida de " + u.in.net.where : u.in.net.hosting ? std::string("Tu partida está abierta a la red") : std::string("Abrir la tuya o entrar en la de otro"), nullptr,
                        {HudActionType::MenuPage, static_cast<int>(MenuPage::Network)}, order++);
             by += step;
-            MenuButton(u, bx, by, bw, bh, "CRÉDITOS", "Quién hizo Epsilon-Z", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Credits)}, order++);
+            MenuButton(u, bx, by, bw, bh, "CRÉDITOS", "Quién hizo Epsilon Infinite", nullptr, {HudActionType::MenuPage, static_cast<int>(MenuPage::Credits)}, order++);
             by += step;
             MenuButton(u, bx, by, bw, bh, "ABORTAR", "Salir del juego", "ESC", {HudActionType::Quit}, order++);
             by += step;
@@ -3270,7 +3270,7 @@ void Menu(const Ui& u, float width, float height) {
             break;
     }
 
-    u.Label(left, height - 44.0f * s, 11.0f, kMuted, "EPSILON-Z  //  CONSTRUCCIÓN 0.Z  //  ENLACE ESTABLE");
+    u.Label(left, height - 44.0f * s, 11.0f, kMuted, "EPSILON INFINITE  //  CONSTRUCCIÓN 0.Z  //  ENLACE ESTABLE");
     u.Right(width - 70.0f * s, height - 44.0f * s, 11.0f, kMuted, "Ratón o teclado  ·  ENTER continuar  ·  ESC atrás");
 }
 

@@ -1,4 +1,4 @@
-Fuentes de los modelos de Nebulosa (Epsilon-Z)
+Fuentes de los modelos de Nebulosa (Epsilon Infinite)
 ==============================================
 
 Archivos .blend, texturas, sprites (.png), catalogo.tsv y capturas de esta carpeta:

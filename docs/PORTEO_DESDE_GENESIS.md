@@ -1,4 +1,4 @@
-# Porteo desde Engineer Genesis a Epsilon-Z
+# Porteo desde Engineer Genesis a Epsilon Infinite
 
 Archivo de traspaso. Está escrito para que una conversación abierta **dentro de `EpsilonEngine/`** lo lea y sepa qué traer de Engineer Genesis, de dónde y en qué orden, sin que el usuario tenga que explicarlo otra vez. Redactado el 15-11-2026 tras revisar los dos proyectos (no se modificó ningún archivo en esa revisión).
 
@@ -6,10 +6,10 @@ Archivo de traspaso. Está escrito para que una conversación abierta **dentro d
 
 ## 1. Contexto
 
-- **Epsilon-Z** (esta carpeta, `main`, commit `babcdfe`): el motor y el juego *Nebulosa*. Combate, galaxia procedural, nebulosas, naves. **Epsilon-Z conserva todo eso.** No lo quites.
+- **Epsilon Infinite** (esta carpeta, `main`, commit `babcdfe`): el motor y el juego *Nebulosa*. Combate, galaxia procedural, nebulosas, naves. **Epsilon Infinite conserva todo eso.** No lo quites.
 - **Engineer Genesis**: simulador de ingenieros de estaciones espaciales en el Sistema Solar real. Se importó **una sola vez** de Epsilon en ese mismo commit `babcdfe` (`docs/ORIGEN_EPSILON.md` de Genesis). Por eso toda diferencia entre los dos códigos es trabajo hecho en Genesis desde entonces, y se puede ver con `diff`.
-- Genesis ganó una interfaz que al usuario le gustó (se perdió el concurso, pero la UI gustó). **Quiere esa interfaz en Epsilon-Z con otro color, menos chillón**, y traer otras cosas de Genesis donde sean compatibles.
-- Las reglas de ambientación de Genesis (sin nebulosas, sin combate, Sistema Solar real) **no se aplican aquí**. Al revés: no hay que contagiar a Epsilon-Z con lo de Genesis que sea específico de estaciones y EVA salvo que el usuario lo pida.
+- Genesis ganó una interfaz que al usuario le gustó (se perdió el concurso, pero la UI gustó). **Quiere esa interfaz en Epsilon Infinite con otro color, menos chillón**, y traer otras cosas de Genesis donde sean compatibles.
+- Las reglas de ambientación de Genesis (sin nebulosas, sin combate, Sistema Solar real) **no se aplican aquí**. Al revés: no hay que contagiar a Epsilon Infinite con lo de Genesis que sea específico de estaciones y EVA salvo que el usuario lo pida.
 - **Alcance confirmado por el usuario (16-11-2026): solo cuatro cosas de Genesis.** (1) La **interfaz**, (2) la **capacidad online**, (3) la **capacidad de las estaciones** y (4) que **las naves y las estaciones tengan interior**. Todo lo demás de este archivo es opcional y **no se hace sin que lo pida**. **No se usa ningún modelo de Genesis**: ni las personas, ni los trajes, ni el astronauta.
 
 ## 2. Dónde está Genesis
@@ -43,7 +43,7 @@ Dependencias: las dos vcpkg.json son idénticas (misma línea base `fe856ed9…`
 2. Capturas **antes** con la receta de `CLAUDE.md` (`--frames … --screenshot antes_menu.png`, `antes_juego.png`) para comparar al final.
 
 ### Fase 1 — Color de la interfaz (la más pequeña y la que más se nota)
-Es solo el principio de `game/src/GameHud.cpp`. En Epsilon-Z:
+Es solo el principio de `game/src/GameHud.cpp`. En Epsilon Infinite:
 
 ```cpp
 ImU32 Rgba(int r, int g, int b, float a = 1.0f) { return IM_COL32(r, g, b, static_cast<int>(a * 255.0f)); }
@@ -51,13 +51,13 @@ ImU32 Rgba(int r, int g, int b, float a = 1.0f) { return IM_COL32(r, g, b, stati
 
 En Genesis (`GameHud.cpp`, líneas ~30–99) esa línea pasó a ser un **filtro de tono**: `Themed(r, g, b)` convierte cada color por su matiz (ámbar → blanco tenue, amarillo → blanco, fondos marrones → velo gris translúcido, cian → blanco frío) y devuelve cuánto multiplicar la opacidad; `Rgba` lo llama. **El resto del HUD no se toca**: todas las constantes (`kAmber`, `kYellow`, `kPanel`…) pasan por `Rgba`, así que se recoloca toda la interfaz cambiando una función. Rojo (peligro), naranja vivo (lo pulsado), verde y violeta se dejan como estaban.
 
-Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comentarios avisan de que **sobre la nebulosa el blanco se pierde** (roja, amarilla y gris), que es justo el escenario de Epsilon-Z. Por eso `kSignal` es cian (`70,232,255`) con trazo de tinta debajo. El "menos chillón" de aquí debe respetar eso.
+Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comentarios avisan de que **sobre la nebulosa el blanco se pierde** (roja, amarilla y gris), que es justo el escenario de Epsilon Infinite. Por eso `kSignal` es cian (`70,232,255`) con trazo de tinta debajo. El "menos chillón" de aquí debe respetar eso.
 
 **Hacer:**
 1. Copiar `Themed()` y el `Rgba` nuevo, pero **sacar los números a una sola estructura** (`struct HudTheme { float hue, sat, valueScale, fade… }`) para poder cambiar el color en un solo sitio.
 2. Paleta propuesta (el usuario aún **no la ha confirmado**; pregúntale si no te lo han dicho ya):
 
-| Rol (en `GameHud.cpp`) | Hoy en Epsilon-Z | Propuesta |
+| Rol (en `GameHud.cpp`) | Hoy en Epsilon Infinite | Propuesta |
 |---|---|---|
 | Líneas y marcos (`kAmber*`) | ámbar `255,170,40` | gris azulado frío, con poca opacidad |
 | Lo activo (`kYellow`, `kOwn`) | amarillo `255,228,96` | ámbar apagado (≈ `214,170,92`) |
@@ -69,18 +69,18 @@ Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comen
 4. Captura **después** y compararla con la de Fase 0 y con las de Genesis. Comprobar legibilidad sobre la nebulosa roja, sobre una estrella y sobre una superficie clara.
 
 ### Fase 2 — Cristal del casco (opcional según el usuario; sin trajes de Genesis, solo si encaja con los trajes nuevos)
-- `game/shaders/visor.hlsl` (110 líneas): borde de cristal que desenfoca, curva, separa colores y empaña hacia las esquinas, con luz roja de alarma. Es un efecto de pantalla completa del mismo contrato que `warp.hlsl` y `reticle.hlsl`, que Epsilon-Z ya tiene.
+- `game/shaders/visor.hlsl` (110 líneas): borde de cristal que desenfoca, curva, separa colores y empaña hacia las esquinas, con luz roja de alarma. Es un efecto de pantalla completa del mismo contrato que `warp.hlsl` y `reticle.hlsl`, que Epsilon Infinite ya tiene.
 - Cableado (en Genesis): `CMakeLists.txt` línea ~337 (`epsilon_add_shader(... visor.hlsl ps_6_0 PSEffect gPsVisor ${SHADER_OUT}/ps_visor.h)` y `ps_visor.h` en `add_executable` y en `OBJECT_DEPENDS`) y `main.cpp` ~615 (`AddPostEffect("visor", gPsVisor, …)`) y ~1734 (`SetPostEffectParams` + `SetPostEffect(visorEffect, inSuit, 1.0f)`).
-- **Decisión que no es mía:** en Genesis se activa con el traje puesto (`inSuit`). Epsilon-Z no tiene traje EVA. Preguntar si se quiere solo al ir a pie, siempre muy suave, o no traerlo.
+- **Decisión que no es mía:** en Genesis se activa con el traje puesto (`inSuit`). Epsilon Infinite no tiene traje EVA. Preguntar si se quiere solo al ir a pie, siempre muy suave, o no traerlo.
 
 ### Fase 3 — Antialiasing y gradación (motor) — **no pedida**
 - `engine/shaders/post.hlsl`: Genesis añadió FXAA (`Antialiased`) y una gradación suave (`Grade`: curva S y algo de saturación). **Es un cambio de motor y se ve en todo el juego**, no solo en la interfaz.
 - Aplicar el diff de `post.hlsl` (ver comando en §7). Comprobar FPS con `--no-vsync` antes y después: aquí el límite es el procesador, pero el FXAA añade muestras por píxel.
-- `engine/src/Features.cpp` y `Features.h` también difieren, pero **no los copies**: Genesis quitó `Combat` y `ProceduralGalaxy`, y Epsilon-Z los necesita.
+- `engine/src/Features.cpp` y `Features.h` también difieren, pero **no los copies**: Genesis quitó `Combat` y `ProceduralGalaxy`, y Epsilon Infinite los necesita.
 
 ### Fase 4 — Menú y textos del casco (opcional)
 - Estilo `kQuiet*` del menú. Va aparte de la Fase 1 porque cambia el carácter del menú, no solo el color.
-- **Textos por clave (ES/EN/FR).** El HUD de Genesis llama a `Tr()`/`Tf()` 125 veces (`genesis/Text.h`, tablas en `data/textos/*.tsv`); el de Epsilon-Z, cero veces. Dos caminos: (a) dejar los textos en español como están, o (b) traer `genesis/Text.h` + `data/textos` y migrar. **No migres a ciegas**: es un cambio grande y el usuario no lo pidió todavía.
+- **Textos por clave (ES/EN/FR).** El HUD de Genesis llama a `Tr()`/`Tf()` 125 veces (`genesis/Text.h`, tablas en `data/textos/*.tsv`); el de Epsilon Infinite, cero veces. Dos caminos: (a) dejar los textos en español como están, o (b) traer `genesis/Text.h` + `data/textos` y migrar. **No migres a ciegas**: es un cambio grande y el usuario no lo pidió todavía.
 
 ### Fase 5 — Personajes propios con creador en el menú (sustituye al porteo de modelos)
 **Decidido el 16-11-2026: no se trae ningún modelo de Genesis.** Ni `ingeniera`, `kwame`, `mei`, `erik`, `amara`, `arjun`, `nino`, ni `astronauta`, ni los `*_eva` (estos últimos derivan de «Astronaut by Jungle Jim», CC BY 4.0, que aquí no se admite). Tampoco `iss`, `estacion_central`, `estacion_scifi` ni `chatarra`.
@@ -95,7 +95,7 @@ Lo que se quiere en su lugar:
 ### Fase 6 — Red
 Estado real, comprobado:
 
-| | Epsilon-Z | Genesis |
+| | Epsilon Infinite | Genesis |
 |---|---|---|
 | Red que usa el juego | ENet, LAN con descubrimiento (UDP 27301), servidor sin ventana, protocolo `kProtocolVersion = 2`, **conectada al juego** | `genesis_net` (biblioteca nueva, ~1 600 líneas) **no está conectada a su juego con ventana**: el juego sigue con el `Net.cpp` heredado de Epsilon (idéntico al de aquí) |
 | Extras | no comprueba `Balance` | contraseña, huella de contenido (`data/`), motivos de rechazo por clave, `--internet` (1×, 20 instantáneas/s en vez de 60), diferencias probadas con pérdida y desorden |
@@ -107,7 +107,7 @@ Estado real, comprobado:
 - Probar: `epsilon_game_tests` cubre el protocolo; añadir una prueba por cada rechazo nuevo.
 
 ### Fase 7 — Interiores de naves y estaciones (pedido por el usuario, sin investigar todavía)
-El usuario quiere que **las naves y las estaciones tengan interior** y que **las estaciones** tengan las capacidades que ganaron en Genesis. Este archivo aún no dice qué hace Genesis exactamente, así que **la primera tarea es investigarlo**: leer cómo `GameLayer.cpp`, `OnFoot.cpp` y `Session.cpp` de Genesis mueven al jugador dentro, y compararlo con lo que ya hay en Epsilon-Z (la nave tiene `19 bahías interiores` y la estación se recorre a bordo; ver `game/README.md#estaciones`). Después, listar las diferencias y proponer fases pequeñas. **No copiar archivos enteros**, por lo que dice §5.
+El usuario quiere que **las naves y las estaciones tengan interior** y que **las estaciones** tengan las capacidades que ganaron en Genesis. Este archivo aún no dice qué hace Genesis exactamente, así que **la primera tarea es investigarlo**: leer cómo `GameLayer.cpp`, `OnFoot.cpp` y `Session.cpp` de Genesis mueven al jugador dentro, y compararlo con lo que ya hay en Epsilon Infinite (la nave tiene `19 bahías interiores` y la estación se recorre a bordo; ver `game/README.md#estaciones`). Después, listar las diferencias y proponer fases pequeñas. **No copiar archivos enteros**, por lo que dice §5.
 
 ## 5. Lo que NO se debe hacer
 

@@ -175,7 +175,7 @@ def construir_xeno(ruta):
     # El logotipo es el caos: franjas más finas e irregulares, huecos grandes, trozos que se pierden
     # y letras partidas en dos mitades desplazadas.
     holograma(f, franjas(50, 170), hueco=(16, 50), saltos=[0, -70, 0, 56, 0, -34, 0, 84, 0, -48, 0, 40],
-              parpadeo=0.07, corte=0.22, protegidas="EPSILON-Zepsilonz")
+              parpadeo=0.07, corte=0.22, protegidas="EPSILONFTepsilonft")
     f.generate(ruta)
     print("fuente:", ruta, os.path.getsize(ruta), "bytes")
     return f
@@ -202,11 +202,11 @@ def muestras(holo, xeno, carpeta):
         (16, "FUEGO ENTRANTE: 3  A Kepler-452b"),
     ], os.path.join(carpeta, "muestra_holo.png"))
     hoja(xeno, [
-        (160, "EPSILON-Z"),
+        (130, "EPSILON INFINITE"),
         (110, "ABCDEFGHIJKLM"),
         (110, "NOPQRSTUVWXYZ"),
         (110, "0123456789 -!?"),
-        (64, "Nebulosa  Epsilon-Z  Ñandú"),
+        (64, "Nebulosa  Epsilon Infinite  Ñandú"),
     ], os.path.join(carpeta, "muestra_xeno.png"))
 
 

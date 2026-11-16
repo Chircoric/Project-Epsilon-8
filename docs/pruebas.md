@@ -1,4 +1,4 @@
-# Pruebas de Epsilon-Z
+# Pruebas de Epsilon Infinite
 
 Todo lo que existe para probar el juego sin jugarlo a mano: compilar, las pruebas automáticas, las opciones del ejecutable y los comandos de la consola. Las órdenes de ejemplo se ejecutan desde `EpsilonEngine`, salvo que se diga otra cosa.
 

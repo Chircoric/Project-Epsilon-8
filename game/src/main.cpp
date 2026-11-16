@@ -196,7 +196,7 @@ void ReportGpuFailure(const std::string& sdlError, bool interactive) {
             text += "\nEste informe se ha guardado en:\n" + where + "\nEnvíelo a quien le dio el juego.\n";
         }
     }
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Nebulosa: no se puede iniciar", text.c_str(), nullptr);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Epsilon Infinite: no se puede iniciar", text.c_str(), nullptr);
 }
 
 // --diagnostico, antes de abrir nada: la máquina y su tarjeta, en un texto que se pueda enviar.
@@ -318,7 +318,7 @@ int Run(Options options) {
     // La galaxia sale de la semilla: tiene que ser la de la partida guardada.
     if (saved && !options.seedGiven) options.seed = saved->world.seed;
     if (saved && saved->world.seed != options.seed) saved.reset();
-    SDL_Window* window = SDL_CreateWindow("Nebulosa", options.width, options.height, SDL_WINDOW_RESIZABLE);
+    SDL_Window* window = SDL_CreateWindow("Epsilon Infinite", options.width, options.height, SDL_WINDOW_RESIZABLE);
     if (!window) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
         SDL_Quit();
@@ -1659,7 +1659,7 @@ int Run(Options options) {
                 titleClock += realSeconds;
                 if (titleClock > 0.5) {
                     titleClock = 0;
-                    SDL_SetWindowTitle(window, ("Nebulosa | " + std::to_string(static_cast<int>(static_cast<double>(rendered) / std::max(std::chrono::duration<double>(now - start).count(), 0.01))) + " FPS").c_str());
+                    SDL_SetWindowTitle(window, ("Epsilon Infinite | " + std::to_string(static_cast<int>(static_cast<double>(rendered) / std::max(std::chrono::duration<double>(now - start).count(), 0.01))) + " FPS").c_str());
                 }
             }
 

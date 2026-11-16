@@ -1,6 +1,6 @@
-# Epsilon-Z
+# Epsilon Infinite
 
-Motor gráfico propio (C++20, SDL3 + SDL_GPU sobre Direct3D 12, Dear ImGui como lienzo) y el juego **Nebulosa**, de la línea Epsilon (Epsilon-0 a Epsilon-Z, sobre la Nebulosa Naranja). Windows, Visual Studio 18, CMake + Ninja, dependencias con vcpkg. Repositorio: `Chircoric/Project-Epsilon-8`, rama `main`.
+Motor gráfico propio (C++20, SDL3 + SDL_GPU sobre Direct3D 12, Dear ImGui como lienzo) y el juego **Nebulosa**, de la línea Epsilon (Epsilon-0 a Epsilon Infinite, sobre la Nebulosa Naranja). Windows, Visual Studio 18, CMake + Ninja, dependencias con vcpkg. Repositorio: `Chircoric/Project-Epsilon-8`, rama `main`.
 
 ## Reglas
 
@@ -62,4 +62,4 @@ Detalle en `docs/pruebas.md`. Trampas conocidas:
 
 ## Epsilon 0
 
-El juego original (Allegro 5, `MENUMANAGER.cpp` y compañía) está en la carpeta superior, fuera de este repositorio. Su historial está en el mismo repositorio de GitHub; los `.rar` de sus versiones v1.0 a v2.03 se purgaron del historial y solo quedan en la copia local `Desktop\COPIA-EPSILON-ANTES-PURGA`. Sirve de referencia de estilo: el menú de Epsilon-Z sigue su estructura.
+El juego original (Allegro 5, `MENUMANAGER.cpp` y compañía) está en la carpeta superior, fuera de este repositorio. Su historial está en el mismo repositorio de GitHub; los `.rar` de sus versiones v1.0 a v2.03 se purgaron del historial y solo quedan en la copia local `Desktop\COPIA-EPSILON-ANTES-PURGA`. Sirve de referencia de estilo: el menú de Epsilon Infinite sigue su estructura.

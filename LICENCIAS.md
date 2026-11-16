@@ -2,7 +2,7 @@
 
 Copyright (C) 2026 Chircoric.
 
-Epsilon-Z (el motor y el juego Nebulosa) usa tres licencias, según lo que sea cada cosa.
+Epsilon Infinite (el motor y el juego Nebulosa) usa tres licencias, según lo que sea cada cosa.
 
 | Qué | Licencia | Texto |
 |---|---|---|
@@ -23,7 +23,7 @@ Todos los modelos, texturas y sonidos son obra original, hecha para el juego:
 
 Para reutilizarlos hay que dar crédito, indicar los cambios y compartir lo derivado con la misma licencia. Crédito sugerido:
 
-> Nebulosa (Epsilon-Z), de Chircoric, bajo CC BY-SA 4.0: <https://github.com/Chircoric/Project-Epsilon-8>
+> Nebulosa (Epsilon Infinite), de Chircoric, bajo CC BY-SA 4.0: <https://github.com/Chircoric/Project-Epsilon-8>
 
 ## Recursos de terceros: solo CC0
 

@@ -495,7 +495,7 @@ def muestra(font, ruta):
         (88, "0123456789 .,;:!?\u00a1\u00bf()[]{}"),
         (88, "+-=/\\%&*#<>@$|~^_ \u00ab\u00bb\u00b0\u00b1\u00d7\u00f7\u00a7\u2014"),
         (88, "\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc \u00c1\u00c9\u00cd\u00d3\u00da\u00d1 \u00e0\u00e8\u00e2\u00ea\u00e4\u00ef\u00e7"),
-        (30, "Nebulosa. Epsilon-Z: la nave llega a 12,5 UA del planeta Kepler-452b en 3 horas y 40 minutos."),
+        (30, "Nebulosa. Epsilon Infinite: la nave llega a 12,5 UA del planeta Kepler-452b en 3 horas y 40 minutos."),
         (22, "La energía de la estación es 3,2 EJ; el escudo resiste 1.500 impactos de 40 kt. ¡Atención! ¿Seguro?"),
         (16, "Texto pequeño: Los motores de curvatura necesitan antimateria para viajar entre sistemas solares."),
     ]
