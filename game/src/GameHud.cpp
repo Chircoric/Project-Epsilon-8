@@ -2547,12 +2547,13 @@ void Wrapped(const Ui& u, float x, float y, float size, float width, ImU32 color
     u.d->AddText(u.text, size * u.s, ImVec2(std::floor(x), std::floor(y)), color, text.c_str(), nullptr, width);
 }
 
-// El logotipo de Epsilon-Z, con su propia letra. Las letras mezcladas son a proposito: en Hangul
-// asi se ve "3psilon-z". Se estira a lo ancho y se inclina hacia delante, como si fuera rapido.
-// Se estira desde x, que es su borde izquierdo o, con centered, su centro.
+// El logotipo de Epsilon-Z, en Epsilon Xeno: letra ancha, espaciada y de holograma, que ya viene
+// estirada y con su barra de escritura ajena bajo cada letra. Aqui solo se inclina hacia delante,
+// como si fuera rapido, y se le puede dar un estiramiento extra (stretch) desde x, que es su borde
+// izquierdo o, con centered, su centro.
 void Logo(const Ui& u, float x, float y, float size, bool centered) {
-    const std::string title = "3PSiLgn-Z";
-    const float stretch = 1.35f, slant = 0.28f;
+    const std::string title = "EPSILON-Z";
+    const float stretch = 1.0f, slant = 0.22f;
     const float width = u.WidthIn(u.logo, size, title);
     const float left = std::floor(centered ? x - width * 0.5f : x), top = std::floor(y);
     const float baseline = top + size * u.s * 0.8f;
@@ -2902,9 +2903,9 @@ void CreditsPanel(const Ui& u, float x, float y, float w) {
     };
     row("PROGRAMACIÓN Y DISEÑO", "Alumno UNAQ");
     row("LÍNEA DE JUEGOS", "Epsilon-0 a Epsilon-Z, sobre la Nebulosa Naranja");
-    row("LETRAS", "Epsilon Basics (Chircoric), Rubik Glitch (NaN, Luke Prowse)");
-    row("LOGOTIPO", "Hangul (Sébastien Hayez)");
-    u.Label(ix, line, 11.0f, kMuted, "Las tres letras tienen licencia SIL Open Font License 1.1.");
+    row("LETRAS", "Epsilon Basics y Epsilon Holo (Chircoric)");
+    row("LOGOTIPO", "Epsilon Xeno (Chircoric)");
+    u.Label(ix, line, 11.0f, kMuted, "Las tres letras son propias, con licencia SIL Open Font License 1.1.");
     MenuButton(u, x + w - 238.0f * s, y + h - 52.0f * s, 220.0f * s, 38.0f * s, "VOLVER", "", "ESC", {HudActionType::MenuPage, static_cast<int>(MenuPage::Main)}, 0);
 }
 
@@ -3726,9 +3727,10 @@ bool GameHud::Initialize(SdlGpuBackend& backend, const std::string& fontFolder) 
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
-    // Fuentes con licencia OFL, que permite incluirlas en el juego: Epsilon Basics (propia, hecha con
-    // tools/fuente_epsilon.py) para leer y para los titulos, Rubik Glitch para lo alienigena y Hangul
-    // para el logotipo. Sus licencias van en la misma carpeta.
+    // Tres fuentes propias con licencia OFL 1.1, hechas con FontForge: Epsilon Basics
+    // (tools/fuente_epsilon.py) para leer y para los titulos, y Epsilon Holo y Epsilon Xeno
+    // (tools/fuentes_holograma.py) para lo alienigena y para el logotipo. Sus licencias van en la
+    // misma carpeta.
     const auto load = [&](const char* file, float size) -> ImFont* {
         const std::string path = fontFolder + "/" + file;
         SDL_PathInfo info;
@@ -3740,8 +3742,8 @@ bool GameHud::Initialize(SdlGpuBackend& backend, const std::string& fontFolder) 
     };
     ImFont* text = load("EpsilonBasics-Regular.ttf", 24.0f);
     ImFont* title = load("EpsilonBasics-Regular.ttf", 64.0f);
-    ImFont* alien = load("RubikGlitch-Regular.ttf", 32.0f);
-    ImFont* logo = load("Hangul.otf", 96.0f);  // solo el EPSILON del menu
+    ImFont* alien = load("EpsilonHolo-Regular.ttf", 32.0f);
+    ImFont* logo = load("EpsilonXeno-Regular.ttf", 96.0f);  // solo el EPSILON del menu
     if (!text) text = io.Fonts->AddFontDefault();
     if (!title) title = text;
     if (!alien) alien = text;

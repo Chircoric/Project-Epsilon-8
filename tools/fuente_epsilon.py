@@ -334,13 +334,15 @@ def construir_glifo(font, tmp, codigo, nombre, sp):
     return g
 
 
-def construir(salida):
+def crear_fuente(familia):
+    """Una fuente vacía con nombre, licencia OFL 1.1 y métricas de línea (la usan también las fuentes
+    de tools/fuentes_holograma.py)."""
     f = fontforge.font()
     f.em = 1000
     f.ascent, f.descent = 800, 200
-    f.fontname = "EpsilonBasics-Regular"
-    f.familyname = "Epsilon Basics"
-    f.fullname = "Epsilon Basics Regular"
+    f.fontname = familia.replace(" ", "") + "-Regular"
+    f.familyname = familia
+    f.fullname = familia + " Regular"
     f.weight = "Regular"
     f.version = "0.1"
     f.copyright = "Copyright (c) 2026 Chircoric (https://github.com/Chircoric/Project-Epsilon-8)"
@@ -358,13 +360,29 @@ def construir(salida):
     f.hhea_ascent, f.hhea_descent, f.hhea_linegap = ASCENDER, -DESCENDER, 0
     f.os2_winascent, f.os2_windescent = ASCENDER, DESCENDER
     f.os2_typoascent, f.os2_typodescent, f.os2_typolinegap = 800, -200, 200
+    return f
 
-    tmpfont = fontforge.font()
-    tmp = tmpfont.createChar(65, "A")
 
+def todas_las_letras():
     todas = {}
     for tabla in (minusculas(), mayusculas(), cifras(), signos()):
         todas.update(tabla)
+    return todas
+
+
+def construir(salida):
+    f = crear_fuente("Epsilon Basics")
+    todas = todas_las_letras()
+    rellenar(f, todas)
+    f.generate(salida)
+    print("fuente:", salida, os.path.getsize(salida), "bytes")
+    return f
+
+
+def rellenar(f, todas):
+    """Dibuja en f todas las letras de la tabla, las acentuadas de Latin-1 y ¡ ¿."""
+    tmpfont = fontforge.font()
+    tmp = tmpfont.createChar(65, "A")
 
     # .notdef: un marco para ver cuándo falta una letra.
     nd = spec(420, CAP, [Z((H, YB), (H, YC), (378, YC), (378, YB))])
@@ -399,9 +417,6 @@ def construir(salida):
         g.correctDirection()
 
     print("glifos base:", n, "| con acento:", compuestas, "| total:", len(list(f.glyphs())))
-    f.generate(salida)
-    print("fuente:", salida, os.path.getsize(salida), "bytes")
-    return f
 
 
 # --- Muestra en PNG (sin librerías externas) ---------------------------------------------------------

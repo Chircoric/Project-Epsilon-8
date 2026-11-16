@@ -198,7 +198,7 @@ private:
     void* textFont_ = nullptr;
     void* titleFont_ = nullptr;
     void* alienFont_ = nullptr;  // lo que viene de fuera: anomalias y alienigenas
-    void* logoFont_ = nullptr;   // el EPSILON del menu, en Hangul
+    void* logoFont_ = nullptr;   // el EPSILON del menu, en Epsilon Xeno
     bool initialized_ = false, hasDrawData_ = false;
 };
 
