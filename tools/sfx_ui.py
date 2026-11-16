@@ -101,7 +101,7 @@ def guardar(ruta, señal, pico=PEAK):
     return len(señal) / RATE
 
 
-# --- Los cinco efectos -------------------------------------------------------
+# --- Los efectos -------------------------------------------------------
 
 def aliento(dur, corte, seed):
     """Soplo: ruido filtrado en paso bajo, para dar textura de susurro."""
@@ -172,6 +172,41 @@ def ui_panel():
     return envolvente(mezcla, ataque=0.1, exp=1.2)
 
 
+RATE_RADAR = 24000  # el barrido es grave y largo: 24 kHz basta y el archivo pesa la mitad
+
+
+def ui_radar_barrido():
+    """Barrido de radar de 30 s: 100 chasquidos que bajan de tono (2200 a 470 Hz), con eco de nave,
+    estática de radio y un silbido agudo y muy bajo (9,5 kHz). Usa RATE, que guardar_radar fija a 24 kHz."""
+    dur, golpes = 30.0, 100
+    pista = [0.0] * int(RATE * dur)
+    rnd = random.Random(2026)
+    for k in range(golpes):
+        t0 = (k + 0.5) * dur / golpes + rnd.uniform(-0.04, 0.04)
+        f = 2200 * (470 / 2200) ** (k / (golpes - 1))  # bajada exponencial: suena uniforme
+        # Chasquido: chirrido corto que cae un 30 % más una gota de ruido.
+        clic = envolvente(tono(f, 0.045, "seno", f * 0.7), ataque=0.0008, exp=4)
+        clic = mezclar(clic, [0.25 * s for s in envolvente(ruido(0.012, seed=k), ataque=0.0004, exp=6)])
+        for retardo, ganancia in ((0.0, 1.0), (0.13, 0.45), (0.27, 0.2), (0.41, 0.08)):  # eco de nave
+            sumar_en(pista, [ganancia * s for s in clic], t0 + retardo)
+    pista = pista[:int(RATE * dur)]
+    estatica = aliento(dur, 3500, 99)  # estática de radio
+    silbido = [math.sin(2 * math.pi * 9500 * i / RATE) * (0.6 + 0.4 * math.sin(2 * math.pi * 0.17 * i / RATE))
+               for i in range(len(pista))]
+    return mezclar(normalizar(pista, 1.0), [0.10 * s for s in normalizar(estatica, 1.0)],
+                   [0.02 * s for s in silbido])
+
+
+def guardar_radar(ruta):
+    """El barrido se escribe a 24 kHz: es grave y largo, y así el archivo pesa la mitad."""
+    global RATE
+    RATE = RATE_RADAR
+    try:
+        return guardar(ruta, ui_radar_barrido(), 0.12)
+    finally:
+        RATE = 44100
+
+
 # (función, pico). El pico controla el volumen de cada efecto.
 EFECTOS = {
     "ui_click": (ui_click, PEAK),
@@ -190,6 +225,8 @@ def main(argv):
         ruta = os.path.join(carpeta, nombre + ".wav")
         dur = guardar(ruta, fn(), pico)
         print(f"{ruta}  {dur:.3f} s")
+    ruta = os.path.join(carpeta, "ui_radar_barrido.wav")
+    print(f"{ruta}  {guardar_radar(ruta):.3f} s")
     return 0
 
 

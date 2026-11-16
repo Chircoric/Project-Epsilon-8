@@ -62,4 +62,4 @@ Detalle en `docs/pruebas.md`. Trampas conocidas:
 
 ## Epsilon 0
 
-El juego original (Allegro 5, `MENUMANAGER.cpp` y compañía) está en la carpeta superior, fuera de este repositorio. Su historial y sus versiones `.rar` están en el mismo repositorio de GitHub. Sirve de referencia de estilo: el menú de Epsilon-Z sigue su estructura.
+El juego original (Allegro 5, `MENUMANAGER.cpp` y compañía) está en la carpeta superior, fuera de este repositorio. Su historial está en el mismo repositorio de GitHub; los `.rar` de sus versiones v1.0 a v2.03 se purgaron del historial y solo quedan en la copia local `Desktop\COPIA-EPSILON-ANTES-PURGA`. Sirve de referencia de estilo: el menú de Epsilon-Z sigue su estructura.
