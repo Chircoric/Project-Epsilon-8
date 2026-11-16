@@ -2619,6 +2619,53 @@ void Wrapped(const Ui& u, float x, float y, float size, float width, ImU32 color
     u.d->AddText(u.text, size * u.s, ImVec2(std::floor(x), std::floor(y)), color, text.c_str(), nullptr, width);
 }
 
+// El simbolo de infinito del juego: dos ganchos con chaflan, uno el giro de 180 grados del otro, que
+// forman un infinito angular de tres de ancho por uno de alto. Cada gancho abre un corchete junto
+// al centro, donde hay un infinito pequeno, y deja su extremo suelto. Cuatro trazos sueltos hacen
+// de esquinas y otros dos de chaflanes. Todo con linea fina, simetrico por el giro de 180 grados.
+// (cx, cy) es el centro y h el alto. Va derecho: slant y base lo inclinarian como el texto, pero asi pierde la simetria.
+void InfinityMark(const Ui& u, float cx, float cy, float h, float slant, float base, ImU32 color) {
+    const float thick = std::max(1.0f, h * 0.035f);
+    const auto at = [&](float nx, float ny) {
+        const float x = cx + nx * h, y = cy + ny * h;
+        return ImVec2(x + (base - y) * slant, y);
+    };
+    const auto line = [&](std::initializer_list<std::array<float, 2>> pts, float sign, bool closed, ImU32 col) {
+        ImVec2 p[8];
+        int n = 0;
+        for (const auto& q : pts) p[n++] = at(q[0] * sign, q[1] * sign);
+        u.d->AddPolyline(p, n, col, closed ? ImDrawFlags_Closed : ImDrawFlags_None, thick);
+    };
+    for (const float sign : {1.0f, -1.0f}) {
+        line({{-0.30f, 0.14f}, {-0.30f, -0.20f}, {0.00f, -0.50f}, {1.50f, -0.50f}, {1.50f, 0.50f}, {1.10f, 0.50f}}, sign, false, color);
+        // Trazos sueltos: uno en la esquina de fuera, perpendicular a su diagonal, y otro junto al chaflan.
+        const float pulse = 0.45f + 0.55f * static_cast<float>(std::sin(u.t * 2.6 + (sign > 0 ? 0.0 : 1.7)));
+        const ImU32 dash = WithAlpha(color, pulse);
+        line({{1.20f, -0.38f}, {1.36f, -0.22f}}, sign, false, dash);
+        line({{0.12f, -0.30f}, {0.24f, -0.42f}}, sign, false, dash);
+    }
+    // El infinito pequeno del centro, que late.
+    const float beat = 0.6f + 0.4f * static_cast<float>(std::sin(u.t * 3.4));
+    line({{0.0f, 0.0f}, {0.07f, -0.11f}, {0.15f, -0.11f}, {0.21f, 0.0f}, {0.15f, 0.11f}, {0.07f, 0.11f}}, 1.0f, true, WithAlpha(color, beat));
+    line({{0.0f, 0.0f}, {0.07f, -0.11f}, {0.15f, -0.11f}, {0.21f, 0.0f}, {0.15f, 0.11f}, {0.07f, 0.11f}}, -1.0f, true, WithAlpha(color, beat));
+}
+
+// Dos lineas sobre el logotipo y dos debajo que se van contrayendo hacia el centro, cada una a su
+// ritmo, y vuelven a abrirse de golpe. mid es el centro, half la mitad de su largo maximo.
+void ContractingLines(const Ui& u, float mid, float half, float top, float bottom, float slant, float base) {
+    const float s = u.s;
+    for (int side = 0; side < 2; ++side) {
+        for (int j = 0; j < 2; ++j) {
+            const float phase = static_cast<float>(std::fmod(u.t * 0.42 + j * 0.5 + side * 0.17, 1.0));
+            const float len = half * (1.0f - phase * phase);  // despacio al principio, rapido al final
+            const float y = side == 0 ? top - (7.0f + 6.0f * j) * s : bottom + (7.0f + 6.0f * j) * s;
+            const float shear = (base - y) * slant;
+            const ImU32 col = WithAlpha(j == 0 ? kAmber : kHot, 1.0f - 0.55f * phase);
+            u.d->AddLine(ImVec2(mid - len + shear, y), ImVec2(mid + len + shear, y), col, std::max(1.0f, 1.6f * s));
+        }
+    }
+}
+
 // El logotipo de Epsilon-Z, en Epsilon Xeno: letra ancha, espaciada y de holograma, que ya viene
 // estirada y con su barra de escritura ajena bajo cada letra. Aqui solo se inclina hacia delante,
 // como si fuera rapido, y se le puede dar un estiramiento extra (stretch) desde x, que es su borde
@@ -2641,6 +2688,14 @@ void Logo(const Ui& u, float x, float y, float size, bool centered) {
     // Un eco rojo detras, con sus propios cortes: la imagen vibra y, en cada fogonazo, se separa.
     draw(-2.0f - 9.0f * GlitchBurst(u.t, 19u), 0.0f, kHotDim, 19u);
     draw(0.0f, 0.0f, kAmber, 7u);
+
+    // Letras: de la altura de las mayusculas (0.19 del cuerpo bajo el borde de arriba) a sus barras.
+    const float inkTop = top + 0.19f * size * u.s, inkBottom = top + 0.95f * size * u.s;
+    ContractingLines(u, left + width * 0.5f, width * 0.5f * stretch + size * u.s * 0.2f, inkTop, inkBottom, slant, baseline);
+    const float h = 0.80f * size * u.s;
+    const float cx = left + width * stretch + 0.45f * size * u.s + 1.5f * h, cy = 0.5f * (inkTop + inkBottom);
+    InfinityMark(u, cx - 2.0f - 9.0f * GlitchBurst(u.t, 19u), cy, h, 0.0f, baseline, kHotDim);
+    InfinityMark(u, cx, cy, h, 0.0f, baseline, kAmber);
 }
 
 // Paralelogramo inclinado hacia delante, como el logotipo: la forma de los botones del menu.
