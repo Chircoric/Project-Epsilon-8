@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 
 namespace game {
@@ -29,6 +30,70 @@ constexpr float kShipPanelHeight = 410.0f;  // con la defensa: escudo, conos y c
 constexpr float kRightWidth = 376.0f;
 
 ImU32 Rgba(int r, int g, int b, float a = 1.0f) { return IM_COL32(r, g, b, static_cast<int>(a * 255.0f)); }
+
+ImU32 WithAlpha(ImU32 color, float a) {
+    const float old = static_cast<float>((color >> IM_COL32_A_SHIFT) & 0xFF);
+    return (color & ~IM_COL32_A_MASK) | (static_cast<ImU32>(std::clamp(old * a, 0.0f, 255.0f)) << IM_COL32_A_SHIFT);
+}
+
+// --- Texto de holograma -------------------------------------------------------------------------
+// El logotipo y todo lo alienigena (Epsilon Xeno y Epsilon Holo) se cortan en franjas horizontales
+// de alto irregular, como las que ya traen esas fuentes (tools/fuentes_holograma.py). Cada franja,
+// y cada mitad de ella en el logotipo, salta de lado, se atenua o desaparece segun el tiempo: unos
+// nueve cortes por segundo, y cada pocos segundos un fogonazo en el que todo se descompone a la vez.
+// Todo sale de un hash del tiempo y de la semilla, asi que no hay estado que guardar.
+std::uint32_t GlitchHash(std::uint32_t a, std::uint32_t b) {
+    std::uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u) * 0x85EBCA6Bu;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return h;
+}
+float GlitchUnit(std::uint32_t a, std::uint32_t b) { return static_cast<float>(GlitchHash(a, b) & 0xFFFFFFu) / 16777216.0f; }
+std::uint32_t GlitchSeed(const char* s) {
+    std::uint32_t h = 2166136261u;
+    for (; *s; ++s) h = (h ^ static_cast<unsigned char>(*s)) * 16777619u;
+    return h;
+}
+// 1 durante un instante cada pocos segundos, 0 el resto.
+float GlitchBurst(double t, std::uint32_t seed) {
+    const double period = 2.2 + 1.1 * GlitchUnit(seed, 3u);
+    return std::fmod(t + GlitchUnit(seed, 9u) * period, period) < 0.16 ? 1.0f : 0.0f;
+}
+
+// Dibuja text con su esquina superior izquierda en pos. chaos va de 0 (casi quieto) a 1 (el logotipo).
+void GlitchText(ImDrawList* d, ImFont* font, float px, ImVec2 pos, ImU32 color, const char* text, double t, float chaos, std::uint32_t seed) {
+    const float width = font->CalcTextSizeA(px, 1.0e6f, 0.0f, text).x;
+    const std::uint32_t jitter = static_cast<std::uint32_t>(t * 9.0), fade = static_cast<std::uint32_t>(t * 4.0);
+    const float burst = GlitchBurst(t, seed);
+    const float base = std::max(px / 9.0f, 3.0f), end = px * 1.12f;
+    float y = -0.12f * px;
+    for (std::uint32_t k = 0; y < end; ++k) {
+        const float h = base * (0.5f + 1.2f * GlitchUnit(seed, k));
+        const float top = pos.y + y, bottom = pos.y + std::min(y + h, end);
+        y += h;
+        const bool split = chaos >= 0.6f && width > px * 2.0f && GlitchUnit(seed + 11u, k) < 0.45f;
+        const float cut = pos.x + width * (0.25f + 0.5f * GlitchUnit(seed + 5u, k));
+        for (std::uint32_t seg = 0; seg < (split ? 2u : 1u); ++seg) {
+            const std::uint32_t id = seed + k * 131u + seg * 17u;
+            float dx = 0.0f, alpha = 1.0f;
+            if (GlitchUnit(id, jitter) < 0.30f * chaos + 0.55f * burst) {
+                dx = (GlitchUnit(id, jitter + 7919u) - 0.5f) * 2.0f * px * 0.12f * chaos * (1.0f + 2.0f * burst);
+            }
+            const float q = GlitchUnit(id + 3u, fade);
+            const float gone = 0.10f * chaos + 0.25f * burst * chaos, dim = 0.30f * chaos;
+            if (q < gone) continue;
+            if (q < gone + dim) alpha = 0.3f;
+            const float x0 = seg == 0 ? pos.x - px * 1.5f : cut;
+            const float x1 = split && seg == 0 ? cut : pos.x + width + px * 1.5f;
+            d->PushClipRect(ImVec2(x0, top), ImVec2(x1, bottom), true);
+            d->AddText(font, px, ImVec2(pos.x + dx, pos.y), alpha < 1.0f ? WithAlpha(color, alpha) : color, text);
+            d->PopClipRect();
+        }
+    }
+}
 
 // Ambar sobre negro tostado, con amarillo para lo activo.
 const ImU32 kAmber = Rgba(255, 170, 40), kAmberDim = Rgba(255, 150, 40, 0.34f), kAmberFaint = Rgba(255, 150, 40, 0.12f);
@@ -105,6 +170,13 @@ struct Ui {
 
     void Label(float x, float y, float size, ImU32 color, const std::string& value) const { LabelIn(text, x, y, size, color, value); }
     void LabelIn(ImFont* font, float x, float y, float size, ImU32 color, const std::string& value) const {
+        if (font == alien && alien != text) {  // lo alienigena tiembla: es un holograma (ver GlitchText)
+            const float chaos = size >= 20.0f ? 0.6f : size >= 14.0f ? 0.4f : 0.25f;
+            const std::uint32_t seed = GlitchSeed(value.c_str());
+            GlitchText(d, font, size * s, ImVec2(std::floor(x) + 1.0f, std::floor(y) + 1.0f), kShadow, value.c_str(), t, chaos, seed);
+            GlitchText(d, font, size * s, ImVec2(std::floor(x), std::floor(y)), color, value.c_str(), t, chaos, seed);
+            return;
+        }
         d->AddText(font, size * s, ImVec2(std::floor(x) + 1.0f, std::floor(y) + 1.0f), kShadow, value.c_str());
         d->AddText(font, size * s, ImVec2(std::floor(x), std::floor(y)), color, value.c_str());
     }
@@ -2557,17 +2629,18 @@ void Logo(const Ui& u, float x, float y, float size, bool centered) {
     const float width = u.WidthIn(u.logo, size, title);
     const float left = std::floor(centered ? x - width * 0.5f : x), top = std::floor(y);
     const float baseline = top + size * u.s * 0.8f;
-    const auto draw = [&](float dx, float dy, ImU32 color) {
+    const auto draw = [&](float dx, float dy, ImU32 color, std::uint32_t seed) {
         const int first = u.d->VtxBuffer.Size;
-        u.d->AddText(u.logo, size * u.s, ImVec2(left + dx, top + dy), color, title.c_str());
+        GlitchText(u.d, u.logo, size * u.s, ImVec2(left + dx, top + dy), color, title.c_str(), u.t, 1.0f, seed);
         for (int i = first; i < u.d->VtxBuffer.Size; ++i) {
             ImVec2& p = u.d->VtxBuffer[i].pos;
             p.x = x + (p.x - x) * stretch + (baseline - p.y) * slant;
         }
     };
-    draw(4.0f, 4.0f, kShadow);
-    draw(-2.0f, 0.0f, kHotDim);  // un eco rojo detras: la imagen vibra como en una pantalla vieja
-    draw(0.0f, 0.0f, kAmber);
+    draw(4.0f, 4.0f, kShadow, 7u);
+    // Un eco rojo detras, con sus propios cortes: la imagen vibra y, en cada fogonazo, se separa.
+    draw(-2.0f - 9.0f * GlitchBurst(u.t, 19u), 0.0f, kHotDim, 19u);
+    draw(0.0f, 0.0f, kAmber, 7u);
 }
 
 // Paralelogramo inclinado hacia delante, como el logotipo: la forma de los botones del menu.

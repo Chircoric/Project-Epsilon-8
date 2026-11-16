@@ -24,17 +24,44 @@ import fontforge
 import fuente_epsilon as eb
 
 # --- El corte holográfico --------------------------------------------------------------------------
-PERIODO = 120          # altura de cada franja con su hueco, en milésimas de em (igual en las dos fuentes)
-Y_INICIO = -240        # las franjas se alinean con esta altura en todas las letras: se ve como un barrido
+Y_INICIO = -260        # las franjas empiezan aquí y suben hasta Y_FIN, iguales en todas las letras (barrido)
+Y_FIN = 1000
+
+
+def azar(*valores):
+    """Número entre 0 y 1 que depende solo de los valores dados (no cambia de una ejecución a otra)."""
+    h = 2166136261
+    for v in valores:
+        h = ((h ^ (int(v) & 0xFFFFFFFF)) * 16777619) & 0xFFFFFFFF
+        h ^= h >> 13
+        h = (h * 0x5BD1E995) & 0xFFFFFFFF
+        h ^= h >> 15
+    return (h & 0xFFFFFF) / float(1 << 24)
+
+
+def franjas(alto_min, alto_max):
+    """Franjas de altura irregular que cubren de Y_INICIO a Y_FIN. Salen de una semilla fija: las dos
+    fuentes comparten la misma lista, así que se parecen. El juego anima el texto con franjas parecidas."""
+    lista, y, k = [], Y_INICIO, 0
+    while y < Y_FIN:
+        alto = int(alto_min + (alto_max - alto_min) * azar(k, 77))
+        lista.append((y, alto))
+        y += alto
+        k += 1
+    return lista
 
 
 def rect(x0, y0, x1, y1):
     return eb.contorno([(x0, y0), (x0, y1), (x1, y1), (x1, y0)], True)
 
 
-def holograma(f, hueco, saltos, parpadeo=0):
-    """Corta cada letra en franjas de PERIODO - hueco de alto, desplaza cada franja en x según la tabla
-    `saltos` (que se recorre según la franja y la letra) y quita una de cada `parpadeo`."""
+def holograma(f, bandas, hueco, saltos, parpadeo=0.0, corte=0.0, sal=0, protegidas=""):
+    """Corta cada letra en las franjas dadas y las desplaza en x.
+
+    hueco = (mínimo, máximo) de lo que se quita al final de cada franja; saltos = desplazamientos
+    posibles; parpadeo = probabilidad de que una franja desaparezca (queda transparente); corte =
+    probabilidad de que una franja se parta en dos con un hueco vertical, cada mitad por su lado.
+    """
     tmp = fontforge.font().createChar(65, "A")
     for g in f.glyphs():
         capa = g.foreground
@@ -42,26 +69,33 @@ def holograma(f, hueco, saltos, parpadeo=0):
             continue
         x0, y0, x1, y1 = g.boundingBox()
         codigo = g.unicode if g.unicode > 0 else 7
-        k0 = int((y0 - Y_INICIO) // PERIODO)
-        k1 = int((y1 - Y_INICIO) // PERIODO)
-        sal = fontforge.layer()
-        for k in range(k0, k1 + 1):
-            if parpadeo and (k * 13 + codigo * 5) % parpadeo == 0:
+        nueva = fontforge.layer()
+        for k, (ya, alto) in enumerate(bandas):
+            if ya + alto < y0 or ya > y1:
                 continue
-            ya = Y_INICIO + k * PERIODO
-            tmp.foreground = capa
-            c2 = tmp.foreground
-            c2 += rect(x0 - 500, ya, x1 + 500, ya + PERIODO - hueco)
-            tmp.foreground = c2
-            tmp.intersect()
-            trozo = tmp.foreground
-            dx = saltos[(k * 7 + codigo) % len(saltos)]
-            for c in trozo:
-                if dx:
-                    c.transform((1, 0, 0, 1, dx, 0))
-                sal += c
-        g.foreground = sal
-        if len(sal):
+            if chr(codigo) not in protegidas and azar(k, codigo, 1, sal) < parpadeo:
+                continue
+            tope = ya + alto - (hueco[0] + (hueco[1] - hueco[0]) * azar(k, 5, sal))
+            if tope <= ya + 8:
+                continue
+            if azar(k, codigo, 2, sal) < corte:
+                xc = x0 + (x1 - x0) * (0.25 + 0.5 * azar(k, codigo, 3, sal))
+                lados = [(x0 - 500, xc), (xc + 50 + 40 * azar(k, codigo, 4, sal), x1 + 500)]
+            else:
+                lados = [(x0 - 500, x1 + 500)]
+            for j, (xa, xb) in enumerate(lados):
+                tmp.foreground = capa
+                c2 = tmp.foreground
+                c2 += rect(xa, ya, xb, tope)
+                tmp.foreground = c2
+                tmp.intersect()
+                dx = saltos[int(azar(k, codigo, 6 + j, sal) * len(saltos))]
+                for c in tmp.foreground:
+                    if dx:
+                        c.transform((1, 0, 0, 1, dx, 0))
+                    nueva += c
+        g.foreground = nueva
+        if len(nueva):
             g.correctDirection()
             g.round()
 
@@ -122,7 +156,9 @@ def letras_xeno():
 def construir_holo(ruta):
     f = eb.crear_fuente("Epsilon Holo")
     eb.rellenar(f, eb.todas_las_letras())
-    holograma(f, hueco=22, saltos=[0, 0, 0, 0, -24, 0, 0, 0, 30, 0, 0, -14, 0, 0, 0, 20])
+    # Se lee casi igual que Basics: pocos cortes y franjas que se pierden de tarde en tarde.
+    holograma(f, franjas(70, 150), hueco=(14, 36), saltos=[0, 0, 0, -26, 0, 34, 0, -14, 0, 22],
+              parpadeo=0.04, corte=0.12)
     f.generate(ruta)
     print("fuente:", ruta, os.path.getsize(ruta), "bytes")
     return f
@@ -136,7 +172,10 @@ def construir_xeno(ruta):
         eb.rellenar(f, letras_xeno())
     finally:
         eb.SB = margen
-    holograma(f, hueco=30, saltos=[0, 0, 40, 0, -32, 0, 0, 52, 0, -22, 0, 0, 28, 0, 0, -44], parpadeo=17)
+    # El logotipo es el caos: franjas más finas e irregulares, huecos grandes, trozos que se pierden
+    # y letras partidas en dos mitades desplazadas.
+    holograma(f, franjas(50, 170), hueco=(16, 50), saltos=[0, -70, 0, 56, 0, -34, 0, 84, 0, -48, 0, 40],
+              parpadeo=0.07, corte=0.22, protegidas="EPSILON-Zepsilonz")
     f.generate(ruta)
     print("fuente:", ruta, os.path.getsize(ruta), "bytes")
     return f
