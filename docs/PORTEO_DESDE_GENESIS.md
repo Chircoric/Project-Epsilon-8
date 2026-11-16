@@ -10,6 +10,7 @@ Archivo de traspaso. Está escrito para que una conversación abierta **dentro d
 - **Engineer Genesis**: simulador de ingenieros de estaciones espaciales en el Sistema Solar real. Se importó **una sola vez** de Epsilon en ese mismo commit `babcdfe` (`docs/ORIGEN_EPSILON.md` de Genesis). Por eso toda diferencia entre los dos códigos es trabajo hecho en Genesis desde entonces, y se puede ver con `diff`.
 - Genesis ganó una interfaz que al usuario le gustó (se perdió el concurso, pero la UI gustó). **Quiere esa interfaz en Epsilon-Z con otro color, menos chillón**, y traer otras cosas de Genesis donde sean compatibles.
 - Las reglas de ambientación de Genesis (sin nebulosas, sin combate, Sistema Solar real) **no se aplican aquí**. Al revés: no hay que contagiar a Epsilon-Z con lo de Genesis que sea específico de estaciones y EVA salvo que el usuario lo pida.
+- **Alcance confirmado por el usuario (16-11-2026): solo cuatro cosas de Genesis.** (1) La **interfaz**, (2) la **capacidad online**, (3) la **capacidad de las estaciones** y (4) que **las naves y las estaciones tengan interior**. Todo lo demás de este archivo es opcional y **no se hace sin que lo pida**. **No se usa ningún modelo de Genesis**: ni las personas, ni los trajes, ni el astronauta.
 
 ## 2. Dónde está Genesis
 
@@ -67,12 +68,12 @@ Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comen
 3. Genesis también añadió `kQuietText/Muted/Line/Faint` (el menú, "visto a través del cristal") y `kHalo` (contorno del texto). Traer `kHalo`; los `kQuiet*` solo si se restyla el menú (Fase 4).
 4. Captura **después** y compararla con la de Fase 0 y con las de Genesis. Comprobar legibilidad sobre la nebulosa roja, sobre una estrella y sobre una superficie clara.
 
-### Fase 2 — Cristal del casco (opcional según el usuario)
+### Fase 2 — Cristal del casco (opcional según el usuario; sin trajes de Genesis, solo si encaja con los trajes nuevos)
 - `game/shaders/visor.hlsl` (110 líneas): borde de cristal que desenfoca, curva, separa colores y empaña hacia las esquinas, con luz roja de alarma. Es un efecto de pantalla completa del mismo contrato que `warp.hlsl` y `reticle.hlsl`, que Epsilon-Z ya tiene.
 - Cableado (en Genesis): `CMakeLists.txt` línea ~337 (`epsilon_add_shader(... visor.hlsl ps_6_0 PSEffect gPsVisor ${SHADER_OUT}/ps_visor.h)` y `ps_visor.h` en `add_executable` y en `OBJECT_DEPENDS`) y `main.cpp` ~615 (`AddPostEffect("visor", gPsVisor, …)`) y ~1734 (`SetPostEffectParams` + `SetPostEffect(visorEffect, inSuit, 1.0f)`).
 - **Decisión que no es mía:** en Genesis se activa con el traje puesto (`inSuit`). Epsilon-Z no tiene traje EVA. Preguntar si se quiere solo al ir a pie, siempre muy suave, o no traerlo.
 
-### Fase 3 — Antialiasing y gradación (motor)
+### Fase 3 — Antialiasing y gradación (motor) — **no pedida**
 - `engine/shaders/post.hlsl`: Genesis añadió FXAA (`Antialiased`) y una gradación suave (`Grade`: curva S y algo de saturación). **Es un cambio de motor y se ve en todo el juego**, no solo en la interfaz.
 - Aplicar el diff de `post.hlsl` (ver comando en §7). Comprobar FPS con `--no-vsync` antes y después: aquí el límite es el procesador, pero el FXAA añade muestras por píxel.
 - `engine/src/Features.cpp` y `Features.h` también difieren, pero **no los copies**: Genesis quitó `Combat` y `ProceduralGalaxy`, y Epsilon-Z los necesita.
@@ -81,14 +82,15 @@ Por qué no basta copiarlo tal cual: Genesis lo hizo blanco, y sus propios comen
 - Estilo `kQuiet*` del menú. Va aparte de la Fase 1 porque cambia el carácter del menú, no solo el color.
 - **Textos por clave (ES/EN/FR).** El HUD de Genesis llama a `Tr()`/`Tf()` 125 veces (`genesis/Text.h`, tablas en `data/textos/*.tsv`); el de Epsilon-Z, cero veces. Dos caminos: (a) dejar los textos en español como están, o (b) traer `genesis/Text.h` + `data/textos` y migrar. **No migres a ciegas**: es un cambio grande y el usuario no lo pidió todavía.
 
-### Fase 5 — Modelos de personas
-- **Aviso de licencia (16-11-2026):** Epsilon-Z solo admite modelos, texturas y sonidos propios, bajo CC BY-SA 4.0 (ver `LICENCIAS.md`). Si algún modelo de personas de Genesis es de terceros (CC BY o cualquier otra licencia), **no se trae**. Antes de copiar nada, leer `CREDITOS-modelos.txt` de Genesis y traer solo lo que sea obra propia; el resto hay que hacerlo de nuevo.
-- `Models.cpp` es **idéntico** en los dos motores, y Epsilon-Z ya tiene `LoadGltfModel` (`GameModels.cpp:370`). Los `.gltf` de tripulantes cargan sin tocar el cargador.
-- Traer de `engineer-genesis-22\game\assets\modelos\`: `<id>.gltf/.bin` y sus texturas de `texturas\` (`ingeniera`, `kwame`, `mei`, `erik`, `amara`, `arjun`, `nino`; versiones `_eva` solo si hay traje) y **`CREDITOS-modelos.txt`**. Los modelos CC BY exigen conservar el crédito; copia solo las líneas de lo que traigas.
-- Formato exacto que pide el motor: `docs/GUIA_MODELOS_PERSONAS.md` de Genesis (piezas rígidas con nombres fijos, 14 empties de articulación `art_*`, +Y arriba, un material por pieza, texturas `nombre_color/normal/orm.png`). Se puede leer `engine/include/epsilon/Humanoid.h` y `OnFoot.cpp` de Epsilon-Z para ver cómo se pintan hoy las personas.
-- **Aún falta código:** `GameModels.cpp` no carga personas ni `GameLayer.cpp` (línea ~1535, lambda `person`) las usa con un modelo de Genesis. Mirar cómo lo hace `GameModels.cpp`/`GameLayer.cpp` de Genesis y adaptarlo.
-- **No traer** `iss`, `estacion_central`, `estacion_scifi`, `chatarra` (≈ 233 MB, y son de la ambientación de Genesis). Epsilon ya dejó fuera sus modelos grandes. Si el usuario los quiere, avisar del tamaño primero.
-- Nuevos personajes: los `.blend` y scripts de §2. Se pueden seguir exportando a `game/assets/modelos/` de aquí.
+### Fase 5 — Personajes propios con creador en el menú (sustituye al porteo de modelos)
+**Decidido el 16-11-2026: no se trae ningún modelo de Genesis.** Ni `ingeniera`, `kwame`, `mei`, `erik`, `amara`, `arjun`, `nino`, ni `astronauta`, ni los `*_eva` (estos últimos derivan de «Astronaut by Jungle Jim», CC BY 4.0, que aquí no se admite). Tampoco `iss`, `estacion_central`, `estacion_scifi` ni `chatarra`.
+
+Lo que se quiere en su lugar:
+- **Personajes personalizables en un menú, antes de llegar al servidor**: el jugador crea su personaje (cuerpo, cara, piel, pelo, ropa, colores) y se conecta con él. Hay que guardar la elección con la partida o el perfil y mandarla por red en el saludo (si cambian las estructuras de `Net.h`, subir `kProtocolVersion`).
+- **Trajes de Epsilon-8 propios y más ciencia ficción**, distintos de los de Genesis. Se diseñan desde cero.
+- **Licencia**: lo hecho a mano o por código, bajo CC BY-SA 4.0. De terceros solo CC0 (por ejemplo, recursos del sistema de MakeHuman/MPFB), anotado antes en la tabla de `LICENCIAS.md`. Nada de CC BY ni superior. Hay que comprobar el campo `license` de cada `.mhclo`, porque los recursos de la comunidad de MakeHuman no siempre son CC0.
+- Cómo se hace hoy: `engine/include/epsilon/Humanoid.h` y `game/src/OnFoot.cpp` pintan las personas con piezas; `LoadGltfModel` (`GameModels.cpp:370`) ya carga `.gltf`. La guía de formato de Genesis (`docs/GUIA_MODELOS_PERSONAS.md`: piezas rígidas con nombres fijos, 14 empties `art_*`, +Y arriba, un material por pieza, texturas `nombre_color/normal/orm.png`) se puede leer como **referencia de formato**, sin copiar sus modelos.
+- Antes de empezar, el usuario tiene que decidir el alcance del creador (piezas intercambiables o cuerpo deformable) y si se hace con MPFB (CC0) o con modelos propios de cero.
 
 ### Fase 6 — Red
 Estado real, comprobado:
@@ -103,6 +105,9 @@ Estado real, comprobado:
 - Lo que sí se puede portar, **una cosa por tarea**, al `game/src/Net.cpp`/`NetEnet.cpp` de aquí: (1) contraseña en el saludo, (2) comprobar `Balance` o una huella (hoy el saludo solo mira protocolo, guardado y semilla), (3) ritmo de instantáneas reducido en modo Internet, (4) motivos de rechazo. Si se tocan las estructuras de `Net.h`, **subir `kProtocolVersion`**: el protocolo copia estructuras tal cual, así que servidor y cliente deben ser el mismo ejecutable.
 - Para Internet de verdad falta el NAT (reenvío de puertos manual, relevo o perforación). `docs/multijugador.md` §9 ya lo deja pendiente; decidirlo con el usuario antes de prometerlo.
 - Probar: `epsilon_game_tests` cubre el protocolo; añadir una prueba por cada rechazo nuevo.
+
+### Fase 7 — Interiores de naves y estaciones (pedido por el usuario, sin investigar todavía)
+El usuario quiere que **las naves y las estaciones tengan interior** y que **las estaciones** tengan las capacidades que ganaron en Genesis. Este archivo aún no dice qué hace Genesis exactamente, así que **la primera tarea es investigarlo**: leer cómo `GameLayer.cpp`, `OnFoot.cpp` y `Session.cpp` de Genesis mueven al jugador dentro, y compararlo con lo que ya hay en Epsilon-Z (la nave tiene `19 bahías interiores` y la estación se recorre a bordo; ver `game/README.md#estaciones`). Después, listar las diferencias y proponer fases pequeñas. **No copiar archivos enteros**, por lo que dice §5.
 
 ## 5. Lo que NO se debe hacer
 
@@ -142,7 +147,8 @@ Nada portado todavía. Al terminar cada fase, apunta aquí la fecha, el commit y
 | 0 Línea base | pendiente | |
 | 1 Color | pendiente | |
 | 2 Cristal del casco | pendiente (sin decidir) | |
-| 3 FXAA y gradación | pendiente | |
+| 3 FXAA y gradación | no pedida | |
 | 4 Menú / textos | pendiente (sin decidir) | |
-| 5 Modelos de personas | pendiente | |
+| 5 Personajes propios con creador en el menú | por diseñar (sin modelos de Genesis) | |
 | 6 Red | pendiente | |
+| 7 Interiores de naves y estaciones | por investigar | |

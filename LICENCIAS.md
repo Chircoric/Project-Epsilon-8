@@ -25,7 +25,17 @@ Para reutilizarlos hay que dar crédito, indicar los cambios y compartir lo deri
 
 > Nebulosa (Epsilon-Z), de Chircoric, bajo CC BY-SA 4.0: <https://github.com/Chircoric/Project-Epsilon-8>
 
-**Antes de añadir un recurso nuevo**: solo si es propio. No valen texturas, modelos ni sonidos de terceros aunque sean CC0 o de uso libre, salvo que su licencia sea compatible con CC BY-SA 4.0 y se anote aquí con su autor.
+## Recursos de terceros: solo CC0
+
+**Antes de añadir un recurso nuevo**: tiene que ser propio o **CC0** (dominio público). Se admiten modelos, texturas y sonidos CC0 de terceros, por ejemplo los de MakeHuman/MPFB. **No se admite nada que exija crédito o comparta igual**: ni CC BY, ni CC BY-SA, ni GPL/AGPL, ni licencias propias de una web («gratis para uso comercial» tampoco vale).
+
+Cada recurso CC0 de terceros se anota en esta tabla **antes** de subirlo, con su autor, su origen y la línea de licencia que declara el propio archivo (en MakeHuman, el campo `license` de su `.mhclo`). Hay que comprobar la licencia de **cada pieza**: en MakeHuman los recursos del sistema son CC0, pero los de la comunidad pueden ser de otro tipo.
+
+| Archivo | Autor y origen | Licencia declarada | Fecha |
+|---|---|---|---|
+| (ninguno todavía) | | | |
+
+Lo CC0 sigue siendo CC0: tu parte derivada (caras, horneados, cortes) va bajo CC BY-SA 4.0, pero el material base no queda restringido.
 
 ## Librerías de terceros
 
