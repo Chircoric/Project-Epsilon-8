@@ -98,6 +98,8 @@ out\build\x64-sdl-release\epsilon_game_tests.exe --solo-dorada
 | `--save a.sav` | Usa esa **carpeta** de partida: dentro van `mundo.sav` y `jugadores/<id>.sav`. Si queda un archivo `a.sav` de antes de la versión 13 con ese nombre, bórralo: no se puede crear la carpeta y el juego avisa de que no pudo guardar |
 | `--load` | Carga la partida al empezar, sin pasar por el menú |
 | `--quality N` | Calidad gráfica: 0 Baja, 1 Media, 2 Alta, 3 Ultra |
+| `--restos S` | Con `--frames`: termina, y saca la captura, S segundos reales después de que la nave muera o se apague, aunque queden fotogramas. Sirve para capturar un instante exacto de la destrucción, vaya el juego a la velocidad que vaya (una nave que estalla deja de contar a los 7 s; una apagada sigue) |
+| `--destruccion N` | Destrucción de naves: 0 Simple, 1 Detallada, 2 Máxima. Sin ella, la de la calidad (Simple hasta Media, Detallada en Alta, Máxima en Ultra) |
 | `--page N` | Página del menú: 0 principal, 1 nueva partida, 2 configuración, 3 créditos, 4 gráficos, 5 elección de interfaz |
 | `--interfaz minimalista\|experta` | Modo de la interfaz. Sin esta opción y con `--frames`, el menú abre la elección de interfaz (aún no hay ninguna elegida) y la partida se ve en modo experto |
 | `--tamano N` | Tamaño de la interfaz y de la letra: 100, 115 (de serie), 130 o 150 %. Crece solo hasta lo que cabe en la ventana |
@@ -276,6 +278,15 @@ epsilon_game.exe --frames 500 --no-vsync --mode 2 --no-tutorial --cmd "creativo 
 ```
 
 Comprueba en la salida que `motor hibrida` respondió «Híbrida». Si dice «No disponible», la prueba midió otra cosa.
+
+**Destrucción de naves.** `dano 14 10000` revienta el núcleo (zona 14) y `dano 13 10000` parte la espina y apaga la nave (medio casco: con más, el casco llega a 0 y la nave estalla sin apagarse); `destruir` acaba con la anomalía objetivo. Con `--cmd-at` se elige el fotograma, y `--destruccion 0` a `2` fuerza el nivel sin cambiar la calidad:
+
+```
+epsilon_game.exe --frames 3000 --restos 3 --mode 2 --no-tutorial --quality 3 --cmd "vista 100 1.8 35" --cmd-at 60 "dano 14 10000" --screenshot nucleo.png
+epsilon_game.exe --frames 3000 --restos 10.5 --mode 2 --no-tutorial --quality 3 --cmd-at 60 "dano 13 10000" --screenshot deriva.png
+```
+
+La primera captura cae 3 s después de la explosión; la segunda, 2,5 s después de que la nave apagada se parta (lo hace a los 8 s, con las cápsulas ya fuera). `--restos` fija el instante: el modo sin manos va entre 60 y 125 fotogramas por segundo según el momento, así que contar fotogramas no sirve. Repetir con `--quality 0`, `--quality 2` y `--destruccion 0` para comparar: la partida debe ser la misma y solo cambiar el dibujo.
 
 **Rendimiento por calidad.** La misma orden con `--quality 0` a `--quality 3`. En un equipo donde el límite es el procesador, las cuatro dan lo mismo.
 

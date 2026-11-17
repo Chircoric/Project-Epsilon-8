@@ -12,13 +12,23 @@ namespace game {
 
 const QualityProfile& Profile(GraphicsQuality quality) {
     static const QualityProfile profiles[] = {
-        {"Baja", "La mitad de resolución en la escena, sin bloom y con menos detalle. El casco no enseña el daño, pero las piezas rotas sí se pierden. Para equipos modestos.", 0.5f, false, false, 5.0f, -1.0f, 10.0f, 0},
-        {"Media", "Tres cuartos de resolución y bloom. El casco dañado se quema. Un buen punto para portátiles.", 0.75f, true, false, 7.0f, -0.5f, 8.0f, 1},
-        {"Alta", "Resolución completa con todos los efectos. El casco dañado se quema y se agrieta al rojo.", 1.0f, true, true, 10.0f, 0.0f, 6.0f, 2},
-        {"Ultra", "Como Alta, con más detalle en las superficies de cerca y agujeros en el casco destrozado.", 1.0f, true, true, 12.0f, 0.5f, 5.0f, 3},
+        {"Baja", "La mitad de resolución en la escena, sin bloom y con menos detalle. El casco no enseña el daño, pero las piezas rotas sí se pierden. Para equipos modestos.", 0.5f, false, false, 5.0f, -1.0f, 10.0f, 0, 0},
+        {"Media", "Tres cuartos de resolución y bloom. El casco dañado se quema. Un buen punto para portátiles.", 0.75f, true, false, 7.0f, -0.5f, 8.0f, 1, 0},
+        {"Alta", "Resolución completa con todos los efectos. El casco dañado se quema y se agrieta al rojo, y una nave destruida se parte por sus piezas.", 1.0f, true, true, 10.0f, 0.0f, 6.0f, 2, 1},
+        {"Ultra", "Como Alta, con más detalle en las superficies de cerca agujeros en el casco destrozado y la destrucción de naves al máximo.", 1.0f, true, true, 12.0f, 0.5f, 5.0f, 3, 2},
     };
     const int i = static_cast<int>(quality);
     return profiles[i >= 0 && i < static_cast<int>(GraphicsQuality::Count) ? i : static_cast<int>(GraphicsQuality::High)];
+}
+
+// Los topes de cada nivel. Son cifras de dibujo, no de juego: los impulsos estan en Balance.h.
+const DestructionProfile& Destruction(int level) {
+    static const DestructionProfile profiles[] = {
+        {"Simple", 0, 0, 0.0f, 0, 0, 0, 0, false},
+        {"Detallada", 16, 24, 12.0f, 4, 6, 3, 4, false},
+        {"Máxima", 64, 96, 25.0f, 8, 16, 5, 8, true},
+    };
+    return profiles[std::clamp(level, 0, kDestructionLevels - 1)];
 }
 
 GraphicsOptions OptionsOf(GraphicsQuality quality) {
@@ -32,6 +42,7 @@ GraphicsOptions OptionsOf(GraphicsQuality quality) {
     o.lighting = level;
     o.hullDamage = p.hullDamage;
     o.shadows = true;
+    o.destruction = p.destruction;
     return o;
 }
 
@@ -46,6 +57,7 @@ std::string WriteSettings(const GameSettings& s) {
     out << "luz " << s.graphics.lighting << '\n';
     out << "casco " << s.graphics.hullDamage << '\n';
     out << "sombras " << (s.graphics.shadows ? 1 : 0) << '\n';
+    out << "destruccion " << s.graphics.destruction << '\n';
     out << "pantalla-completa " << (s.fullscreen ? 1 : 0) << '\n';
     out << "sincronizacion " << (s.vsync ? 1 : 0) << '\n';
     out << "volumen-interfaz " << s.uiVolume << '\n';
@@ -83,6 +95,8 @@ GameSettings ReadSettings(const std::string& text) {
         else if (key == "luz") s.graphics.lighting = std::clamp(value, 0, 3);
         else if (key == "casco") s.graphics.hullDamage = std::clamp(value, 0, 3);
         else if (key == "sombras") s.graphics.shadows = value != 0;
+        else if (key == "destruccion") s.graphics.destruction = std::clamp(value, 0, kDestructionLevels - 1);
+        else if (key == "destruccion") s.graphics.destruction = std::clamp(value, 0, kDestructionLevels - 1);
         else if (key == "pantalla-completa") s.fullscreen = value != 0;
         else if (key == "sincronizacion") s.vsync = value != 0;
         else if (key == "volumen-interfaz") s.uiVolume = std::clamp(value, 0, 100);

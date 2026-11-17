@@ -64,6 +64,8 @@ Sin atracar también se puede arrimar a mano hasta la escotilla. A menos de 3000
 
 En esos 3000 km la nave vuela **en el marco de la estación**: la estación la lleva consigo mientras orbita, su planeta o su estrella no tiran de ella y la velocidad que se ve es respecto a la estación. Al soltar amarras se queda donde estaba, y con el mando se mueve a su alrededor sin que la órbita la deje atrás.
 
+Las **estaciones alienígenas** tienen la misma zona, más pequeña: a menos de **200 km** (`stationCarry`) la estación lleva a la nave consigo, la lleve lo que la lleve, y la nave conserva su propio movimiento respecto a ella. Si la nave iba en órbita asistida de un planeta y entra en esos 200 km de una estación (propia o alienígena), deja la órbita y queda quieta respecto a la estación («… lleva la nave consigo»); dentro de esa zona no se puede orbitar. Al soltar una órbita junto a una estación, la nave sale quieta respecto a ella en vez de con la velocidad orbital.
+
 ### A pie
 
 Atracada, **A pie** en la rueda baja a la cubierta de la estación: un hangar de 60 por 40 m con galería, escalera, columnas y carga. El de la central tiene el núcleo de antimateria. Hay tres tripulantes que van de un sitio a otro. El tiempo corre a tiempo real, no a 60 veces. La gravedad es artificial, de 1 g. Se vuelve con E junto a la esclusa, la puerta azul.
@@ -94,16 +96,16 @@ Esc vuelve atrás desde cualquier página. La configuración también se abre de
 
 ![Configuración](../docs/juego_configuracion.png)
 
-| Calidad | Escena | Bloom | Grano y aberración | Detalle de superficies | Casco dañado |
-|---|---:|---|---|---:|---|
-| Baja | 50 % | No | No | 5 capas | No se ve (las piezas perdidas sí desaparecen) |
-| Media | 75 % | Sí | No | 7 capas | Quemaduras |
-| Alta | 100 % | Sí | Sí | 10 capas | Quemaduras y grietas al rojo |
-| Ultra | 100 % | Sí | Sí | 12 capas, más nítidas | Además, daño en 3D: cráteres hundidos que perforan, vigas y chapas que asoman, escombros, chispas y gas |
+| Calidad | Escena | Bloom | Grano y aberración | Detalle de superficies | Casco dañado | Destrucción de naves |
+|---|---:|---|---|---:|---|---|
+| Baja | 50 % | No | No | 5 capas | No se ve (las piezas perdidas sí desaparecen) | Simple |
+| Media | 75 % | Sí | No | 7 capas | Quemaduras | Simple |
+| Alta | 100 % | Sí | Sí | 10 capas | Quemaduras y grietas al rojo | Detallada |
+| Ultra | 100 % | Sí | Sí | 12 capas, más nítidas | Además, daño en 3D: cráteres hundidos que perforan, vigas y chapas que asoman, escombros, chispas y gas | Máxima |
 
 Lo que más alivia a una tarjeta modesta es la escena: en Baja se pinta a la mitad de resolución, la cuarta parte de los píxeles, y luego se amplía. La interfaz va siempre a resolución completa, así que el texto sigue nítido. La configuración se guarda en `%APPDATA%\Epsilon\Nebulosa\ajustes.txt` y vale para todas las partidas. Los perfiles están en [Settings.cpp](src/Settings.cpp).
 
-**Gráficos**, dentro de Configuración (en el menú y en la pausa), deja cambiar cada cosa por separado: resolución de la escena (50, 67, 75 o 100 %), detalle de superficies, luz y nebulosa, daño del casco, bloom, grano y aberración, y las sombras de la nave. Elegir una calidad las pone todas de golpe; tocar una después deja la calidad como «Personalizada».
+**Gráficos**, dentro de Configuración (en el menú y en la pausa), deja cambiar cada cosa por separado: resolución de la escena (50, 67, 75 o 100 %), detalle de superficies, luz y nebulosa, daño del casco, destrucción de naves (Simple, Detallada o Máxima; ver «Destrucción de naves»), bloom, grano y aberración, y las sombras de la nave. Elegir una calidad las pone todas de golpe; tocar una después deja la calidad como «Personalizada».
 
 ## Modos de juego
 
@@ -231,7 +233,7 @@ El casco tiene 15 zonas, cada una con su integridad: proa, puente, las seis bode
 - **Espina** a 0: la energía ya no llega a ningún sistema y **se apaga**.
 - **Núcleo** a 0: pierde la contención y **estalla** («FALLO DE CONTENCIÓN»).
 
-Al apagarse empieza una cinemática de 14 s: franjas negras, la alarma con la zona que ha caído, las luces de la nave parpadean y mueren, la nave se queda a la deriva girando despacio, y un parte se escribe letra a letra (sin mando, sin potencia, escudos caídos, soporte vital) hasta la baliza de socorro, que destella en rojo sin que nadie responda. La cámara se aparta despacio y todo acaba en negro, con la pantalla final «NAVE APAGADA». En creativo y en Pacífico nada apaga la nave.
+Al apagarse empieza una cinemática de 14 s: franjas negras, la alarma con la zona que ha caído, las luces de la nave parpadean y mueren, la nave se queda a la deriva girando despacio, y un parte se escribe letra a letra (sin mando, sin potencia, escudos caídos, soporte vital) hasta la baliza de socorro, que destella en rojo sin que nadie responda. Con la destrucción de naves en Detallada o Máxima, antes salen las cápsulas de escape y a los 8 s la nave se parte (ver «Destrucción de naves»). La cámara se aparta despacio y todo acaba en negro, con la pantalla final «NAVE APAGADA». En creativo y en Pacífico nada apaga la nave.
 
 **Cómo se ve, según la calidad.** El daño lo dibuja el propio shader de mallas ([mesh.hlsl](../engine/shaders/mesh.hlsl)). En Baja la instancia no lleva daño y el shader se lo salta, así que no cuesta nada. En Media, manchas de quemadura que crecen con el daño. En Alta, además grietas y bordes al rojo que se enfrían en unos segundos. Las luces de una zona dañada se apagan.
 
@@ -244,6 +246,35 @@ Al apagarse empieza una cinemática de 14 s: franjas negras, la alarma con la zo
 - Cada pieza lleva hasta cuatro cráteres, los más grandes. Se recuerdan los últimos 48 golpes.
 
 Para que la abolladura se vea, las caras grandes de la nave se parten hasta que ninguna arista pase de 12 m (`SubdivideLongEdges`).
+
+### Destrucción de naves
+
+![La nave apagada se parte, en Máxima](../docs/destruccion_deriva_maxima.png)
+
+*La nave apagada, 2,5 s después de partirse, en Máxima: fuego, chispas, fugas de plasma y las cápsulas de escape alejándose. Debajo, lo mismo en Detallada, 4,5 s después.*
+
+![La nave apagada se parte, en Detallada](../docs/destruccion_deriva_detallada.png)
+
+Lo que se ve cuando una nave muere lo decide la opción **Destrucción de naves** de Gráficos, con tres niveles. **La partida es idéntica en los tres**: cuándo muere la nave, qué zonas pierde y qué daño recibe no dependen de ella, y lo que se guarda y lo que viaja por red es lo mismo (hay una prueba que lo comprueba byte a byte).
+
+| Nivel | Qué se ve | De serie en |
+|---|---|---|
+| Simple | La nave propia se deshace con una animación fija; una nave alienígena destruida desaparece con el destello; la nave apagada se queda entera | Baja y Media |
+| Detallada | La nave se parte por sus piezas en hasta 16 cuerpos, con el giro que llevaba y el impulso de la explosión; los 6 mayores enseñan pisos y vigas por el corte; 24 escombros; 12 s | Alta |
+| Máxima | Hasta 64 cuerpos, 16 de ellos con interior, 96 escombros y 25 s; además fuego interno, chispas, fugas de plasma y explosiones secundarias | Ultra |
+
+Cómo funciona ([ShipWreck.h](include/game/ShipWreck.h)):
+
+- **La sesión solo anota la muerte** (`Wreck`, en `GameSession::Wrecks`): dónde estaba la nave, cómo giraba, qué zonas le quedaban y de dónde sale la explosión (la zona roja que falló o, en una alienígena, el último impacto). Lo anota siempre, en los tres niveles, y lo olvida al minuto. Recuerda 8 a la vez.
+- **Quien dibuja reparte las piezas del modelo en cuerpos** (`PlanWreck`): primero por zonas del casco, y luego parte por la mitad el grupo más grande hasta llegar al tope del nivel. Las zonas que ya se habían soltado no entran.
+- **Cada cuerpo sigue con la nave hasta que el frente de la explosión lo alcanza** (500 m/s desde el origen). Entonces sale con la velocidad que llevaba ese punto de la nave (el giro heredado) más el impulso: hasta 260 m/s los trozos ligeros del borde, menos los grandes y los cercanos al origen. Su posición es una fórmula cerrada (`PoseOf`): no hay estado por fotograma ni choques entre trozos, así que el segundo 20 cuesta lo mismo que el primero.
+- **El interior**: los cuerpos más grandes enseñan, por el lado del corte, pisos apilados y vigas que los atraviesan, arrancados y al rojo, que se enfrían en unos segundos. El casco solo queda quemado cerca del origen de la explosión; lo de lejos conserva el aspecto que tenía, así que la nave se reconoce en sus trozos.
+- **Una nave de una sola malla** (un `.glb` con un solo nodo) no puede partirse: arde entera, se consume en la mitad del tiempo y suelta el doble de escombros.
+- **La nave apagada también acaba rota.** A los 4 s de cinemática salen las 6 cápsulas de escape, una cada 0,45 s, a un lado y a otro del puente; a los 8 s la nave se parte por donde falló (puente o espina), sin estallar: con el 45 % de la fuerza de un núcleo, los trozos se separan despacio. Con el nivel Simple se queda entera, como antes.
+
+**Lo que cuesta.** En este equipo, sin sincronización vertical y con el núcleo reventando (`--no-vsync --restos 6.9`), la media baja de 296 a 283 FPS en Alta al pasar de Simple a Detallada, y de 273 a 261 en Ultra al pasar de Simple a Máxima: un 4 o 5 %. En Baja, con Simple, no cambia nada.
+
+Las cifras de juego (impulsos, tiempos, cápsulas) están en `DestructionRules` de [Balance.h](include/game/Balance.h); los topes de cada nivel, en `Destruction()` de [Settings.cpp](src/Settings.cpp). Con el nivel Simple nada de esto se ejecuta.
 
 ### Tu nave en glTF
 
@@ -613,7 +644,7 @@ Con C, el ratón pasa a manejar la interfaz: se puede elegir motor, tocar un con
 | `taller`, `modulo`, `modulo 0 1`, `impulsor 3` | Abre el taller. `modulo` lista ranuras y tipos; `modulo <ranura> <tipo>` monta (0 quita); `impulsor <1..4>` cambia el motor de impulso. Atracada, o en cualquier sitio en creativo |
 | `disparo 0 0 1 -150 0 -380 60` | Un proyectil sin escudos que llega desde la dirección `dx dy dz` y pasa por el punto `px py pz` (m, en el modelo), con ese daño. Dice en qué zona da |
 
-`--mode 0` a `--mode 4` salta el menú, y `--no-tutorial` quita los diálogos. `--page 0` a `--page 3` abre una página del menú, y `--quality 0` a `--quality 3` fuerza una calidad gráfica. `--save a.sav` usa otro archivo de partida y `--load` lo carga sin pasar por el menú; con `--frames` no se guarda nada salvo que se indique `--save`. `--nave a.glb` usa ese modelo para la nave.
+`--mode 0` a `--mode 4` salta el menú, y `--no-tutorial` quita los diálogos. `--page 0` a `--page 3` abre una página del menú, y `--quality 0` a `--quality 3` fuerza una calidad gráfica, y `--destruccion 0` a `--destruccion 2`, el nivel de destrucción de naves. `--save a.sav` usa otro archivo de partida y `--load` lo carga sin pasar por el menú; con `--frames` no se guarda nada salvo que se indique `--save`. `--nave a.glb` usa ese modelo para la nave.
 
 ## Cómo está hecho
 

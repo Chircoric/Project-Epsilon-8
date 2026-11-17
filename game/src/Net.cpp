@@ -216,7 +216,7 @@ template <class A>
 void Wire(A& a, SnapshotData& d) {
     a(d.seed); a(d.mode); a(d.timeScale); a(d.origin); a(d.simTime); a(d.timeFocus); a(d.steps);
     a(d.projectiles); a(d.impacts); a(d.lostPieces); a(d.deckKind); a(d.crew);
-    a(d.stations); a(d.nextStation); a(d.anomalies); a(d.species); a(d.vessels); a(d.players); a(d.me);
+    a(d.stations); a(d.nextStation); a(d.anomalies); a(d.species); a(d.vessels); a(d.players); a(d.me); a(d.wrecks);
 }
 
 template <class A>
@@ -256,7 +256,7 @@ bool Decode(MessageType type, const Packet& packet, T& value) {
 
 // ---- Instantaneas por diferencias --------------------------------------------------------------
 
-enum : std::uint8_t { kHead, kProjectiles, kImpacts, kLostPieces, kCrew, kStations, kAnomalies, kSpecies, kVessel, kPlayer };
+enum : std::uint8_t { kHead, kProjectiles, kImpacts, kLostPieces, kCrew, kStations, kAnomalies, kSpecies, kVessel, kPlayer, kWrecks };
 
 template <class T>
 Packet Bytes(const T& value) {
@@ -380,6 +380,7 @@ SnapshotSections SplitSnapshot(const SnapshotData& d) {
     out.push_back({kProjectiles, 0, Bytes(d.projectiles)});
     out.push_back({kImpacts, 0, Bytes(d.impacts)});
     out.push_back({kLostPieces, 0, Bytes(d.lostPieces)});
+    out.push_back({kWrecks, 0, Bytes(d.wrecks)});
     out.push_back({kCrew, 0, Bytes(d.crew)});
     out.push_back({kStations, 0, Bytes(d.stations)});
     out.push_back({kAnomalies, 0, Bytes(d.anomalies)});
@@ -402,6 +403,7 @@ bool JoinSnapshot(const SnapshotSections& sections, SnapshotData& d) {
             case kProjectiles: in(d.projectiles); break;
             case kImpacts: in(d.impacts); break;
             case kLostPieces: in(d.lostPieces); break;
+            case kWrecks: in(d.wrecks); break;
             case kCrew: in(d.crew); break;
             case kStations: in(d.stations); break;
             case kAnomalies: in(d.anomalies); break;

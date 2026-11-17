@@ -24,6 +24,7 @@
 #include "game/Economy.h"
 #include "game/OnFoot.h"
 #include "game/Ship.h"
+#include "game/ShipWreck.h"
 #include "game/SaveGame.h"
 #include "game/Stations.h"
 #include "game/Tutorial.h"
@@ -420,6 +421,9 @@ struct Bubble {
     std::vector<Projectile> projectiles;
     std::vector<ImpactFlash> impacts;
     std::vector<LostPiece> lostPieces;
+    // Las naves que han muerto aqui hace poco (ShipWreck.h): solo para dibujar como se rompen.
+    std::vector<Wreck> wrecks;
+    int nextWreck = 1;
     std::map<std::uint32_t, std::vector<eps::AsteroidRock>> rocks;
     std::vector<int> pins;
     // Dos generadores: rng decide lo que cuenta (punteria, zona del impacto, defensa puntual, anomalias)
@@ -466,6 +470,7 @@ struct SnapshotData {
     std::vector<Projectile> projectiles;
     std::vector<ImpactFlash> impacts;
     std::vector<LostPiece> lostPieces;
+    std::vector<Wreck> wrecks;
     StationKind deckKind = StationKind::Power;
     std::vector<Person> crew;
     std::vector<Station> stations;
@@ -547,6 +552,10 @@ public:
     // mando por donde diga SetRemote, y Step solo mantiene cargado el mundo alrededor de la nave.
     SnapshotData MakeSnapshot(int player) const;
     void ApplySnapshot(const SnapshotData& data);
+    // En una replica, mueve el mundo (orbitas, origen) con la ultima instantanea ya aplicada. Se llama
+    // despues de recibirla: si el mundo avanzase antes, la nave saldria de un paso y los planetas de
+    // otro, y lo rapido (los planetas junto al sol) temblaria. Gasta el tiempo real que Step ha guardado.
+    void PresentReplica(float focalPixels);
     struct Remote {
         std::function<void(const ShipCommand&)> command;
         std::function<void(const ShipControls&)> controls;
@@ -833,6 +842,8 @@ public:
 
     using LostPiece = game::LostPiece;
     const std::vector<LostPiece>& LostPieces() const { return bubble_->lostPieces; }
+    // Las naves que han muerto hace poco en esta burbuja, de la mas antigua a la mas reciente.
+    const std::vector<Wreck>& Wrecks() const { return bubble_->wrecks; }
     // De 0 a 1 por zona: lo recien golpeado, que aun brilla. Se enfria en unos segundos.
     const HullZones& ZoneHeat() const { return vessel_->zoneHeat; }
     // Golpe en una zona concreta, en unidades de casco: para pruebas y la consola. Con from (unitaria,
@@ -926,6 +937,12 @@ private:
     // La estacion propia mas cercana dentro de stationNear, o -1. Junto a ella la nave vuela en su
     // marco: la estacion la lleva consigo y su gravedad no la separa.
     int StationFrame() const;
+    // Lo que lleva a la nave consigo: la estacion propia de StationFrame o, a menos de stationCarry,
+    // una estacion alienigena. Sin piloto automatico.
+    std::optional<TargetRef> CarrierFrame() const;
+    // La velocidad que la nave suma en el marco de ese portador: la suya respecto al cuerpo que domina.
+    // Una estacion alienigena no suma nada: la nave conserva su movimiento y solo la lleva consigo.
+    eps::Vec3d CarrierMatch(const TargetRef& carrier, const TargetInfo& info) const;
     void UpdateAnomalies(double seconds);
     void UpdateCombat(double seconds);
     void StepProjectiles(double seconds);
@@ -955,6 +972,8 @@ private:
     void ShutDownShip(const std::string& reason);
     void SpreadWound(double amount);            // sin direccion: calor, presion
     void UpdateLostPieces(double seconds, double realSeconds);
+    void RecordWreck(Wreck wreck);  // anota una nave muerta: le pone id y semilla
+    void ReapAnomalies();           // anota y retira las anomalias que se han quedado sin casco
     void Strike(Anomaly& a, const Projectile& p, const ZoneImpact* impact = nullptr);
     // impact: donde dio, en el modelo de la anomalia (m); sin el, solo baja su casco entero.
     void DamageAnomaly(Anomaly& a, DamageType type, double amount, int team, const ZoneImpact* impact = nullptr);
@@ -996,9 +1015,9 @@ private:
         eps::Vec3d before;             // donde estaba la nave
         eps::Vec3d frameBefore;        // y el cuerpo que domina
         bool hadFrame = false;
-        int anchorCandidate = -1;      // la estacion junto a la que vuela, y donde estaba antes del reloj
+        std::optional<TargetRef> anchorCandidate;  // la estacion junto a la que vuela, y donde estaba antes del reloj
         eps::Vec3d anchorStart;
-        int anchor = -1;               // la estacion en cuyo marco se ha movido en este paso
+        std::optional<TargetRef> anchor;           // la estacion en cuyo marco se ha movido en este paso
         eps::Vec3d anchorBefore, anchorOffset;
         eps::Vec3d shift;              // lo que se ha movido el origen del mundo
     };
@@ -1018,6 +1037,7 @@ private:
     Bubble* bubble_ = nullptr;
     std::function<std::unique_ptr<eps::Engine>()> engineFactory_;
     bool replica_ = false;  // esta sesion es la copia de un cliente: la manda el servidor
+    double replicaSeconds_ = 0.0;  // tiempo real que la replica aun no ha presentado (PresentReplica)
     Remote remote_;
     void ReplicaFrame(double realSeconds, float focalPixels);
     bool Here(const Vessel& v) const { return &bubbles_[static_cast<std::size_t>(v.bubble)] == bubble_; }  // en la burbuja en curso

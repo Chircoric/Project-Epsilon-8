@@ -13,6 +13,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace game {
 
@@ -29,7 +30,95 @@ constexpr float kCursorNotice = kObjectiveTop + 48.0f;  // y el aviso del cursor
 constexpr float kShipPanelHeight = 410.0f;  // con la defensa: escudo, conos y calor
 constexpr float kRightWidth = 376.0f;
 
-ImU32 Rgba(int r, int g, int b, float a = 1.0f) { return IM_COL32(r, g, b, static_cast<int>(a * 255.0f)); }
+// Tema de la interfaz (portado de Engineer Genesis). En vez de tocar cada color, Rgba() los gira
+// todos por su matiz, asi que la paleta entera se cambia aqui. Estilo limpio y elegante: lineas
+// finas y tenues, velos oscuros translucidos, texto claro y un unico acento.
+// Aqui el acento es un naranja rojizo (en Genesis era blanco frio). Lo que NO se toca: el rojo
+// de peligro, el naranja vivo de lo pulsado, el verde y el violeta, que siguen diciendo lo mismo.
+struct HudTheme {
+    float accentHue = 14.0f;       // matiz del acento (0 rojo, 30 naranja)
+    float lineSat = 0.78f;         // saturacion de lineas y marcos
+    float lineFade = 0.62f;        // opacidad relativa de lineas: finas, casi translucidas
+    float activeHue = 22.0f;       // lo activo: naranja claro casi blanco
+    float activeSat = 0.40f;
+    float textSat = 0.10f;         // el texto es un blanco calido apenas teñido
+    float textHue = 20.0f;
+    float veilSat = 0.30f;         // fondos: velo oscuro de tono rojizo
+    float veilValue = 0.65f;
+    float veilFade = 0.55f;        // y mas transparente
+    float signalSat = 0.75f;       // las senales sobre el espacio siguen siendo cian, algo suavizado
+    float signalFade = 0.92f;
+};
+constexpr HudTheme kTheme{};
+
+void HsvToRgb(float h, float s, float v, int& r, int& g, int& b) {
+    const float c = v * s, x = c * (1.0f - std::fabs(std::fmod(h / 60.0f, 2.0f) - 1.0f)), m = v - c;
+    float r1 = 0, g1 = 0, b1 = 0;
+    const int sector = static_cast<int>(h / 60.0f) % 6;
+    switch (sector) {
+        case 0: r1 = c; g1 = x; break;
+        case 1: r1 = x; g1 = c; break;
+        case 2: g1 = c; b1 = x; break;
+        case 3: g1 = x; b1 = c; break;
+        case 4: r1 = x; b1 = c; break;
+        default: r1 = c; b1 = x; break;
+    }
+    r = static_cast<int>(std::lround((r1 + m) * 255.0f));
+    g = static_cast<int>(std::lround((g1 + m) * 255.0f));
+    b = static_cast<int>(std::lround((b1 + m) * 255.0f));
+}
+
+// Gira (r, g, b) al tema y devuelve por cuanto se multiplica la opacidad.
+float Themed(int& r, int& g, int& b) {
+    const float rf = r / 255.0f, gf = g / 255.0f, bf = b / 255.0f;
+    const float high = std::max({rf, gf, bf}), low = std::min({rf, gf, bf});
+    const float delta = high - low;
+    if (high <= 0.0f || delta / high < 0.15f) return 1.0f;  // grises y negros, tal cual
+    float hue = 0.0f;
+    if (high == rf) hue = 60.0f * std::fmod((gf - bf) / delta, 6.0f);
+    else if (high == gf) hue = 60.0f * ((bf - rf) / delta + 2.0f);
+    else hue = 60.0f * ((rf - gf) / delta + 4.0f);
+    if (hue < 0.0f) hue += 360.0f;
+    const float sat = delta / high;
+    const bool background = high < 0.3f && hue >= 10.0f && hue <= 46.0f;
+    const bool amber = !background && hue >= 26.0f && hue <= 46.0f;
+    const bool yellow = !background && hue > 46.0f && hue <= 62.0f;
+    const bool cyan = hue >= 175.0f && hue <= 200.0f;
+    if (!background && !amber && !yellow && !cyan) return 1.0f;
+    const HudTheme& t = kTheme;
+    float newHue = t.accentHue, newSat = t.lineSat, value = high, fade = 1.0f;
+    if (background) {
+        newSat = std::min(sat, t.veilSat);
+        value = high * t.veilValue;
+        fade = t.veilFade;
+    } else if (amber && sat < 0.40f) {  // texto claro (255,232,188): blanco calido
+        newHue = t.textHue;
+        newSat = t.textSat;
+    } else if (amber) {
+        newSat = t.lineSat * std::min(1.0f, sat + 0.2f);
+        fade = t.lineFade;
+        if (sat < 0.7f) {  // el texto apagado (206,146,74): mas legible que una linea
+            value = std::min(1.0f, high * 1.2f);
+            newSat = 0.45f;
+            fade = 0.95f;
+        }
+    } else if (yellow) {
+        newHue = t.activeHue;
+        newSat = t.activeSat;
+        value = 1.0f;
+    } else {
+        newHue = hue;
+        newSat = sat * t.signalSat;
+        fade = t.signalFade;
+    }
+    HsvToRgb(newHue, newSat, value, r, g, b);
+    return fade;
+}
+
+ImU32 Rgba(int r, int g, int b, float a = 1.0f) {
+    const float fade = Themed(r, g, b);
+    return IM_COL32(r, g, b, static_cast<int>(std::clamp(a * fade, 0.0f, 1.0f) * 255.0f));
+}
 
 ImU32 WithAlpha(ImU32 color, float a) {
     const float old = static_cast<float>((color >> IM_COL32_A_SHIFT) & 0xFF);
@@ -234,62 +323,81 @@ struct Ui {
     float FoldHeader(float x, float y, float w, float headerH, HudPanel panel) const {
         const bool open = !Folded(panel);
         const bool over = Hover(x, y, w, headerH);
-        if (over) d->AddRectFilled(ImVec2(x + 2.0f * s, y + 2.0f * s), ImVec2(x + w - 2.0f * s, y + headerH), Rgba(255, 170, 40, 0.10f));
-        const float r = 5.0f * s, cx = x + w - 16.0f * s, cy = y + headerH * 0.5f + 1.0f * s;
-        d->AddCircleFilled(ImVec2(cx, cy), r + 5.0f * s, over ? Rgba(255, 170, 40, 0.30f) : Rgba(255, 150, 40, 0.10f), 20);
-        Chevron(cx, cy, r, open, over ? kYellow : kAmber);
+        const float r = 4.0f * s, cx = x + w - 16.0f * s, cy = y + headerH * 0.5f + 1.0f * s;
+        if (over) Glow(x + 6.0f * s, y + 3.0f * s, w - 12.0f * s, headerH - 6.0f * s, 4.0f * s, 0.8f);
+        Chevron(cx, cy, r, open, over ? kYellow : kAmberDim);
         if (over && in.clicked) actions.push_back({HudActionType::TogglePanel, static_cast<int>(panel)});
         return 30.0f * s;
     }
 
-    // Panel con esquinas cortadas, cabecera rayada y un destello que recorre el borde. Con fold, la
-    // cabecera pliega la ventana.
+    // Resplandor suave (blur falso: capas translucidas cada vez mas anchas) alrededor de un
+    // rectangulo. Lo usan los botones al pasar el cursor y las cabeceras.
+    void Glow(float x, float y, float w, float h, float round, float strength, ImU32 color = kAmber) const {
+        constexpr int layers = 6;
+        for (int i = layers; i >= 1; --i) {
+            const float e = static_cast<float>(i) * 2.2f * s;
+            const float a = strength * 0.22f * static_cast<float>(layers + 1 - i) / static_cast<float>(layers);
+            d->AddRectFilled(ImVec2(x - e, y - e), ImVec2(x + w + e, y + h + e), WithAlpha(color, a), round + e);
+        }
+    }
+
+    // Trazo con halo: dos pasadas anchas y casi transparentes bajo la linea fina.
+    void GlowLine(ImVec2 a, ImVec2 b, ImU32 color, float thick = 1.0f, float strength = 1.0f) const {
+        d->AddLine(a, b, WithAlpha(color, 0.12f * strength), thick * s * 6.0f);
+        d->AddLine(a, b, WithAlpha(color, 0.22f * strength), thick * s * 3.2f);
+        d->AddLine(a, b, color, thick * s);
+    }
+
+    // Fondo de ventana: opaco en el borde que da al exterior de la pantalla y desvanecido hacia el
+    // centro, que es donde esta la vista. Devuelve de que lado esta el borde: 0 izq, 1 der, 2 arriba, 3 abajo.
+    int Backdrop(float x, float y, float w, float h) const {
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        const float dx = (size.x * 0.5f - (x + w * 0.5f)) / size.x, dy = (size.y * 0.5f - (y + h * 0.5f)) / size.y;
+        const ImU32 solid = WithAlpha(kPanel, 1.35f), clear = WithAlpha(kPanel, 0.20f);
+        if (std::fabs(dx) * 1.2f >= std::fabs(dy)) {
+            const bool edgeLeft = dx >= 0.0f;
+            d->AddRectFilledMultiColor(ImVec2(x, y), ImVec2(x + w, y + h), edgeLeft ? solid : clear, edgeLeft ? clear : solid, edgeLeft ? clear : solid, edgeLeft ? solid : clear);
+            return edgeLeft ? 0 : 1;
+        }
+        const bool edgeTop = dy >= 0.0f;
+        d->AddRectFilledMultiColor(ImVec2(x, y), ImVec2(x + w, y + h), edgeTop ? solid : clear, edgeTop ? solid : clear, edgeTop ? clear : solid, edgeTop ? clear : solid);
+        return edgeTop ? 2 : 3;
+    }
+
+    // El unico marco de la ventana: una linea fina en el borde exterior, con su halo de luz.
+    void EdgeLine(float x, float y, float w, float h, int side) const {
+        ImVec2 a, b;
+        if (side == 0) { a = {x, y}; b = {x, y + h}; }
+        else if (side == 1) { a = {x + w, y}; b = {x + w, y + h}; }
+        else if (side == 2) { a = {x, y}; b = {x + w, y}; }
+        else { a = {x, y + h}; b = {x + w, y + h}; }
+        GlowLine(a, b, WithAlpha(kAmber, 0.85f));
+    }
+
+    // Ventana minimalista: fondo que se desvanece hacia el centro, una linea de borde con luz y la
+    // cabecera en letra espaciada. Con fold, la cabecera pliega la ventana.
     void Panel(float x, float y, float w, float h, const char* heading, const char* code, int fold = -1) const {
-        const float cut = 12.0f * s;
-        const ImVec2 p[6] = {{x + cut, y}, {x + w, y}, {x + w, y + h - cut}, {x + w - cut, y + h}, {x, y + h}, {x, y + cut}};
-        d->AddConvexPolyFilled(p, 6, kPanel);
-        d->AddPolyline(p, 6, Rgba(255, 150, 40, 0.10f), 5.0f * s, ImDrawFlags_Closed);
-        d->AddPolyline(p, 6, kAmberDim, 1.0f * s, ImDrawFlags_Closed);
-
-        // Remates brillantes en las dos esquinas limpias.
-        const float arm = 22.0f * s;
-        d->AddLine(ImVec2(x + w - arm, y), ImVec2(x + w, y), kAmber, 2.0f * s);
-        d->AddLine(ImVec2(x + w, y), ImVec2(x + w, y + arm), kAmber, 2.0f * s);
-        d->AddLine(ImVec2(x, y + h - arm), ImVec2(x, y + h), kAmber, 2.0f * s);
-        d->AddLine(ImVec2(x, y + h), ImVec2(x + arm, y + h), kAmber, 2.0f * s);
-
-        // Una lectura que recorre el borde superior.
-        const float sweep = static_cast<float>(std::fmod(t * 0.22, 1.0));
-        const float head = x + cut + (w - cut - 40.0f * s) * sweep;
-        d->AddRectFilled(ImVec2(head, y), ImVec2(head + 40.0f * s, y + 1.5f * s), kYellow);
-
+        EdgeLine(x, y, w, h, Backdrop(x, y, w, h));
         if (!heading) return;
         const float hy = y + 7.0f * s;
         const float chevron = fold >= 0 ? FoldHeader(x, y, w, 26.0f * s, static_cast<HudPanel>(fold)) : 0.0f;
         Spaced(x + 16.0f * s, hy, 14.0f, kYellow, heading);
-        const float start = x + 22.0f * s + SpacedWidth(14.0f, heading);
-        const float end = x + w - 12.0f * s - chevron - Width(10.5f, code);
-        for (float k = start; k < end - 4.0f * s; k += 5.0f * s) d->AddLine(ImVec2(k, hy + 11.0f * s), ImVec2(k + 3.0f * s, hy + 4.0f * s), kAmberFaint, 1.0f);
-        if (end >= start) Right(x + w - 12.0f * s - chevron, hy + 3.0f * s, 10.5f, kMuted, code);  // si no cabe, solo el titulo
+        const float codeLeft = x + w - 12.0f * s - chevron - Width(10.5f, code);
+        if (codeLeft > x + 28.0f * s + SpacedWidth(14.0f, heading)) Right(x + w - 12.0f * s - chevron, hy + 3.0f * s, 10.5f, kMuted, code);  // si no cabe, solo el titulo
     }
 
     // Ventana del modo minimalista: esquinas redondas, un solo borde y nada que se mueva. La
     // cabecera, en letra grande, la pliega. Devuelve el alto de la cabecera.
     float Soft(float x, float y, float w, float h, const std::string& heading, const std::string& note, HudPanel panel) const {
-        const float r = 12.0f * s;
-        d->AddRectFilled(ImVec2(x + 3.0f * s, y + 4.0f * s), ImVec2(x + w + 3.0f * s, y + h + 4.0f * s), Rgba(0, 0, 0, 0.35f), r);
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), Rgba(16, 9, 5, 0.86f), r);
-        d->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), Rgba(255, 170, 60, 0.40f), r, 0, 1.2f * s);
+        EdgeLine(x, y, w, h, Backdrop(x, y, w, h));
         const float headerH = 40.0f * s;
         const bool open = !Folded(panel);
         const bool over = Hover(x, y, w, headerH);
-        if (over) d->AddRectFilled(ImVec2(x + 1.0f, y + 1.0f), ImVec2(x + w - 1.0f, y + headerH), Rgba(255, 170, 40, 0.12f), r, open ? ImDrawFlags_RoundCornersTop : ImDrawFlags_RoundCornersAll);
-        d->AddRectFilled(ImVec2(x + 14.0f * s, y + 12.0f * s), ImVec2(x + 18.0f * s, y + headerH - 12.0f * s), kYellow, 2.0f * s);
-        Label(x + 28.0f * s, y + 9.0f * s, 18.0f, over ? kYellow : kText, heading);
+        if (over) Glow(x + 8.0f * s, y + 4.0f * s, w - 16.0f * s, headerH - 8.0f * s, 6.0f * s, 0.8f);
+        Label(x + 20.0f * s, y + 9.0f * s, 18.0f, over ? kYellow : kText, heading);
         const float cx = x + w - 22.0f * s, cy = y + headerH * 0.5f;
-        Chevron(cx, cy, 6.0f * s, open, over ? kYellow : kAmber);
+        Chevron(cx, cy, 5.0f * s, open, over ? kYellow : kAmberDim);
         if (!note.empty()) Right(cx - 18.0f * s, y + 12.0f * s, 14.0f, kMuted, note);
-        if (open) d->AddLine(ImVec2(x + 14.0f * s, y + headerH), ImVec2(x + w - 14.0f * s, y + headerH), Rgba(255, 170, 60, 0.18f), 1.0f);
         if (over && in.clicked) actions.push_back({HudActionType::TogglePanel, static_cast<int>(panel)});
         return headerH;
     }
@@ -307,10 +415,9 @@ struct Ui {
     // Boton redondo y grande del modo minimalista.
     bool Pill(float x, float y, float w, float h, const std::string& caption, HudAction action, bool enabled = true, bool active = false) const {
         const bool hover = enabled && Hover(x, y, w, h);
-        const float r = h * 0.5f;
-        const ImU32 fill = active ? Rgba(255, 150, 40, 0.45f) : hover ? Rgba(255, 170, 40, 0.26f) : Rgba(255, 150, 40, 0.08f);
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), fill, r);
-        d->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), !enabled ? kAmberFaint : hover || active ? kYellow : kAmberDim, r, 0, (active ? 1.8f : 1.2f) * s);
+        // Sin marco: solo texto; al pasar el cursor, un brillo difuso.
+        if (hover) Glow(x, y, w, h, h * 0.5f, 1.0f);
+        else if (active) Glow(x, y, w, h, h * 0.5f, 0.55f);
         const float size = 15.0f;
         Center(x + w * 0.5f, y + (h - size * s * 1.15f) * 0.5f, size, !enabled ? kMuted : hover || active ? kYellow : kText, caption);
         if (hover && in.clicked) {
@@ -322,13 +429,14 @@ struct Ui {
 
     // Barra de segmentos inclinados.
     void Segments(float x, float y, float w, float h, double value, ImU32 color, int count = 26) const {
-        const float slant = h * 0.7f, gap = 2.0f * s;
-        const float step = (w - slant) / static_cast<float>(count);
-        const int on = static_cast<int>(std::ceil(std::clamp(value, 0.0, 1.0) * count));
-        for (int i = 0; i < count; ++i) {
-            const float a = x + step * static_cast<float>(i);
-            const ImU32 c = i < on ? color : kAmberFaint;
-            d->AddQuadFilled(ImVec2(a + slant, y), ImVec2(a + slant + step - gap, y), ImVec2(a + step - gap, y + h), ImVec2(a, y + h), c);
+        // Minimalista: una linea fina con su relleno, en vez de segmentos.
+        (void)count;
+        const float bh = std::max(h * 0.4f, 2.0f * s), by = y + (h - bh) * 0.5f;
+        d->AddRectFilled(ImVec2(x, by), ImVec2(x + w, by + bh), kAmberFaint, bh * 0.5f);
+        const float fill = static_cast<float>(std::clamp(value, 0.0, 1.0)) * w;
+        if (fill > 0.0f) {
+            d->AddRectFilled(ImVec2(x, by - 1.0f * s), ImVec2(x + fill, by + bh + 1.0f * s), WithAlpha(color, 0.18f), bh);
+            d->AddRectFilled(ImVec2(x, by), ImVec2(x + std::max(fill, bh), by + bh), color, bh * 0.5f);
         }
     }
 
@@ -340,11 +448,9 @@ struct Ui {
 
     bool Button(float x, float y, float w, float h, const std::string& caption, const char* key, HudAction action, bool enabled = true, bool active = false) const {
         const bool hover = enabled && Hover(x, y, w, h);
-        const float cut = 6.0f * s;
-        const ImVec2 p[6] = {{x + cut, y}, {x + w, y}, {x + w, y + h - cut}, {x + w - cut, y + h}, {x, y + h}, {x, y + cut}};
-        const ImU32 fill = active ? Rgba(255, 170, 40, 0.34f) : hover ? Rgba(255, 170, 40, 0.24f) : Rgba(255, 150, 40, 0.07f);
-        d->AddConvexPolyFilled(p, 6, fill);
-        d->AddPolyline(p, 6, !enabled ? kAmberFaint : hover || active ? kYellow : kAmberDim, 1.0f * s, ImDrawFlags_Closed);
+        // Sin marco: solo texto; al pasar el cursor, un brillo difuso.
+        if (hover) Glow(x, y, w, h, 4.0f * s, 1.0f);
+        else if (active) Glow(x, y, w, h, 4.0f * s, 0.55f);
         const float size = 13.0f;
         const ImU32 color = !enabled ? kMuted : hover || active ? kYellow : kText;
         const float textY = y + (h - size * s * 1.15f) * 0.5f;
@@ -371,9 +477,7 @@ struct Ui {
     void Key(float x, float y, const char* key, const std::string& caption, float* width) const {
         const float keyW = std::max(Width(12.5f, key) + 12.0f * s, 22.0f * s);
         const float h = 20.0f * s;
-        d->AddRectFilled(ImVec2(x, y), ImVec2(x + keyW, y + h), Rgba(255, 170, 40, 0.20f), 3.0f * s);
-        d->AddRect(ImVec2(x, y), ImVec2(x + keyW, y + h), kAmber, 3.0f * s);
-        d->AddLine(ImVec2(x + 3.0f * s, y + h - 3.0f * s), ImVec2(x + keyW - 3.0f * s, y + h - 3.0f * s), kAmberDim);
+        Glow(x, y, keyW, h, 4.0f * s, 0.35f);  // la tecla, sin marco: solo una luz tenue
         Center(x + keyW * 0.5f, y + 2.5f * s, 12.5f, kYellow, key);
         Label(x + keyW + 6.0f * s, y + 2.5f * s, 12.5f, kText, caption);
         *width = keyW + 6.0f * s + Width(12.5f, caption) + 16.0f * s;
@@ -1610,6 +1714,193 @@ void FlightStatus(const Ui& u, const GameSession& g, float width, float x, float
     }
 }
 
+// ---- Hologramas (estilo Blame!) ---------------------------------------------------------------
+// Primitivas de lineas y letras con halo. Cada holograma es una funcion que las combina; para
+// anadir otro basta con componer Line / Dashed / Brackets / Ring / Tag / Scale en una funcion nueva
+// y llamarla desde Prepare. Todo se dibuja en el color de acento del tema y parpadea un poco.
+namespace holo {
+
+// 1 casi siempre; un parpadeo suave y, de vez en cuando, un corte breve de la senal.
+float Flicker(double t, std::uint32_t seed) {
+    const float wave = 0.9f + 0.1f * static_cast<float>(std::sin(t * 7.0 + seed));
+    const bool cut = GlitchUnit(seed, static_cast<std::uint32_t>(t * 11.0)) < 0.03f;
+    return cut ? 0.35f : wave;
+}
+
+void Line(const Ui& u, ImVec2 a, ImVec2 b, ImU32 c, float thick = 1.0f) { u.GlowLine(a, b, c, thick, 0.8f); }
+
+// Linea de trazos, con un punto brillante al final.
+void Dashed(const Ui& u, ImVec2 a, ImVec2 b, ImU32 c, float dash = 6.0f, float gap = 5.0f) {
+    const float dx = b.x - a.x, dy = b.y - a.y, len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f) return;
+    const float ux = dx / len, uy = dy / len, step = (dash + gap) * u.s;
+    for (float k = 0.0f; k < len; k += step) {
+        const float e = std::min(k + dash * u.s, len);
+        u.d->AddLine(ImVec2(a.x + ux * k, a.y + uy * k), ImVec2(a.x + ux * e, a.y + uy * e), c, 1.0f);
+    }
+}
+
+// Las cuatro esquinas de un recuadro de seleccion.
+void Brackets(const Ui& u, ImVec2 c, float half, float arm, ImU32 color) {
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2) {
+            const ImVec2 k(c.x + half * static_cast<float>(sx), c.y + half * static_cast<float>(sy));
+            Line(u, k, ImVec2(k.x - arm * static_cast<float>(sx), k.y), color);
+            Line(u, k, ImVec2(k.x, k.y - arm * static_cast<float>(sy)), color);
+        }
+}
+
+// Anillo graduado: circulo fino, marcas (cada cinco, mas largas) y un arco brillante que gira.
+void Ring(const Ui& u, ImVec2 c, float r, ImU32 color, int ticks, float spin, float arcSpan = 1.2f) {
+    u.d->AddCircle(c, r, WithAlpha(color, 0.55f), 64, 1.2f * u.s);
+    for (int i = 0; i < ticks; ++i) {
+        const float a = spin * 0.3f + 6.2831853f * static_cast<float>(i) / static_cast<float>(ticks);
+        const float len = (i % 5 == 0 ? 7.0f : 3.5f) * u.s;
+        const float ca = std::cos(a), sa = std::sin(a);
+        u.d->AddLine(ImVec2(c.x + ca * r, c.y + sa * r), ImVec2(c.x + ca * (r + len), c.y + sa * (r + len)), WithAlpha(color, i % 5 == 0 ? 0.8f : 0.4f), 1.0f);
+    }
+    u.d->PathClear();
+    u.d->PathArcTo(c, r, spin, spin + arcSpan, 24);
+    u.d->PathStroke(WithAlpha(color, 0.25f), 0, 5.0f * u.s);
+    u.d->PathArcTo(c, r, spin, spin + arcSpan, 24);
+    u.d->PathStroke(color, 0, 1.6f * u.s);
+}
+
+// Regla con marcas: de a hacia b, una marca larga cada five.
+void Scale(const Ui& u, ImVec2 a, ImVec2 b, ImU32 color, int ticks) {
+    const float dx = b.x - a.x, dy = b.y - a.y, len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f) return;
+    const float nx = -dy / len, ny = dx / len;
+    u.d->AddLine(a, b, WithAlpha(color, 0.5f), 1.0f);
+    for (int i = 0; i <= ticks; ++i) {
+        const float k = static_cast<float>(i) / static_cast<float>(ticks), l = (i % 5 == 0 ? 5.0f : 2.5f) * u.s;
+        const ImVec2 p(a.x + dx * k, a.y + dy * k);
+        u.d->AddLine(p, ImVec2(p.x + nx * l, p.y + ny * l), WithAlpha(color, 0.7f), 1.0f);
+    }
+}
+
+struct TagLine {
+    std::string text;
+    ImU32 color;
+    float size = 12.5f;
+    ImFont* font = nullptr;
+};
+
+// Etiqueta con linea de llamada: sale de from en diagonal, se hace horizontal y lleva debajo y
+// encima las lineas de texto. side = +1 hacia la derecha, -1 hacia la izquierda.
+void Tag(const Ui& u, ImVec2 from, float side, const std::vector<TagLine>& lines, ImU32 color, float rise = -1.0f) {
+    const float s = u.s;
+    float width = 0.0f;
+    for (const TagLine& l : lines) width = std::max(width, u.WidthIn(l.font ? l.font : u.text, l.size, l.text));
+    const ImVec2 elbow(from.x + side * 26.0f * s, from.y + rise * 26.0f * s);
+    const ImVec2 end(elbow.x + side * (width + 16.0f * s), elbow.y);
+    Line(u, from, elbow, color);
+    Line(u, elbow, end, color);
+    u.d->AddCircleFilled(end, 2.2f * s, color);
+    float y = elbow.y + 5.0f * s;
+    const float x = side > 0.0f ? elbow.x + 8.0f * s : end.x + 8.0f * s;
+    for (const TagLine& l : lines) {
+        u.LabelIn(l.font ? l.font : u.text, x, y, l.size, l.color, l.text);
+        y += (l.size + 3.5f) * s;
+    }
+}
+
+// Rumbo y elevacion de un punto del mundo vistos desde la camara, en grados.
+void Bearing(const Camera& camera, const Vec3d& world, float& azimuth, float& elevation) {
+    const Vec3f v = camera.ToViewSpace(world);
+    azimuth = std::atan2(v.x, v.z) * 57.29578f;
+    elevation = -std::atan2(v.y, std::sqrt(v.x * v.x + v.z * v.z)) * 57.29578f;
+}
+
+// El contacto elegido: recuadro, anillo graduado, lineas de mira y etiqueta con sus datos.
+void Selection(const Ui& u, const Camera& camera, const Contact& k, ImVec2 p, ImU32 color, ImFont* font) {
+    const float s = u.s;
+    const float f = Flicker(u.t, GlitchSeed(k.name.c_str()));
+    const ImU32 c = WithAlpha(color, f);
+    const float r = 15.0f * s, ringR = 30.0f * s;
+    Brackets(u, p, r, 6.0f * s, c);
+    Ring(u, p, ringR, c, 40, static_cast<float>(u.t) * 0.9f);
+    Dashed(u, ImVec2(p.x - ringR - 90.0f * s, p.y), ImVec2(p.x - ringR - 10.0f * s, p.y), WithAlpha(c, 0.5f));
+    Dashed(u, ImVec2(p.x + ringR + 10.0f * s, p.y), ImVec2(p.x + ringR + 90.0f * s, p.y), WithAlpha(c, 0.5f));
+    Dashed(u, ImVec2(p.x, p.y + ringR + 10.0f * s), ImVec2(p.x, p.y + ringR + 60.0f * s), WithAlpha(c, 0.5f));
+
+    float az = 0.0f, el = 0.0f;
+    Bearing(camera, k.position, az, el);
+    const float side = p.x > ImGui::GetIO().DisplaySize.x - 280.0f * s ? -1.0f : 1.0f;
+    const float rise = p.y < 170.0f * s ? 1.0f : -1.0f;  // si el contacto esta arriba del todo, la etiqueta baja
+    const ImVec2 from(p.x + side * ringR * 0.7f, p.y + rise * ringR * 0.7f);  // sale del anillo en diagonal
+    std::vector<TagLine> lines;
+    lines.push_back({k.name, c, 14.0f, font});
+    lines.push_back({Format("DIST  %s", Distance(k.distance).c_str()), WithAlpha(kText, f), 11.5f, nullptr});
+    lines.push_back({Format("AZ %+06.1f   EL %+05.1f", az, el), WithAlpha(kMuted, f), 11.0f, nullptr});
+    lines.push_back({Format("ID %04X-%04X", GlitchHash(GlitchSeed(k.name.c_str()), 1u) & 0xFFFFu, GlitchHash(static_cast<std::uint32_t>(k.distance), 7u) & 0xFFFFu), WithAlpha(kMuted, 0.7f * f), 10.5f, nullptr});
+    Tag(u, from, side, lines, c, rise);
+}
+
+// La posicion y orientacion de la camara: anillo de rumbo, plano del mundo proyectado como
+// alambre, ejes y lecturas de coordenadas. Es un holograma que gira con la nave.
+void CameraGizmo(const Ui& u, const Camera& camera, float width, float height, float textX, float textY) {
+    const float s = u.s;
+    const ImU32 col = WithAlpha(kAmber, Flicker(u.t, 77u));
+    const Vec3f fwd = camera.Forward();
+    const float heading = std::atan2(fwd.x, fwd.z);
+    const float incl = std::asin(std::clamp(fwd.y, -1.0f, 1.0f));
+    const float deg = 57.29578f;
+    const Vec3d eye = camera.Position();
+
+    // Una direccion del mundo, proyectada en la pantalla real (el punto esta "en el infinito").
+    struct P { ImVec2 at; bool ok; };
+    auto project = [&](float azimuth, float elevation) {
+        const float ce = std::cos(elevation);
+        const Vec3d d(ce * std::sin(azimuth), std::sin(elevation), ce * std::cos(azimuth));
+        const ScreenPoint p = camera.WorldToScreen(eye + d * 1.0e7);
+        return P{ImVec2(p.x, p.y), p.visible && std::fabs(p.x - width * 0.5f) < width && std::fabs(p.y - height * 0.5f) < height};
+    };
+    // Una curva de elevacion constante, a trazos si dashed. Se corta donde sale de la pantalla.
+    auto curve = [&](float elevation, ImU32 color, float thick, bool dashed) {
+        P prev{};
+        for (int i = 0; i <= 180; ++i) {
+            const P q = project(6.2831853f * static_cast<float>(i) / 180.0f, elevation);
+            const bool jump = prev.ok && q.ok && std::fabs(prev.at.x - q.at.x) + std::fabs(prev.at.y - q.at.y) > 0.4f * width;
+            if (i > 0 && prev.ok && q.ok && !jump && (!dashed || i % 3 != 0)) u.d->AddLine(prev.at, q.at, color, thick);
+            prev = q;
+        }
+    };
+
+    // Horizonte: la circunferencia del plano del mundo, que cruza media pantalla, con su regla de rumbo.
+    curve(0.0f, WithAlpha(col, 0.22f), 6.0f * s, false);
+    curve(0.0f, WithAlpha(col, 0.7f), 1.2f * s, false);
+    for (int e = -60; e <= 60; e += 30) {
+        if (e != 0) curve(static_cast<float>(e) / deg, WithAlpha(col, 0.28f), 1.0f, true);
+    }
+    static const char* const cardinal[4] = {"N", "E", "S", "O"};
+    for (int a = 0; a < 360; a += 5) {
+        const float az = static_cast<float>(a) / deg;
+        const bool major = a % 30 == 0;
+        const P base = project(az, 0.0f), tip = project(az, (major ? 2.4f : 1.2f) / deg);
+        if (!base.ok || !tip.ok || base.at.x < width * 0.28f || base.at.x > width * 0.72f) continue;  // la regla solo en el centro, sin pisar las ventanas
+        u.d->AddLine(base.at, tip.at, WithAlpha(col, major ? 0.85f : 0.45f), 1.0f);
+        if (major) {
+            const P below = project(az, -3.6f / deg);
+            if (below.ok) u.Center(below.at.x, below.at.y - 6.0f * s, 11.0f, a % 90 == 0 ? kYellow : kMuted, a % 90 == 0 ? cardinal[a / 90] : Format("%d", a));
+        }
+    }
+    // Escalera de inclinacion: la altura de cada paralelo, justo delante de la camara.
+    for (int e = -60; e <= 60; e += 30) {
+        if (e == 0) continue;
+        const P at = project(heading, static_cast<float>(e) / deg);
+        if (at.ok && at.at.x > width * 0.28f && at.at.x < width * 0.72f && at.at.y > height * 0.12f && at.at.y < height * 0.66f) u.Center(at.at.x, at.at.y - 14.0f * s, 11.0f, WithAlpha(kMuted, 0.9f), Format("%+d", e));
+    }
+
+    // Lecturas, discretas, junto al centro.
+    float hdg = heading * deg;
+    if (hdg < 0.0f) hdg += 360.0f;
+    u.Label(textX, textY, 12.5f, WithAlpha(kYellow, 0.95f), Format("CAM  RUMBO %05.1f   INCL %+05.1f", hdg, incl * deg));
+    u.Label(textX, textY + 17.0f * s, 10.5f, kMuted, Format("X %+.3e   Y %+.3e   Z %+.3e  km", eye.x, eye.y, eye.z));
+}
+
+}  // namespace holo
+
 void Markers(const Ui& u, const GameSession& g, const Camera& camera, const TargetRef* target) {
     const float s = u.s;
     for (const Contact& k : g.Contacts()) {
@@ -1619,22 +1910,12 @@ void Markers(const Ui& u, const GameSession& g, const Camera& camera, const Targ
         const ImU32 color = selected ? kYellow : ContactColor(k);
         const float r = (selected ? 14.0f : 6.0f) * s;
         if (selected) {
-            const float arm = 6.0f * s;
-            for (int sx = -1; sx <= 1; sx += 2)
-                for (int sy = -1; sy <= 1; sy += 2) {
-                    const float cx = p.x + r * static_cast<float>(sx), cy = p.y + r * static_cast<float>(sy);
-                    for (int pass = 0; pass < 2; ++pass) {
-                        const ImU32 c = pass == 0 ? kInk : color;
-                        const float thick = (pass == 0 ? 3.6f : 1.6f) * s;
-                        u.d->AddLine(ImVec2(cx, cy), ImVec2(cx - arm * static_cast<float>(sx), cy), c, thick);
-                        u.d->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - arm * static_cast<float>(sy)), c, thick);
-                    }
-                }
+            holo::Selection(u, camera, k, ImVec2(p.x, p.y), color, NameFont(u, k));
         } else {
             u.d->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), kInk, 3.2f * s);
             u.d->AddQuad(ImVec2(p.x, p.y - r), ImVec2(p.x + r, p.y), ImVec2(p.x, p.y + r), ImVec2(p.x - r, p.y), color, 1.4f * s);
         }
-        if (selected || k.distance < 2.0e7) u.LabelIn(NameFont(u, k), p.x + r + 6.0f * s, p.y - 8.0f * s, 12.5f, color, Format("%s  %s", k.name.c_str(), Distance(k.distance).c_str()));
+        if (!selected && k.distance < 2.0e7) u.LabelIn(NameFont(u, k), p.x + r + 6.0f * s, p.y - 8.0f * s, 12.5f, color, Format("%s  %s", k.name.c_str(), Distance(k.distance).c_str()));
     }
 
     // Cada proyectil cercano lleva su marca: rojo si viene a por ti, amarillo si es tuyo.
@@ -2203,6 +2484,12 @@ void OptionWheel(const Ui& u, const GameSession& g, const TargetRef* target, flo
     u.Center(cx, cy - 18.0f * s, 12.5f, kYellow, "OPCIONES");
     const std::string name = target && g.Resolve(*target) ? g.Resolve(*target)->name : std::string("Sin objetivo");
     u.Center(cx, cy + 2.0f * s, 11.5f, kMuted, name.size() > 16 ? name.substr(0, 15) + "." : name);
+    // Una opcion de estacion apagada dice por que, debajo de la rueda.
+    if (hovered >= 0 && !options[hovered].enabled && options[hovered].action.type == HudActionType::Shipyard) {
+        std::string why;
+        g.CanDeployShipyard(&why);
+        u.Center(cx, cy + outer + 18.0f * s, 14.0f, kAmber, why);
+    }
 
     if (!u.in.clicked) return;
     if (hovered >= 0 && options[hovered].enabled) u.actions.push_back(options[hovered].action);
@@ -2968,18 +3255,18 @@ float GraphicsPanel(const Ui& u, float x, float y, float w) {
     const float s = u.s;
     const GameSettings& settings = u.in.settings;
     const GraphicsOptions& g = settings.graphics;
-    const float h = 486.0f * s;
+    const float h = 546.0f * s;
     u.Panel(x, y, w, h, "GRÁFICOS", settings.Custom() ? "PERSONALIZADA" : Upper(Profile(settings.quality).name).c_str());
     const float ix = x + 18.0f * s, iw = w - 36.0f * s;
     float line = y + 40.0f * s;
 
     // Una fila de botones: el nombre, para que sirve y sus valores.
-    const auto choice = [&](const char* name, const char* hint, GraphicsOption option, int current, const char* const labels[4], const int values[4]) {
+    const auto choice = [&](const char* name, const char* hint, GraphicsOption option, int current, const char* const* labels, const int* values, int count = 4) {
         u.Spaced(ix, line, 12.5f, kAmber, name);
         u.Right(ix + iw, line + 1.0f * s, 10.5f, kMuted, hint);
         line += 20.0f * s;
-        const float gap = 6.0f * s, bw = (iw - gap * 3.0f) / 4.0f, bh = 28.0f * s;
-        for (int i = 0; i < 4; ++i) {
+        const float gap = 6.0f * s, bw = (iw - gap * static_cast<float>(count - 1)) / static_cast<float>(count), bh = 28.0f * s;
+        for (int i = 0; i < count; ++i) {
             const float bx = ix + (bw + gap) * static_cast<float>(i);
             const bool active = current == values[i];
             const bool hover = u.Hover(bx, line, bw, bh);
@@ -2997,6 +3284,8 @@ float GraphicsPanel(const Ui& u, float x, float y, float w) {
     choice("SUPERFICIES", "relieve de planetas y estrellas", GraphicsOption::Surfaces, g.surfaces, kLevel, kSteps);
     choice("LUZ Y NEBULOSA", "pasos de la nube y luz fina", GraphicsOption::Lighting, g.lighting, kLevel, kSteps);
     choice("DAÑO DEL CASCO", "solo lo que se ve; el daño es el mismo", GraphicsOption::HullDamage, g.hullDamage, kHull, kSteps);
+    static const char* const kDestruction[3] = {"SIMPLE", "DETALLADA", "MÁXIMA"};
+    choice("DESTRUCCIÓN DE NAVES", "cómo se rompe una nave; pide procesador", GraphicsOption::Destruction, g.destruction, kDestruction, kSteps, 3);
 
     const auto toggle = [&](const char* name, bool on, GraphicsOption option) {
         const float th = 30.0f * s;
@@ -3260,7 +3549,7 @@ void Menu(const Ui& u, float width, float height) {
         case MenuPage::Interface:
             break;  // la dibuja InterfaceChoice, a pantalla completa
         case MenuPage::Graphics:
-            GraphicsPanel(u, bx - 40.0f * s, std::min(by - 30.0f * s, height - 500.0f * s), bw + 50.0f * s);
+            GraphicsPanel(u, bx - 40.0f * s, std::min(by - 30.0f * s, height - 560.0f * s), bw + 50.0f * s);
             break;
         case MenuPage::Credits:
             CreditsPanel(u, bx - 40.0f * s, by - 30.0f * s, bw + 50.0f * s);
@@ -3279,7 +3568,7 @@ void Paused(const Ui& u, float width, float height) {
     u.d->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), Rgba(8, 4, 2, 0.6f));
     if (u.in.page == MenuPage::Graphics) {
         const float w = 560.0f * s;
-        GraphicsPanel(u, cx - w * 0.5f, cy - 243.0f * s, w);
+        GraphicsPanel(u, cx - w * 0.5f, cy - 273.0f * s, w);
         return;
     }
     if (u.in.page == MenuPage::Settings) {
@@ -3974,6 +4263,7 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
         TurnRing(u, g, *camera_, w, h);
         SunPointers(u, g, *camera_, w, h);
         EchoPointer(u, g, *camera_, w, h);
+        holo::CameraGizmo(u, *camera_, w, h, (16.0f + kMiniWidth + 24.0f) * s, h * 0.5f + 60.0f * s);
         MiniHeader(u, g, w);
 
         const float margin = 16.0f * s;
@@ -4013,6 +4303,7 @@ void GameHud::Prepare(SDL_GPUCommandBuffer* cmd) {
         TurnRing(u, g, *camera_, w, h);
         SunPointers(u, g, *camera_, w, h);
         EchoPointer(u, g, *camera_, w, h);
+        holo::CameraGizmo(u, *camera_, w, h, (14.0f + kLeftWidth + 24.0f) * s, h * 0.5f + 60.0f * s);
 
         Compass(u, g, target_, w);
         // A la izquierda, una ventana bajo otra segun lo que ocupe cada una (plegada, solo la cabecera).

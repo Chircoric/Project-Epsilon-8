@@ -504,7 +504,7 @@ float4 SkyBand(float edge, float2 plane, float3 u, float3 v, float4 viewToBody, 
     // El aire se ve de canto como un filo fino que se apaga deprisa hacia el espacio (la densidad cae
     // en exponencial con la altura). En el lado de noche no hay nada; junto a la linea de sombra la
     // luz del sol ha cruzado tanto aire que llega rojiza.
-    const float height = max(edge - 1.0, 0.0) / (kAtmosphere * 0.45 * thickness * wobble);
+    const float height = max(edge - 1.0, 0.0) / (kAtmosphere * 0.75 * thickness * wobble);
     if (height >= 1.0) return float4(0, 0, 0, 0);
     const bool sunlit = dot(sun, sun) > 0.5;
     const float facing = sunlit ? dot(outward, sun) : 1.0;
@@ -512,7 +512,7 @@ float4 SkyBand(float edge, float2 plane, float3 u, float3 v, float4 viewToBody, 
     const float dusk = sunlit ? smoothstep(-0.20, 0.05, facing) * (1.0 - smoothstep(0.05, 0.35, facing)) : 0.0;
     const float falloff = exp(-height * 5.0) * (1.0 - height);
     const float3 hue = lerp(atmosphere.rgb, float3(1.0, 0.48, 0.20) * max(atmosphere.r, max(atmosphere.g, atmosphere.b)), dusk * 0.7);
-    return float4(hue * (0.35 + day * 0.4), saturate(falloff * day * atmosphere.a * 0.75));
+    return float4(hue * (0.45 + day * 0.7), saturate(falloff * day * atmosphere.a * 1.8));
 }
 
 struct PsOut {
@@ -662,7 +662,9 @@ PsOut PSSphere(VsOut i) {
         const float lommel = 2.0 * lambert / (lambert + max(dot(shading, toEye), 0.05));
         // En ultra, roca rugosa (Oren-Nayar) en lugar del Lambert liso.
         const float base = ultra && lit ? OrenNayar(shading, light.xyz, toEye, 0.75) : lambert;
-        diffuse = lerp(base, lommel, 0.3) * smoothstep(-0.02, 0.06, facing) * 0.9;
+        // Y el borde no sube: Oren-Nayar devuelve luz de canto, asi que se frena hacia el limbo.
+        const float limb = ultra ? 0.62 + 0.38 * pow(saturate(mu), 0.5) : 1.0;
+        diffuse = lerp(base, lommel, 0.3) * smoothstep(-0.02, 0.06, facing) * 0.9 * limb;
     } else if (ultra && lit && kind == 0) {
         // Mundo con aire en ultra: suelo rugoso donde no hay agua; la luz que entra la tiñe el aire
         // (sunPass), asi que el atardecer sale solo, sin pintarlo encima.
@@ -726,18 +728,21 @@ PsOut PSSphere(VsOut i) {
     // del sol que el aire desvia hacia nosotros, mucho mas hacia el borde, donde el camino es largo.
     // Es lo que quita el aspecto de bola pintada: los colores se lavan hacia el limbo.
     if (tau > 0.0) {
-        const float path = min(1.0 / max(mu, 0.05), 12.0);
+        const float path = min(1.0 / max(mu, 0.05), 6.0);
         const float3 viewPass = exp(-extinction * tau * path * 0.5);
         const float day = lit ? smoothstep(-0.18, 0.35, facing) : 1.0;
         const float cosSun = lit ? dot(rayView, light.xyz) : 0.0;
         const float phase = 0.75 * (1.0 + cosSun * cosSun);
-        const float3 inscatter = airHue * 0.26 * (1.0 - viewPass) * day * phase * lerp(float3(1, 1, 1), sunPass, 0.5) * tintA.rgb;
+        const float3 inscatter = airHue * 0.12 * (1.0 - viewPass) * day * phase * lerp(float3(1, 1, 1), sunPass, 0.5) * tintA.rgb;
         color = color * viewPass + inscatter;
     }
 
     const float rim = 1.0 - mu;
     // El aire visto de canto: mas camino, mas luz dispersada. Solo donde le da el sol.
-    color += atmosphere.rgb * atmosphere.a * (rim * rim * 0.32 + rim * 0.05 + rim * rim * rim * rim * rim * 0.38) * saturate(rimFacing * 1.3 + 0.05) * (tau > 0.0 ? 0.25 : 0.55);
+    // El halo se concentra en un filo fino (rim^6) y no en todo el disco (rim^2): asi se nota el aire
+    // sin lavar el borde del planeta.
+    const float rim3 = rim * rim * rim;
+    color += atmosphere.rgb * atmosphere.a * (rim * rim * 0.20 + rim3 * rim3 * 2.6 + rim * 0.04) * saturate(rimFacing * 1.3 + 0.08) * (tau > 0.0 ? 0.8 : 1.0);
 
     const float3 position = sphere.xyz + surfacePoint * sphere.w;
 

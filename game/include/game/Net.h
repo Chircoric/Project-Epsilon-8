@@ -86,7 +86,7 @@ std::unique_ptr<LanBeacon> AnnounceOnLan(std::string* error = nullptr);
 std::vector<LanGame> FindLanGames(double seconds);
 
 // 2: las estaciones llevan nivel, estado, casco, escudo y duenio.
-inline constexpr std::uint32_t kProtocolVersion = 2;
+inline constexpr std::uint32_t kProtocolVersion = 3;  // 3: los restos de las naves muertas (Wreck)
 
 enum class MessageType : std::uint8_t { Hello = 1, Welcome, Refused, Controls, Command, Snapshot, SnapshotDelta, Ack };
 

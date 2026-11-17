@@ -512,6 +512,9 @@ struct WorldRules {
     double dangerTime = 0.15;     // y en combate o con una colision encima
     double stationTime = 0.3;     // y junto a una estacion, para maniobrar
     double stationNear = 3000.0;  // km
+    // Junto a una estacion alienigena la nave va con ella, la lleve lo que la lleve (un planeta, una
+    // orbita): asi se maniobra a su lado sin que se escape.
+    double stationCarry = 200.0;  // km
     // Una nave cuyo jugador se desconecta no sale del mundo hasta llevar este tiempo real sin combate:
     // sin recibir ni hacer fuego y sin un hostil a tiro. Mientras, sigue ahi, parada y vulnerable.
     double logoutCalm = 15.0;     // s reales
@@ -591,6 +594,27 @@ inline constexpr double kBeaconInactive = 30.0;   // baliza desactivada: - 30 ·
 inline constexpr double kBeaconDistanceFalloff = 0.2;  // a(d) = 1 - 0,2 · d
 inline constexpr int kBeaconNoEffectDistance = 5;      // con d >= 5 no afecta
 
+// Destruccion de naves: como sale despedido lo que queda de una nave muerta. Son las mismas en
+// todas las calidades; la opcion de graficos solo decide cuanto se dibuja (Settings.h). Las
+// velocidades son reales (m/s de reloj de pared): los restos se ven igual con el tiempo frenado.
+struct DestructionRules {
+    double blastSpeed = 260.0;       // m/s: lo que la explosion del nucleo da a un trozo ligero del borde
+    double blastFront = 500.0;       // m/s: el frente que va soltando las piezas, del origen hacia fuera
+    double blastReach = 500.0;       // m: a esta distancia del origen el impulso es completo
+    double heavyRadius = 250.0;      // m: un trozo de este radio sale a la mitad de velocidad
+    double tumble = 0.9;             // rad/s: giro propio de un trozo ligero
+    double maxSpin = 0.6;            // rad/s: giro heredado de la nave, como mucho
+    double driftBreakSeconds = 8.0;  // s reales de cinematica hasta que la nave apagada se parte
+    double driftBreakEnergy = 0.45;  // parte de la fuerza de un nucleo: se parte, no estalla
+    double podLaunchSeconds = 4.0;   // s reales de cinematica: sale la primera capsula de escape
+    double podInterval = 0.45;       // s reales entre una capsula y la siguiente
+    int pods = 6;                    // capsulas de escape de la nave
+    double podSpeed = 45.0;          // m/s al soltarse
+    double podThrust = 30.0;         // m/s2 de su motor
+    double wreckMemory = 60.0;       // s reales que la sesion recuerda unos restos
+    int maxWrecks = 8;               // restos recordados a la vez en una burbuja
+};
+
 struct Balance {
     DriveRules drive;
     ShipRules ship;
@@ -606,6 +630,7 @@ struct Balance {
     ScannerRules scanner;
     WorldRules world;
     CinematicRules cinematic;
+    DestructionRules destruction;
 };
 
 // Modos de juego. Cambian lo que cuesta equivocarse, no las mecanicas.

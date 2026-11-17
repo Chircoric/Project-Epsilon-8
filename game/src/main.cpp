@@ -32,6 +32,9 @@
 //   --save a.sav       usa esta carpeta de partida (dentro van mundo.sav y jugadores/). Con --frames no se guarda salvo que se indique
 //   --load             carga la partida al empezar, sin pasar por el menu
 //   --quality N        calidad grafica: 0 baja, 1 media, 2 alta, 3 ultra. Sin ella, la guardada
+//   --destruccion N    destruccion de naves: 0 simple, 1 detallada, 2 maxima. Sin ella, la de la calidad
+//   --restos S         con --frames: termina (y captura) S segundos reales despues de que la nave muera o se
+//                      apague, aunque no se hayan cumplido los fotogramas
 //   --page N           pagina del menu: 0 principal, 1 nueva partida, 2 configuracion, 3 creditos, 4 graficos
 //   --nave a.glb       usa este modelo glTF para la nave. Sin ella, modelos/nave.glb (o .gltf) junto
 //                      al ejecutable si existe; si no, la maqueta hecha por codigo
@@ -93,6 +96,8 @@ struct Options {
     bool joinCrew = false;       // --join crew
     int mode = -1;                 // -1 = menu
     int quality = -1;              // -1 = la guardada; si no, GraphicsQuality
+    int destruction = -1;          // --destruccion: 0 simple, 1 detallada, 2 maxima; -1 = la de la calidad
+    double wreckStop = -1.0;       // --restos: termina a esos segundos reales de morir la nave; < 0 = no
     int page = 0;                  // pagina del menu con la que empezar: MenuPage
     int ui = -1;                   // --interfaz: 0 minimalista, 1 experta; -1 = la guardada
     int uiScale = 0;               // --tamano: % de la interfaz; 0 = el guardado
@@ -147,6 +152,8 @@ Options ParseOptions(int argc, char** argv) {
         else if (a == "--join" && i + 1 < argc) o.joinCrew = std::string(argv[++i]) == "crew";
         else if (a == "--mode" && i + 1 < argc) o.mode = std::atoi(argv[++i]);
         else if (a == "--quality" && i + 1 < argc) o.quality = std::atoi(argv[++i]);
+        else if (a == "--destruccion" && i + 1 < argc) o.destruction = std::atoi(argv[++i]);
+        else if (a == "--restos" && i + 1 < argc) o.wreckStop = std::atof(argv[++i]);
         else if (a == "--page" && i + 1 < argc) o.page = std::atoi(argv[++i]);
         else if (a == "--interfaz" && i + 1 < argc) {
             const std::string v = argv[++i];
@@ -751,6 +758,7 @@ int Run(Options options) {
                 ui.settings.quality = static_cast<GraphicsQuality>(options.quality);
                 ui.settings.graphics = OptionsOf(ui.settings.quality);
             }
+            if (options.destruction >= 0) ui.settings.graphics.destruction = std::clamp(options.destruction, 0, kDestructionLevels - 1);
             if (options.ui == 0) ui.settings.uiStyle = UiStyle::Minimal;
             else if (options.ui == 1) ui.settings.uiStyle = UiStyle::Expert;
             if (options.uiScale > 0) ui.settings.uiScale = std::clamp(options.uiScale, kUiScales[0], kUiScales[kUiScaleCount - 1]);
@@ -773,6 +781,7 @@ int Run(Options options) {
                 engine.Lod().detailBias = baseLod.detailBias + surfaces.detailBias;
                 engine.Lod().sphereMinPixels = surfaces.sphereMinPixels;
                 layer.SetHullDetail(std::clamp(g.hullDamage, 0, 3));
+                layer.SetDestruction(std::clamp(g.destruction, 0, kDestructionLevels - 1));
                 backend.SetVsync(options.vsync && ui.settings.vsync);
                 if (options.frames == 0) SDL_SetWindowFullscreen(window, ui.settings.fullscreen);
                 sounds.SetVolume(static_cast<float>(ui.settings.uiVolume) / 100.0f);
@@ -1039,6 +1048,7 @@ int Run(Options options) {
                             case GraphicsOption::Lighting: g.lighting = std::clamp(a.index, 0, 3); break;
                             case GraphicsOption::HullDamage: g.hullDamage = std::clamp(a.index, 0, 3); break;
                             case GraphicsOption::Shadows: g.shadows = !g.shadows; break;
+                            case GraphicsOption::Destruction: g.destruction = std::clamp(a.index, 0, kDestructionLevels - 1); break;
                         }
                         storeSettings();
                         break;
@@ -1358,6 +1368,8 @@ int Run(Options options) {
                         running = false;
                     }
                 }
+                // Con la instantanea de este fotograma ya aplicada: nave y planetas, del mismo paso.
+                session.PresentReplica(static_cast<float>(options.width) * 0.5f);
                 // Lo que ensena la pagina de red del menu.
                 if (search.valid() && search.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     ui.net.games.clear();
@@ -1650,7 +1662,10 @@ int Run(Options options) {
                     }
                 }
 
-                const bool lastFrame = options.frames > 0 && static_cast<int>(rendered) + 1 >= options.frames;
+                // --restos S: la captura cae S segundos reales despues de morir o apagarse la nave, vaya el
+                // juego a los fotogramas por segundo que vaya.
+                const bool wreckReached = options.wreckStop >= 0.0 && session.Phase() != GamePhase::Flying && session.Phase() != GamePhase::Away && session.WreckAge() >= options.wreckStop;
+                const bool lastFrame = options.frames > 0 && (static_cast<int>(rendered) + 1 >= options.frames || wreckReached);
                 if (lastFrame && !options.screenshot.empty()) backend.RequestScreenshot(options.screenshot);
                 backend.Render(packet);
                 ++rendered;

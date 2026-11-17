@@ -121,6 +121,15 @@ void RegisterGameCommands(CommandRegistry& commands, GameSession& g, TargetRef& 
         if (word == "planeta")
             for (std::size_t b = 0; b < data.bodies.size(); ++b)
                 if (data.bodies[b].parent < 0 && data.bodies[b].kind != astro::PlanetClass::Comet && data.bodies[b].kind != astro::PlanetClass::Asteroid) consider({Kind::Planet, system, static_cast<int>(b)});
+        // Para probar la luz de un mundo con aire: el rocoso con atmosfera mas cercano, o el rocoso mas cercano.
+        if (word == "terrestre") {
+            for (int pass = 0; pass < 2 && !best; ++pass)
+                for (std::size_t b = 0; b < data.bodies.size(); ++b) {
+                    const astro::BodyData& body = data.bodies[b];
+                    const bool rocky = body.kind == astro::PlanetClass::Terran || body.kind == astro::PlanetClass::Desert || body.kind == astro::PlanetClass::Rock;
+                    if (rocky && body.parent < 0 && (pass == 1 || body.materials.pressure > 0.05)) consider({Kind::Planet, system, static_cast<int>(b)});
+                }
+        }
         if (word == "campo") for (std::size_t b = 0; b < data.belts.size(); ++b) consider({Kind::Belt, system, static_cast<int>(b)});
         if (word == "estacion") for (const Station& s : g.Stations().All()) consider({Kind::Station, s.site.system, s.id});
         for (const Anomaly& a : g.Anomalies()) {
@@ -164,6 +173,22 @@ void RegisterGameCommands(CommandRegistry& commands, GameSession& g, TargetRef& 
         char line[160];
         std::snprintf(line, sizeof(line), " (sol a %.3g km, planeta a %.3g km, angulo %.1f grados)", Length(toStar), Length(toPlanet), std::acos(std::clamp(Dot(Normalize(toStar), Normalize(toPlanet)), -1.0, 1.0)) * 180.0 / kPi);
         return "En la sombra de " + planet->name + line;
+    });
+    commands.Add("diurno", "pone la nave en el lado iluminado del planeta objetivo, con el sol a la espalda, para probar: diurno [km] [grados]", [&, findContact](const CommandRegistry::Args& args) -> std::string {
+        const std::optional<TargetInfo> planet = g.Resolve(target);
+        const std::optional<TargetRef> starRef = findContact("estrella");
+        const std::optional<TargetInfo> star = starRef ? g.Resolve(*starRef) : std::nullopt;
+        if (!planet || !star) return commands.Fail("Hace falta un planeta como objetivo y una estrella");
+        const double km = args.empty() ? planet->arrival : std::atof(args[0].c_str());
+        // Los grados separan la nave de la linea sol-planeta: 0 = fase llena, 90 = media luna.
+        const double angle = (args.size() >= 2 ? std::atof(args[1].c_str()) : 0.0) * kPi / 180.0;
+        const Vec3d toStar = Normalize(star->position - planet->position);
+        Vec3d side = Cross(toStar, Vec3d(0.0, 1.0, 0.0));
+        if (Length(side) < 1.0e-6) side = Cross(toStar, Vec3d(1.0, 0.0, 0.0));
+        side = Normalize(side);
+        g.Ship().position = planet->position + (toStar * std::cos(angle) + side * std::sin(angle)) * km;
+        g.JumpTo(target, km);
+        return "Lado iluminado de " + planet->name;
     });
     // Las ordenes del jugador pasan por GameSession::Apply, como las de la interfaz. Lo que queda
     // llamando a la sesion directamente son trucos de prueba (saltar, regalo, nivel, aparecer...):

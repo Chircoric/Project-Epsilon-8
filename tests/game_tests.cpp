@@ -798,9 +798,9 @@ static void TestShipyardAndDrones() {
     CHECK(g.DronesOut() == 0 && !g.DroneSite());
     g.SetDrive(DriveMode::Impulse);
 
-    // La origami: no se suelta en orbita ni en marcha; fuera de la orbita y parada, si.
+    // La origami: no se suelta en marcha; desde la orbita o parada, si (la nave sale y queda quieta).
     std::string why;
-    CHECK(g.Orbiting() && !g.CanDeployShipyard(&why));
+    CHECK(g.Orbiting() && g.CanDeployShipyard(&why));
     g.SetThrottle(0.2);
     g.Step(0.05, {});  // dar mando la saca de la orbita
     CHECK(!g.Orbiting());
@@ -1539,6 +1539,30 @@ static void TestSettings() {
     // Lo que se sale de rango se recorta.
     CHECK(ReadSettings("luz 9\nescena 5\n").graphics.lighting == 3);
     CHECK(ReadSettings("luz 9\nescena 5\n").graphics.renderScale == 25);
+
+    // Destruccion de naves: simple hasta Media, detallada en Alta y maxima en Ultra. Un archivo de
+    // antes, sin la linea, toma la de su calidad; cambiarla a mano deja la calidad personalizada.
+    CHECK(OptionsOf(GraphicsQuality::Low).destruction == 0 && OptionsOf(GraphicsQuality::Medium).destruction == 0);
+    CHECK(OptionsOf(GraphicsQuality::High).destruction == 1 && OptionsOf(GraphicsQuality::Ultra).destruction == 2);
+    CHECK(GameSettings{}.graphics.destruction == 1);
+    CHECK(old.graphics.destruction == 0);
+    CHECK(ReadSettings("calidad 3\n").graphics.destruction == 2 && !ReadSettings("calidad 3\n").Custom());
+    const GameSettings before = ReadSettings("calidad 2\nescena 100\nbloom 1\npelicula 1\nsuperficies 2\nluz 2\ncasco 2\nsombras 1\n");
+    CHECK(!before.Custom() && before.graphics.destruction == 1);
+    GameSettings broken = old;
+    broken.graphics.destruction = 2;
+    const GameSettings pieces = ReadSettings(WriteSettings(broken));
+    CHECK(pieces.Custom() && pieces.quality == GraphicsQuality::Low && pieces.graphics.destruction == 2);
+    CHECK(ReadSettings("destruccion 9\n").graphics.destruction == 2 && ReadSettings("destruccion -4\n").graphics.destruction == 0);
+    // Cada nivel dibuja mas que el anterior, y el simple no anade nada.
+    CHECK(Destruction(0).bodies == 0 && Destruction(0).debris == 0 && Destruction(0).wrecks == 0 && !Destruction(0).fire);
+    for (int i = 0; i + 1 < kDestructionLevels; ++i) {
+        CHECK(Destruction(i).bodies < Destruction(i + 1).bodies && Destruction(i).debris < Destruction(i + 1).debris);
+        CHECK(Destruction(i).life < Destruction(i + 1).life && Destruction(i).wrecks < Destruction(i + 1).wrecks);
+    }
+    CHECK(!Destruction(1).fire && Destruction(2).fire && Destruction(1).opened > 0 && Destruction(1).opened < Destruction(2).opened);
+    CHECK(Destruction(2).bodies <= 64 && Destruction(2).debris <= 128 && Destruction(2).life <= 30.0f);  // topes: el limite es el procesador
+    CHECK(&Destruction(7) == &Destruction(2) && &Destruction(-1) == &Destruction(0));
 
     // La interfaz: sin elegir hasta que el jugador elige; el tamaño y las ventanas plegadas se guardan.
     const GameSettings fresh;
@@ -4132,6 +4156,201 @@ static void TestHullZones() {
     CHECK(g.Dock(station, true));
     for (int i = 0; i < 20; ++i) g.Step(0.05, {});
     CHECK(!ZoneLost(g.Ship().zones, nacelle));
+}
+
+// Destruccion de naves: la sesion anota cada muerte igual en los tres niveles, y el nivel solo cambia
+// lo que se dibuja. Los cuerpos nunca pasan del tope, y pasada su vida no queda nada en pantalla.
+static void TestDestruction() {
+    int uploads = 0;
+    const GameAssets assets = BuildGameAssets([&](const MeshData&) { return static_cast<MeshId>(++uploads); });
+    Balance rules;
+    const DestructionRules& dr = rules.destruction;
+    // Las capsulas salen todas antes de que la nave apagada se parta, y se parte antes de la pantalla final.
+    CHECK(dr.podLaunchSeconds + dr.pods * dr.podInterval < dr.driftBreakSeconds);
+    CHECK(dr.driftBreakSeconds < 14.0 && dr.driftBreakEnergy < 1.0 && dr.driftBreakEnergy > 0.0);
+    CHECK(dr.wreckMemory > static_cast<double>(Destruction(2).life) && dr.maxWrecks >= Destruction(2).wrecks);
+
+    // El reparto en cuerpos, con la nave de verdad y una gondola ya perdida.
+    std::vector<WreckPart> parts;
+    for (const ModelPart& p : assets.ship->parts) {
+        WreckPart part;
+        part.position = {p.position.x, p.position.y, p.position.z};
+        part.radius = static_cast<double>(p.radius * p.scale);
+        part.zone = ZoneOfPart(p.name, p.position);
+        parts.push_back(part);
+    }
+    Wreck wreck;
+    wreck.seed = 99;
+    wreck.zones = IntactHull();
+    wreck.zones[static_cast<std::size_t>(HullZone::PortNacelle)] = 0.0;
+    wreck.origin = ZoneInfo(static_cast<int>(HullZone::Core)).center;
+    for (const int cap : {1, Destruction(1).bodies, Destruction(2).bodies, 100000}) {
+        const WreckPlan plan = PlanWreck(parts, wreck, cap, dr);
+        CHECK(!plan.bodies.empty() && static_cast<int>(plan.bodies.size()) <= cap);
+        CHECK(plan.bodyOfPart.size() == parts.size());
+        int placed = 0, counted = 0;
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            CHECK(ZoneLost(wreck.zones, parts[i].zone) == (plan.bodyOfPart[i] < 0));
+            CHECK(plan.bodyOfPart[i] < static_cast<int>(plan.bodies.size()));
+            placed += plan.bodyOfPart[i] >= 0 ? 1 : 0;
+        }
+        for (const WreckBody& b : plan.bodies) {
+            counted += b.parts;
+            CHECK(b.parts > 0 && b.radius > 0.0 && b.release >= 0.0 && Length(b.velocity) > 0.0);
+            CHECK(Length(b.velocity) <= dr.blastSpeed * 1.5 * 1.3);
+        }
+        CHECK(placed == counted && placed > 0);
+    }
+    CHECK(PlanWreck(parts, wreck, 0, dr).bodies.empty());
+    const WreckPlan few = PlanWreck(parts, wreck, Destruction(1).bodies, dr), many = PlanWreck(parts, wreck, Destruction(2).bodies, dr);
+    // Tantos cuerpos como deje el tope, mientras queden piezas que separar (la maqueta tiene pocas).
+    int standing = 0;
+    for (const WreckPart& p : parts) standing += ZoneLost(wreck.zones, p.zone) ? 0 : 1;
+    CHECK(static_cast<int>(few.bodies.size()) == std::min(Destruction(1).bodies, standing) && static_cast<int>(many.bodies.size()) == std::min(Destruction(2).bodies, standing));
+    CHECK(many.bodies.size() >= few.bodies.size() && few.bodies.size() > 8);
+    // Una nave de una sola pieza no se puede partir: un cuerpo, por alto que sea el tope.
+    CHECK(PlanWreck({parts[0]}, wreck, 64, dr).bodies.size() == 1);
+    // Con menos fuerza (una nave apagada que se parte) los trozos salen mas despacio y tardan mas en soltarse.
+    Wreck weak = wreck;
+    weak.energy = dr.driftBreakEnergy;
+    const WreckPlan slow = PlanWreck(parts, weak, Destruction(1).bodies, dr);
+    for (std::size_t b = 0; b < few.bodies.size(); ++b) CHECK(Length(slow.bodies[b].velocity) < Length(few.bodies[b].velocity) && slow.bodies[b].release >= few.bodies[b].release);
+
+    // El movimiento: cada cuerpo va con la nave hasta soltarse y despues sigue recto, girando.
+    Wreck spinning = wreck;
+    spinning.angular = {0, 0.2, 0};
+    for (const WreckBody& b : few.bodies) {
+        const WreckPose start = PoseOf(wreck, b, 0.0);
+        CHECK(Length(start.offset - b.center) < 1e-6 && start.free == 0.0);
+        const WreckPose p1 = PoseOf(wreck, b, b.release + 1.0), p2 = PoseOf(wreck, b, b.release + 6.0), p3 = PoseOf(wreck, b, b.release + 11.0);
+        CHECK(p1.free > 0.0 && Length((p3.offset - p2.offset) - (p2.offset - p1.offset)) < 1e-6);
+        CHECK(std::fabs(Length(p2.offset - p1.offset) - Length(b.velocity) * 5.0) < 1e-6);
+        // Unido a una nave que gira, sigue a su misma distancia del centro; suelto, hereda la velocidad de ese punto.
+        const WreckPose held = PoseOf(spinning, b, b.release * 0.5);
+        CHECK(std::fabs(Length(held.offset) - Length(b.center)) < 1e-6);
+        const WreckPose s1 = PoseOf(spinning, b, b.release + 1.0), s2 = PoseOf(spinning, b, b.release + 2.0);
+        const WreckPose at = PoseOf(spinning, b, b.release);
+        const Vec3d inherited = Cross(spinning.angular, at.offset);
+        CHECK(Length((s2.offset - s1.offset) - (inherited + at.rotation.ToMatrix().TransformDirection(b.velocity))) < 1e-6);
+    }
+
+    // En la partida: la misma secuencia con cada nivel deja la sesion identica.
+    const Color fog{0.1f, 0.05f, 0.15f, 1.0f};
+    std::string saves[kDestructionLevels];
+    Packet snapshots[kDestructionLevels];
+    int extras[kDestructionLevels] = {};
+    for (int level = 0; level < kDestructionLevels; ++level) {
+        const DestructionProfile& profile = Destruction(level);
+        auto engine = MakeEngine(rules, 7);
+        GameSession g(*engine, rules, 7, GameModeId::Normal);
+        g.Conversation().Stop();
+        GameLayer layer(g, assets, 1, 2, fog);
+        layer.SetDestruction(level);
+        engine->AddLayer(&layer);
+        Camera camera;
+        camera.SetViewport(1600, 900, 800.0f, kNearPlaneKm);
+        const auto lookAt = [&](const Vec3d& target, double distance) {
+            const Vec3d from = Normalize(target - g.Ship().position + Vec3d{0, 0, 1e-6});
+            const Vec3d dir = Length(target - g.Ship().position) > 1e-3 ? from : Heading(g.Ship());
+            camera.SetOrientation(Quatf::Cast(CameraLooking(dir)));
+            camera.SetPosition(target - dir * distance);
+        };
+        const auto count = [&](std::uint32_t prefix, std::uint32_t mask = 0xFF000000u) {
+            FramePacket packet;
+            engine->Build(camera, 1.0, packet);
+            int n = 0;
+            for (const MeshInstance& m : packet.meshes) n += (m.id & mask) == prefix ? 1 : 0;
+            return n;
+        };
+        g.Step(0.05, {});
+        CHECK(g.Wrecks().empty());
+
+        // Una nave alienigena destruida: con el nivel simple desaparece; con los demas, se parte.
+        const int alien = g.SpawnAnomaly(AnomalyKind::AlienShip, Stance::Hostile, 5.0);
+        g.Step(0.05, {});
+        Vec3d alienAt;
+        for (const Anomaly& a : g.Anomalies())
+            if (a.id == alien) alienAt = g.AnomalyPosition(a);
+        CHECK(g.StrikeAnomaly(alien, DamageType::Kinetic, 1e30));
+        g.Step(0.05, {});
+        bool gone = true;
+        for (const Anomaly& a : g.Anomalies()) gone = gone && a.id != alien;
+        CHECK(gone);
+        CHECK(g.Wrecks().size() == 1 && g.Wrecks()[0].model >= 0 && g.Wrecks()[0].vessel < 0 && g.Wrecks()[0].id == 1);
+        for (int i = 0; i < 20; ++i) g.Step(0.05, {});
+        lookAt(alienAt, 3.0);
+        const int alienPieces = count(0x5A000000u);
+        CHECK(level == 0 ? alienPieces == 0 : alienPieces > 0);
+        CHECK(level == 0 ? layer.WreckBodyCount() == 0 : layer.WreckBodyCount() > 0 && layer.WreckBodyCount() <= static_cast<std::size_t>(profile.bodies));
+
+        // El nucleo de la nave revienta: queda anotado, y la partida sigue su cuenta hasta la pantalla final.
+        g.DamageZone(static_cast<int>(HullZone::Core), rules.ship.hull * 0.5);
+        CHECK(g.Phase() == GamePhase::Exploding);
+        CHECK(g.Wrecks().size() == 2);
+        const Wreck own = g.Wrecks().back();
+        CHECK(own.model < 0 && own.vessel == g.VesselAt(g.Focus()).id && own.energy == 1.0 && own.age == 0.0);
+        CHECK(own.zones == g.Ship().zones);
+        // Viaja en la instantanea de red, entera o por secciones.
+        const SnapshotData snap = g.MakeSnapshot(0);
+        SnapshotData back, joined;
+        CHECK(snap.wrecks.size() == 2 && DecodeSnapshot(EncodeSnapshot(snap), back) && back.wrecks.size() == 2 && back.wrecks[1].seed == own.seed && back.wrecks[1].vessel == own.vessel);
+        CHECK(JoinSnapshot(SplitSnapshot(snap), joined) && joined.wrecks.size() == 2 && joined.wrecks[0].model == snap.wrecks[0].model);
+
+        for (int i = 0; i < 50; ++i) g.Step(0.05, {});  // 2,5 s: los cuerpos ya se han soltado
+        lookAt(g.WreckPosition(), 4.0);
+        const int classic = count(0x72000000u), pieces = count(0x5A000000u);
+        extras[level] = count(0x5B000000u);
+        CHECK(level == 0 ? (classic > 0 && pieces == 0 && extras[level] == 0) : (classic == 0 && pieces > 0 && extras[level] > 0));
+        CHECK(layer.WreckBodyCount() <= static_cast<std::size_t>(profile.bodies) * 2);
+        CHECK(extras[level] <= profile.debris * 2 + profile.opened * (profile.decks + profile.girders) * 2);
+
+        // Pasada su vida no se dibuja nada, aunque la sesion aun los recuerde; despues, los olvida.
+        for (int i = 0; i < 520; ++i) g.Step(0.05, {});  // 28,5 s tras la explosion
+        CHECK(g.Phase() == GamePhase::GameOver);
+        CHECK(g.Wrecks().size() == 2);
+        CHECK(count(0x5A000000u) == 0 && count(0x5B000000u) == 0 && layer.WreckBodyCount() <= static_cast<std::size_t>(profile.bodies) * 2);
+        saves[level] = WriteSave(g.Snapshot());
+        snapshots[level] = EncodeSnapshot(g.MakeSnapshot(0));
+        for (int i = 0; i < 680; ++i) g.Step(0.05, {});
+        CHECK(g.Wrecks().empty());
+
+        // La nave apagada: salen las capsulas y despues se parte. Con el nivel simple se queda entera.
+        auto engine2 = MakeEngine(rules, 11);
+        GameSession a(*engine2, rules, 11, GameModeId::Normal);
+        a.Conversation().Stop();
+        GameLayer layer2(a, assets, 1, 2, fog);
+        layer2.SetDestruction(level);
+        engine2->AddLayer(&layer2);
+        a.Step(0.05, {});
+        a.DamageZone(static_cast<int>(HullZone::Spine), rules.ship.hull * 0.5);
+        CHECK(a.Phase() == GamePhase::Adrift && a.Wrecks().empty());
+        const auto count2 = [&](std::uint32_t prefix, std::uint32_t mask) {
+            camera.SetOrientation(Quatf::Cast(a.Ship().orientation));
+            camera.SetPosition(a.Ship().position - Heading(a.Ship()) * 3.0);
+            FramePacket packet;
+            engine2->Build(camera, 1.0, packet);
+            int n = 0;
+            for (const MeshInstance& m : packet.meshes) n += (m.id & mask) == prefix ? 1 : 0;
+            return n;
+        };
+        const int steps = static_cast<int>((dr.driftBreakSeconds - 0.5) / 0.05);
+        for (int i = 0; i < steps; ++i) a.Step(0.05, {});
+        CHECK(a.Wrecks().empty());  // aun entera
+        CHECK(count2(0x70000000u, 0xFFFFFF00u) + count2(0x70000100u, 0xFFFFFF00u) > 0);
+        CHECK(count2(0x5B00F000u, 0xFFFFF000u) == (level == 0 ? 0 : dr.pods));
+        for (int i = 0; i < 30; ++i) a.Step(0.05, {});
+        CHECK(a.Phase() == GamePhase::Adrift);
+        CHECK(a.Wrecks().size() == 1 && a.Wrecks()[0].energy == dr.driftBreakEnergy && a.Wrecks()[0].vessel == a.VesselAt(a.Focus()).id);
+        const int whole = count2(0x70000000u, 0xFFFF0000u), broken = count2(0x5A000000u, 0xFF000000u);
+        CHECK(level == 0 ? (whole > 0 && broken == 0) : (whole == 0 && broken > 0));
+        for (int i = 0; i < 100; ++i) a.Step(0.05, {});
+        CHECK(a.Phase() == GamePhase::GameOver && a.Wrecks().size() == 1);  // se parte una sola vez
+    }
+    // Lo que queda guardado y lo que viaja por red no dependen del nivel.
+    CHECK(saves[0] == saves[1] && saves[1] == saves[2] && !saves[0].empty());
+    CHECK(snapshots[0] == snapshots[1] && snapshots[1] == snapshots[2]);
+    // El nivel maximo dibuja mas interior y escombros que el detallado.
+    CHECK(extras[2] > extras[1]);
 }
 
 // Fase D: los alienigenas tienen casco por zonas, sacadas del nombre de sus piezas, y el modo
@@ -7009,6 +7228,7 @@ int main(int argc, char** argv) {
         {"Dano estructural", TestStructuralDamage},
         {"Cifras iniciales de balanceo", TestBalanceBudgets},
         {"Zonas del casco", TestHullZones},
+        {"Destruccion de naves", TestDestruction},
         {"Zonas alienigenas y cinematica", TestAlienZones},
         {"Modelos de combate (fase E)", TestCombatModels},
         {"Maniobra junto a una estacion", TestStationManeuver},

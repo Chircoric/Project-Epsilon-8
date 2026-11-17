@@ -24,6 +24,8 @@ struct GameAssets {
     // Lo que asoma de un crater y lo que sale despedido: vigas en I, chapas arrancadas y astillas.
     // Miden 1 de largo a lo largo de +Z y se escalan al dibujarlas.
     eps::MeshId girder = eps::kNoMesh, plate = eps::kNoMesh, shard = eps::kNoMesh;
+    // Capsula de escape: 2 de largo a lo largo de +Z y 1 de diametro; se escala al dibujarla.
+    eps::MeshId pod = eps::kNoMesh;
     // Modulos exteriores (por ShipModuleKind) y mejoras visibles, con la base en el origen y +Y hacia
     // fuera del casco, en metros.
     std::array<eps::MeshId, static_cast<std::size_t>(ShipModuleKind::Count)> moduleMeshes{};

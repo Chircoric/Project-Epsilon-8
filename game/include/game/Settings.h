@@ -25,9 +25,32 @@ struct QualityProfile {
     // Lo que ensena el casco danado: 0 nada (las piezas perdidas si desaparecen), 1 quemaduras,
     // 2 ademas grietas al rojo, 3 ademas agujeros que dejan ver a traves.
     int hullDamage;
+    // Como se rompe una nave al morir: 0 simple, 1 detallada, 2 maxima (DestructionProfile).
+    int destruction;
 };
 
 const QualityProfile& Profile(GraphicsQuality quality);
+
+// Destruccion de naves: lo que se ve cuando una nave muere. La partida es la misma en los tres
+// niveles (cuando muere, que pierde, que dano recibe); solo cambia cuanto se dibuja.
+//   Simple: la nave se deshace con una animacion fija y una alienigena desaparece con un destello.
+//   Detallada: se parte por sus piezas en pocos cuerpos, de vida corta, con su velocidad y su giro.
+//   Maxima: mas cuerpos, escombros, fuego, chispas y explosiones secundarias.
+enum class DestructionLevel : int { Simple, Detailed, Maximum, Count };
+inline constexpr int kDestructionLevels = static_cast<int>(DestructionLevel::Count);
+
+struct DestructionProfile {
+    const char* name;
+    int bodies;        // cuerpos independientes en que se parte una nave, como mucho
+    int debris;        // escombros sueltos por nave (vigas, chapas, astillas), como mucho
+    float life;        // s reales que se dibujan los restos de una nave
+    int wrecks;        // naves rotas que se dibujan a la vez; de las demas, solo el destello
+    int opened;        // cuerpos que ensenan el interior por el corte, los mas grandes
+    int decks;         // pisos que asoman en cada uno
+    int girders;       // vigas que asoman en cada uno
+    bool fire;         // fuego, chispas, fugas de plasma y explosiones secundarias
+};
+const DestructionProfile& Destruction(int level);
 
 // Lo que el jugador puede cambiar por separado en la pestaña de gráficos. Elegir una calidad lo
 // rellena todo de golpe; tocar despues una opcion deja la calidad como "Personalizada".
@@ -39,11 +62,12 @@ struct GraphicsOptions {
     int lighting = 2;       // 0..3: luz de los shaders y pasos de la nebulosa
     int hullDamage = 2;     // 0..3: como QualityProfile::hullDamage
     bool shadows = true;    // la nave se da sombra a si misma
+    int destruction = 1;    // 0..2: DestructionLevel
     bool operator==(const GraphicsOptions&) const = default;
 };
 
 // Cada opcion de la pestaña, para HudActionType::Graphics.
-enum class GraphicsOption : int { RenderScale, Bloom, Film, Surfaces, Lighting, HullDamage, Shadows };
+enum class GraphicsOption : int { RenderScale, Bloom, Film, Surfaces, Lighting, HullDamage, Shadows, Destruction };
 
 inline constexpr int kRenderScales[] = {50, 67, 75, 100};
 

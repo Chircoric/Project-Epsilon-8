@@ -276,6 +276,15 @@ MeshData MakeShard() {
     return m;
 }
 
+// Capsula de escape: un cilindro con dos casquetes, de 2 de largo a lo largo de +Z y 1 de diametro.
+MeshData MakePod() {
+    MeshData m;
+    AppendMesh(m, MakeCylinder(0.5f, 1.0f, 12), {0, 0, 0}, Quatf::FromAxisAngle({1, 0, 0}, 1.5707963f));
+    AppendMesh(m, MakeSphere(0.5f, 12), {0, 0, 0.5f});
+    AppendMesh(m, MakeSphere(0.5f, 12), {0, 0, -0.5f});
+    return m;
+}
+
 namespace {
 
 // Una nave de un .gltf, la propia o una alienigena: piezas centradas en su caja y con sus triangulos.
@@ -775,6 +784,7 @@ GameAssets BuildGameAssets(const MeshUpload& upload, TextureId hull) {
     a.girder = upload(MakeGirder());
     a.plate = upload(MakePlate());
     a.shard = upload(MakeShard());
+    a.pod = upload(MakePod());
     a.powerStation = BuildPower(upload, hull);
     a.hostileShip = BuildAlienShip(upload, true);
     a.neutralShip = BuildAlienShip(upload, false);

@@ -61,6 +61,11 @@ public:
     void Collect(const eps::FrameContext& c, eps::FramePacket& out) override;
     // QualityProfile::hullDamage: cuanto ensena el casco danado. Con 0 no se calcula nada.
     void SetHullDetail(int detail) { hullDetail_ = detail; }
+    // DestructionLevel: como se dibuja una nave que muere. Con 0, lo de siempre y nada mas.
+    void SetDestruction(int level) { destruction_ = level; }
+    int DestructionLevelNow() const { return destruction_; }
+    // Cuerpos sueltos que se dibujaron en el ultimo fotograma, entre todas las naves rotas. Para pruebas.
+    std::size_t WreckBodyCount() const { return wreckBodies_; }
 
     // Crateres que ya se han clavado en el casco (solo con calidad maxima). Para pruebas.
     std::size_t CraterCount() const { return craters_.size(); }
@@ -83,6 +88,26 @@ private:
         double phase = 0;
     };
     void DrawLostPieces(const eps::FrameContext& c, eps::FramePacket& out) const;
+    // Destruccion detallada y maxima (ShipWreck.h): los restos de cada nave muerta, su explosion y las
+    // capsulas de escape de la nave apagada.
+    void DrawWrecks(const eps::FrameContext& c, eps::FramePacket& out) const;
+    void DrawBlast(const eps::FrameContext& c, eps::FramePacket& out, const eps::Vec3d& center, const Wreck& wreck) const;
+    void DrawEscapePods(const eps::FrameContext& c, eps::FramePacket& out) const;
+    // El reparto en cuerpos de unos restos, hecho una vez: con que nivel, como estaban los anillos al
+    // morir y que cuerpos ensenan el interior.
+    struct WreckCache {
+        WreckPlan plan;
+        int level = 0;
+        double ringPhase = 0;
+        std::vector<int> opened;
+    };
+    // Un cuerpo ya colocado en este fotograma.
+    struct WreckPlaced {
+        eps::Vec3d offset;   // m, del centro de los restos al del cuerpo
+        eps::Mat4d turn;
+        eps::Quatf rotation;
+        float heat = 0, free = 0;
+    };
     void SyncCraters() const;
     bool RayShip(const eps::Vec3f& origin, const eps::Vec3f& direction, int onlyZone, eps::Vec3f& hit, eps::Vec3f& normal, int& zone, int* spin = nullptr, float* distance = nullptr) const;
     void PartCraters(const eps::ModelPart& p, int zone, int spin, eps::MeshInstance& m, eps::FramePacket& out) const;
@@ -133,6 +158,10 @@ private:
     eps::Color fogColor_;
     eps::Quatd wreckRotation_;  // ultima orientacion de la nave, para que se rompa desde ahi
     int hullDetail_ = 2;
+    int destruction_ = 0;
+    mutable std::map<int, WreckCache> wreckPlans_;  // por Wreck::id
+    mutable std::vector<WreckPlaced> wreckPlaced_;
+    mutable std::size_t wreckBodies_ = 0;
     std::vector<int> partZones_;  // zona del casco de cada pieza del modelo de la nave
     std::vector<int> partSpin_;   // rotor de cada pieza (RotorOfPart)
     std::vector<Lamp> partLamp_;  // lampara de cada pieza (LampOfPart)

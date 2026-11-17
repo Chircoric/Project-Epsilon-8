@@ -111,6 +111,7 @@ if(EPSILON_BUILD_DEMOS AND TARGET epsilon_engine)
         game/src/OnFoot.cpp
         game/src/SaveGame.cpp
         game/src/Settings.cpp
+        game/src/ShipWreck.cpp
         game/src/Session.cpp
         game/src/Net.cpp
         game/src/Console.cpp

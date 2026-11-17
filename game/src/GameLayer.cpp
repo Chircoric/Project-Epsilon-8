@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "epsilon/FrameBuilder.h"
+#include "game/Settings.h"
 
 namespace game {
 
@@ -1053,6 +1054,435 @@ void GameLayer::DrawAdrift(const FrameContext& c, FramePacket& out) const {
     }
 }
 
+// --- Destruccion de naves (detallada y maxima) --------------------------------------------------
+// La sesion anota cada nave que muere (Wreck); aqui se reparte en cuerpos y se dibuja. Con el
+// nivel simple nada de esto se ejecuta.
+
+namespace {
+
+// Giro que lleva +Z a esa direccion (unitaria).
+Quatf ZTo(const Vec3f& v) {
+    const Vec3f axis = Cross(Vec3f{0, 0, 1}, v);
+    const float s = Length(axis);
+    if (s < 1e-5f) return v.z > 0.0f ? Quatf{} : Quatf::FromAxisAngle({1, 0, 0}, 3.14159265f);
+    return Quatf::FromAxisAngle(axis * (1.0f / s), std::atan2(s, v.z));
+}
+
+float Frac(float v) { return v - std::floor(v); }
+
+}  // namespace
+
+// El fogonazo, los estallidos y la nube de una nave que revienta. Con poca energia (una nave
+// apagada que se parte) apenas hay fogonazo: quedan los estallidos sueltos y algo de humo.
+void GameLayer::DrawBlast(const FrameContext& c, FramePacket& out, const Vec3d& center, const Wreck& w) const {
+    const float age = static_cast<float>(w.age);
+    if (age > 12.0f) return;
+    const float energy = static_cast<float>(std::clamp(w.energy, 0.0, 1.5));
+    const float size = static_cast<float>(w.size / 0.56);  // la nave del jugador mide 0,56 km de radio
+    const float power = 0.4f + 0.6f * energy;
+    const Vec3f rel(center - c.cameraPosition);
+    const Mat4f matrix = Quatf::Cast(w.orientation).ToMatrix();
+    const float focal = c.camera.FocalPx();
+    std::uint32_t id = 0x5D000000u + (static_cast<std::uint32_t>(w.id) & 0xFFu) * 0x10000u;
+    const auto flash = [&](const Vec3f& where, float km, const Color& tint) {
+        ++id;
+        const Vec3f view = c.viewRotation.TransformDirection(where);
+        if (view.z <= 0.05f) return;
+        SpriteInstance s;
+        s.viewPosition = view;
+        s.pixelRadius = km / view.z * focal;
+        s.tint = tint;
+        s.id = id;
+        s.texture = glow_;
+        s.blend = BlendMode::Additive;
+        s.fogReach = 50.0f;
+        out.sprites.push_back(s);
+    };
+    const Vec3f origin = rel + matrix.TransformDirection(Vec3f(w.origin) * kMetre);
+    if (age < 2.8f) {
+        const float fade = std::exp(-age * 2.2f) * energy;
+        flash(origin, (0.5f + age * 3.0f) * size * power, {9.0f * fade, 7.0f * fade, 4.0f * fade, 1.0f});
+    }
+    const std::uint32_t bursts = 4u + static_cast<std::uint32_t>(10.0f * energy);
+    for (std::uint32_t i = 0; i < bursts; ++i) {
+        const std::uint32_t h = Hash(i, w.seed & 0xFFFFu, 41);
+        const float life = age - Unit(h, 0) * 3.5f;
+        if (life < 0.0f || life > 1.3f) continue;
+        const float fade = 1.0f - life / 1.3f;
+        const Vec3f local{(Unit(h, 8) - 0.5f) * 0.6f * size, (Unit(h, 16) - 0.5f) * 0.4f * size, (Unit(h, 24) - 0.5f) * 1.2f * size};
+        const float bright = 5.0f * fade * fade * power;
+        flash(rel + matrix.TransformDirection(local), (0.3f + life * 0.7f) * size * power, {bright, bright * 0.62f, bright * 0.25f, 1.0f});
+    }
+    const float density = 2.4f * energy * std::max(1.0f - age / 9.0f, 0.0f);
+    if (density > 0.02f) {
+        const float glow = 0.5f + 3.0f * std::exp(-age * 0.8f);
+        NebulaInstance cloud;
+        cloud.viewCenter = c.viewRotation.TransformDirection(origin);
+        cloud.radius = (0.5f + age * 0.7f) * size * power;
+        cloud.inner = {1.0f * glow, 0.5f * glow, 0.14f * glow, 1.0f};
+        cloud.outer = {0.25f, 0.10f, 0.05f, 1.0f};
+        cloud.density = density;
+        cloud.seed = static_cast<float>(w.seed % 64u);
+        cloud.distance = Length(origin);
+        out.nebulae.push_back(cloud);
+    }
+}
+
+// Los restos de cada nave muerta, en cuerpos que se separan girando (ShipWreck.h). Los mas grandes
+// ensenan por el corte lo que llevaban dentro: pisos y vigas. Con el nivel maximo, ademas, fuego,
+// chispas, fugas de plasma y explosiones secundarias.
+void GameLayer::DrawWrecks(const FrameContext& c, FramePacket& out) const {
+    wreckBodies_ = 0;
+    if (destruction_ <= 0) {
+        if (!wreckPlans_.empty()) wreckPlans_.clear();
+        return;
+    }
+    const DestructionProfile& profile = Destruction(destruction_);
+    const DestructionRules& rules = session_.Rules().destruction;
+    const std::vector<Wreck>& wrecks = session_.Wrecks();
+    for (auto it = wreckPlans_.begin(); it != wreckPlans_.end();) {
+        const bool alive = std::any_of(wrecks.begin(), wrecks.end(), [&](const Wreck& w) { return w.id == it->first; });
+        it = alive ? std::next(it) : wreckPlans_.erase(it);
+    }
+    const Vec3d worldOrigin = session_.GetWorld().origin;
+    const int focusVessel = session_.VesselAt(session_.Focus()).id;
+    const float focal = c.camera.FocalPx();
+    const Quatf toCamera = c.camera.Orientation().Conjugate();
+    const std::size_t first = wrecks.size() > static_cast<std::size_t>(profile.wrecks) ? wrecks.size() - static_cast<std::size_t>(profile.wrecks) : 0;
+    for (std::size_t n = first; n < wrecks.size(); ++n) {
+        const Wreck& w = wrecks[n];
+        if (w.age >= static_cast<double>(profile.life)) continue;
+        const bool alien = w.model >= 0;
+        if (alien && w.model >= kAlienModelCount) continue;
+        const ModelAsset* model = alien ? AlienModelAsset(assets_, static_cast<AlienModel>(w.model)).get() : assets_.ship.get();
+        if (!model) continue;
+        const std::vector<int>& zonesOf = alien ? assets_.alienPartZones[static_cast<std::size_t>(w.model)] : partZones_;
+        const bool zoned = zonesOf.size() == model->parts.size();
+        // Los restos de la nave que se lleva van donde la sesion la tiene: siguen al planeta que la arrastra.
+        const bool own = !alien && w.vessel == focusVessel;
+        const Vec3d center = own ? session_.WreckPosition() : w.absolute - worldOrigin;
+        const Vec3d rel = center - c.cameraPosition;
+        if (Length(rel) > kModelRange) continue;
+
+        auto found = wreckPlans_.find(w.id);
+        if (found == wreckPlans_.end() || found->second.level != destruction_) {
+            WreckCache cache;
+            cache.level = destruction_;
+            cache.ringPhase = ringPhase_;
+            std::vector<WreckPart> parts(model->parts.size());
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                const ModelPart& p = model->parts[i];
+                const int spin = !alien && i < partSpin_.size() ? partSpin_[i] : 0;
+                parts[i].position = ToDouble(SpinOf(spin, cache.ringPhase).ToMatrix().TransformDirection(p.position));
+                parts[i].radius = static_cast<double>(p.radius * p.scale);
+                parts[i].zone = zoned ? zonesOf[i] : -1;
+                parts[i].gone = HiddenPart(p) || (own && PieceLost(session_.Ship(), static_cast<int>(i)));
+            }
+            cache.plan = PlanWreck(parts, w, profile.bodies, rules);
+            // Los que ensenan el interior: los mas grandes.
+            std::vector<int> order(cache.plan.bodies.size());
+            for (std::size_t b = 0; b < order.size(); ++b) order[b] = static_cast<int>(b);
+            std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return cache.plan.bodies[static_cast<std::size_t>(a)].radius > cache.plan.bodies[static_cast<std::size_t>(b)].radius; });
+            for (std::size_t k = 0; k < order.size() && static_cast<int>(k) < profile.opened; ++k)
+                if (cache.plan.bodies[static_cast<std::size_t>(order[k])].radius > 20.0) cache.opened.push_back(order[k]);
+            found = wreckPlans_.insert_or_assign(w.id, std::move(cache)).first;
+        }
+        const WreckCache& cache = found->second;
+        const WreckPlan& plan = cache.plan;
+        if (plan.bodies.empty()) continue;
+        wreckBodies_ += plan.bodies.size();
+
+        const SceneLight light = LightAt(c, center);
+        const float age = static_cast<float>(w.age);
+        const float energy = static_cast<float>(std::clamp(w.energy, 0.0, 1.5));
+        // Una nave de una sola pieza no puede partirse: arde entera y se consume antes, entre mas escombros.
+        const bool single = plan.bodies.size() == 1;
+        const float life = single ? profile.life * 0.5f : profile.life;
+        const float fade = std::clamp((life - age) / 2.0f, 0.0f, 1.0f);
+        const std::uint32_t tag = (static_cast<std::uint32_t>(w.id) & 0xFFu) * 0x10000u;
+
+        wreckPlaced_.clear();
+        for (const WreckBody& body : plan.bodies) {
+            const WreckPose pose = PoseOf(w, body, w.age);
+            WreckPlaced placed;
+            placed.offset = pose.offset;
+            placed.turn = pose.rotation.ToMatrix();
+            placed.rotation = Quatf::Cast(pose.rotation);
+            placed.free = static_cast<float>(pose.free);
+            // Al rojo al soltarse, y se enfria; antes, el calor le va llegando con el frente.
+            placed.heat = pose.free > 0.0 ? std::exp(-placed.free / 6.0f) * (0.5f + 0.5f * energy) : 0.5f * static_cast<float>(std::clamp(w.age / std::max(body.release, 0.05), 0.0, 1.0));
+            if (single) placed.heat = 1.0f;
+            wreckPlaced_.push_back(placed);
+        }
+        const auto worldOf = [&](std::size_t b, const Vec3d& local) { return rel + (wreckPlaced_[b].offset + wreckPlaced_[b].turn.TransformDirection(local)) * 0.001; };
+
+        if (fade > 0.0f) {
+            for (std::size_t i = 0; i < model->parts.size(); ++i) {
+                const int b = plan.bodyOfPart[i];
+                if (b < 0) continue;
+                const ModelPart& p = model->parts[i];
+                const WreckBody& body = plan.bodies[static_cast<std::size_t>(b)];
+                const WreckPlaced& placed = wreckPlaced_[static_cast<std::size_t>(b)];
+                const Quatf turn = SpinOf(!alien && i < partSpin_.size() ? partSpin_[i] : 0, cache.ringPhase);
+                const Vec3d inModel = ToDouble(turn.ToMatrix().TransformDirection(p.position));
+                const Vec3f at(worldOf(static_cast<std::size_t>(b), inModel - body.center));
+                // Lo que estaba junto al origen de la explosion queda quemado y al rojo; lo de lejos conserva
+                // el aspecto que tenia: la nave se reconoce en sus trozos.
+                const float nearCut = std::exp(-static_cast<float>(Length(inModel - w.origin) / (150.0 * std::max(w.size / 0.56, 0.2))));
+                if (!c.frustum.SphereVisible(at, p.radius * kMetre * p.scale * 1.2f)) continue;
+                MeshInstance m;
+                m.viewPosition = c.viewRotation.TransformDirection(at);
+                m.scale = p.scale * kMetre * fade;
+                m.rotation = toCamera * placed.rotation * turn * p.rotation;
+                ApplyLight(m, light);
+                m.color = p.color;
+                m.id = 0x5A000000u + tag + static_cast<std::uint32_t>(i + 1);
+                m.mesh = p.mesh;
+                m.texture = p.texture;
+                m.doubleSided = true;  // un trozo suelto se ve tambien por dentro
+                if (hullDetail_ > 0) {
+                    const double whole = zoned && zonesOf[i] >= 0 ? w.zones[static_cast<std::size_t>(zonesOf[i])] : 0.5;
+                    m.damage = single ? 1.0f : std::clamp(std::max(static_cast<float>(1.0 - whole), 0.7f * nearCut * (0.5f + 0.5f * energy)), 0.0f, 1.0f);
+                    m.damageHeat = single ? 1.0f : placed.heat * (0.1f + 0.9f * nearCut);
+                    m.damageDetail = std::min(hullDetail_, 2);
+                    m.damageSeed = static_cast<float>((i + 1) * 7u % 64u);
+                } else {
+                    // Sin el dano del shader: al menos se ennegrece y brilla mientras esta caliente.
+                    const float burnt = single ? 1.0f : nearCut, hot = placed.heat * burnt;
+                    m.color = {p.color.r * (1.0f - 0.5f * burnt) + 0.6f * hot, p.color.g * (1.0f - 0.55f * burnt) + 0.25f * hot, p.color.b * (1.0f - 0.6f * burnt) + 0.05f * hot, 1.0f};
+                    m.emissive = hot * 0.8f;
+                }
+                out.meshes.push_back(m);
+            }
+        }
+
+        // El interior, por el lado del corte (el que mira al origen de la explosion): pisos apilados y
+        // vigas que los atraviesan, arrancados y al rojo. Solo cuando el cuerpo ya se ha separado.
+        std::uint32_t inside = 0;
+        for (const int b : cache.opened) {
+            const std::size_t bi = static_cast<std::size_t>(b);
+            const WreckBody& body = plan.bodies[bi];
+            const WreckPlaced& placed = wreckPlaced_[bi];
+            inside += 64u;
+            if (placed.free <= 0.0f || fade <= 0.0f || assets_.unitBox == kNoMesh) continue;
+            const Vec3d toCut = w.origin - body.center;
+            const Vec3d cut = Length(toCut) > 1.0 ? Normalize(toCut) : Vec3d{0, 0, -1};
+            const Vec3d half{std::max(body.half.x, 6.0), std::max(body.half.y, 6.0), std::max(body.half.z, 6.0)};
+            const double support = std::fabs(cut.x) * half.x + std::fabs(cut.y) * half.y + std::fabs(cut.z) * half.z;
+            // Todo va pegado a la cara del corte: metido en el casco y asomando solo unos metros.
+            const Vec3d flat{cut.x, 0.0, cut.z};
+            const Vec3d along = Length(flat) > 0.2 ? Normalize(flat) : Vec3d{0, 0, 1};  // hacia el corte, en horizontal
+            const Vec3d side{along.z, 0.0, -along.x};                                    // a lo ancho de la cara
+            const double across = std::fabs(side.x) * half.x + std::fabs(side.z) * half.z;
+            const float width = static_cast<float>(std::clamp(across * 1.5, 8.0, 320.0));
+            const float depth = static_cast<float>(std::clamp(support * 0.5, 6.0, 45.0));
+            const Vec3d face = cut * support;
+            const float grow = std::min(placed.free / 0.4f, 1.0f) * fade;
+            const std::uint32_t seed = w.seed + static_cast<std::uint32_t>(b) * 7919u;
+            const auto piece = [&](const Vec3d& local, const Quatf& turn, float lengthM, float sx, float sy, MeshId mesh, const Color& base, float shine, std::uint32_t k) {
+                const Vec3f at(worldOf(bi, local));
+                if (!c.frustum.SphereVisible(at, lengthM * kMetre)) return;
+                MeshInstance m;
+                m.viewPosition = c.viewRotation.TransformDirection(at);
+                m.scale = lengthM * kMetre * grow;
+                m.stretchX = sx;
+                m.stretchY = sy;
+                m.rotation = toCamera * placed.rotation * turn;
+                ApplyLight(m, light);
+                const float glow = placed.heat * (0.5f + 0.7f * Rand(seed, 200u + k)) * shine;
+                m.color = {base.r + 0.6f * glow, base.g + 0.2f * glow, base.b + 0.03f * glow, 1.0f};
+                m.emissive = glow;
+                m.id = 0x5B000000u + tag + inside + k;
+                m.mesh = mesh;
+                out.meshes.push_back(m);
+            };
+            // Pisos: repisas a lo ancho de la cara, una sobre otra (el eje Y del modelo), cada una recortada
+            // y algo torcida, como arrancada. La caja mide 1 a lo largo de +Z: se tumba a lo ancho.
+            const Quatf sideways = ZTo(Vec3f(side));
+            for (int d = 0; d < profile.decks; ++d) {
+                const std::uint32_t k = static_cast<std::uint32_t>(d);
+                const double level = profile.decks > 1 ? (static_cast<double>(d) / (profile.decks - 1) - 0.5) * 1.1 * half.y : 0.0;
+                const float trim = 0.6f + 0.4f * Rand(seed, 10u + k), reach = depth * (0.6f + 0.4f * Rand(seed, 20u + k));
+                const Vec3d spot = face - along * (static_cast<double>(reach) * 0.3) + side * ((Rand(seed, 30u + k) - 0.5) * across * 0.3) + Vec3d{0, level, 0};
+                const Quatf bend = Quatf::FromAxisAngle(Normalize(Vec3f{Rand(seed, 50u + k) - 0.5f, 0.1f, Rand(seed, 60u + k) - 0.5f}), (Rand(seed, 70u + k) - 0.5f) * 0.16f);
+                const float length = width * trim;
+                piece(spot, bend * sideways, length, reach / length, std::max(1.4f, static_cast<float>(half.y) * 0.02f) / length, assets_.unitBox, Color{0.17f, 0.18f, 0.20f, 1.0f}, 0.45f, k);
+            }
+            // Vigas: unas de pie, de piso a piso, y otras tumbadas que asoman por el corte.
+            const Quatf upright = Quatf::FromAxisAngle({1, 0, 0}, 1.5707963f);  // +Z de la viga hacia -Y
+            const Quatf across2 = ZTo(Vec3f(along));
+            for (int g = 0; g < profile.girders && assets_.girder != kNoMesh; ++g) {
+                const std::uint32_t k = 32u + static_cast<std::uint32_t>(g);
+                const Vec3d spot = face + side * ((Rand(seed, 80u + k) - 0.5) * static_cast<double>(width) * 0.85);
+                const Quatf lean = Quatf::FromAxisAngle(Normalize(Vec3f{Rand(seed, 100u + k) - 0.5f, Rand(seed, 110u + k) - 0.5f, 0.2f}), (Rand(seed, 120u + k) - 0.5f) * 0.35f);
+                if (g % 3 == 2) {
+                    const float length = depth * (0.9f + 0.7f * Rand(seed, 130u + k));
+                    piece(spot + Vec3d{0, (Rand(seed, 140u + k) - 0.5) * half.y, 0} - along * (static_cast<double>(length) * 0.75), lean * across2, length, 0.4f, 0.4f, assets_.girder, Color{0.30f, 0.28f, 0.26f, 1.0f}, 0.9f, k);
+                } else {
+                    const float length = static_cast<float>(std::clamp(half.y * (1.0 + 0.3 * Rand(seed, 130u + k)), 6.0, 130.0));
+                    piece(spot - along * (static_cast<double>(depth) * 0.15 * Rand(seed, 150u + k)) + Vec3d{0, static_cast<double>(length) * 0.5, 0}, lean * upright, length, 0.3f, 0.3f, assets_.girder, Color{0.30f, 0.28f, 0.26f, 1.0f}, 0.9f, k);
+                }
+            }
+        }
+
+        // Escombros sueltos: lo que la explosion arranca y arroja en todas direcciones.
+        const int bits = std::min(single ? profile.debris * 2 : profile.debris, 192);
+        const float shrink = std::clamp((life - age) / 3.0f, 0.0f, 1.0f);
+        const Mat4d whole = w.orientation.ToMatrix();
+        const double reach = w.size * 1000.0;  // m
+        for (int j = 0; j < bits && shrink > 0.0f; ++j) {
+            const std::uint32_t s = w.seed + static_cast<std::uint32_t>(j) * 104729u;
+            const Vec3d direction = Normalize(Vec3d{Rand(s, 21) - 0.5, Rand(s, 22) - 0.5, Rand(s, 23) - 0.5} + Vec3d{0, 0, 1e-4});
+            const float r = Rand(s, 25);
+            const double speed = (25.0 + 240.0 * static_cast<double>(Rand(s, 24))) * (0.3 + 0.7 * static_cast<double>(energy));  // m/s
+            const Vec3d start = whole.TransformDirection(w.origin + Vec3d{Rand(s, 32) - 0.5, Rand(s, 33) - 0.5, Rand(s, 34) - 0.5} * (reach * 0.5));
+            const Vec3f at(rel + (start + direction * (speed * w.age)) * 0.001);
+            const float sizeM = (2.0f + 7.0f * r + 12.0f * r * r * r * r) * static_cast<float>(std::clamp(w.size / 0.56, 0.3, 2.0)) * shrink;
+            if (!c.frustum.SphereVisible(at, sizeM * kMetre)) continue;
+            MeshInstance m;
+            m.viewPosition = c.viewRotation.TransformDirection(at);
+            m.scale = sizeM * kMetre;
+            const Vec3f axis = Normalize(Vec3f{Rand(s, 26) - 0.5f, Rand(s, 27) - 0.5f, Rand(s, 28) - 0.5f} + Vec3f{0, 0, 1e-3f});
+            m.rotation = toCamera * Quatf::FromAxisAngle(axis, age * (0.5f + 2.5f * Rand(s, 29)) + Rand(s, 30) * 6.28f);
+            ApplyLight(m, light);
+            const float glow = std::exp(-age / 3.0f) * (0.5f + Rand(s, 31));
+            m.color = {0.32f + 0.6f * glow, 0.30f + 0.2f * glow, 0.32f, 1.0f};
+            m.emissive = glow * 1.5f;
+            const int kind = j % 4;
+            m.mesh = kind == 0 ? assets_.girder : kind == 1 ? assets_.plate : kind == 2 || assets_.debris.empty() ? assets_.shard : assets_.debris[s % assets_.debris.size()];
+            m.id = 0x5B008000u + tag + static_cast<std::uint32_t>(j);
+            out.meshes.push_back(m);
+        }
+
+        DrawBlast(c, out, center, w);
+
+        // Fuego: solo con el nivel maximo. Cada cuerpo suelto arde por dentro y suelta chispas; algunos
+        // estallan un momento despues, y los del nucleo, las gondolas y el anillo pierden plasma.
+        if (!profile.fire) continue;
+        std::uint32_t sparkId = 0x5D008000u + tag;
+        const auto glowAt = [&](const Vec3d& where, float km, const Color& tint) {
+            ++sparkId;
+            const Vec3f view = c.viewRotation.TransformDirection(Vec3f(where));
+            if (view.z <= 0.05f) return;
+            SpriteInstance sp;
+            sp.viewPosition = view;
+            sp.pixelRadius = std::max(km / view.z * focal, 1.5f);
+            sp.tint = tint;
+            sp.id = sparkId;
+            sp.texture = glow_;
+            sp.blend = BlendMode::Additive;
+            sp.fogReach = 50.0f;
+            out.sprites.push_back(sp);
+        };
+        const std::size_t burning = std::min<std::size_t>(plan.bodies.size(), 24);
+        for (std::size_t b = 0; b < burning; ++b) {
+            const WreckBody& body = plan.bodies[b];
+            const WreckPlaced& placed = wreckPlaced_[b];
+            if (placed.free <= 0.0f || fade <= 0.0f) {
+                sparkId += 12u;
+                continue;
+            }
+            const std::uint32_t s = w.seed + static_cast<std::uint32_t>(b) * 31337u;
+            const Vec3d at = worldOf(b, Vec3d{});
+            const float radius = static_cast<float>(body.radius) * kMetre;
+            const float embers = std::exp(-placed.free / 9.0f) * fade;
+            const float flicker = 0.7f + 0.3f * std::sin(age * (9.0f + 6.0f * Rand(s, 1)) + Rand(s, 2) * 6.28f);
+            glowAt(at, radius * (0.28f + 0.12f * flicker), Color{2.0f * embers * flicker, 0.8f * embers * flicker, 0.2f * embers * flicker, 1.0f});
+            for (std::uint32_t j = 0; j < 4; ++j) {
+                const float phase = age * (0.7f + 0.5f * Rand(s, 10u + j)) + Rand(s, 20u + j);
+                const float t = Frac(phase);
+                const std::uint32_t round = s + static_cast<std::uint32_t>(std::floor(phase)) * 977u + j;
+                const Vec3d direction = Normalize(Vec3d{Rand(round, 3) - 0.5, Rand(round, 4) - 0.5, Rand(round, 5) - 0.5} + Vec3d{0, 0, 1e-4});
+                glowAt(at + direction * (static_cast<double>(radius) * 0.4 + 0.09 * static_cast<double>(t)), 0.004f + 0.003f * (1.0f - t), Color{3.0f * embers * (1.0f - t), 1.6f * embers * (1.0f - t), 0.5f * embers * (1.0f - t), 1.0f});
+            }
+            // Explosion secundaria: lo que quedaba dentro (municion, depositos) revienta al poco de soltarse.
+            float burst = -1.0f;
+            if (Rand(s, 40) < 0.45f) burst = placed.free - (0.4f + 3.0f * Rand(s, 41));
+            if (burst >= 0.0f && burst < 0.9f) {
+                const float k = (1.0f - burst / 0.9f) * (1.0f - burst / 0.9f);
+                glowAt(at, radius * (1.0f + 2.2f * burst), Color{6.0f * k, 4.0f * k, 1.5f * k, 1.0f});
+                if (static_cast<int>(out.pointLights.size()) < kMaxPointLights) {
+                    PointLight l;
+                    l.viewPosition = c.viewRotation.TransformDirection(Vec3f(at));
+                    l.range = radius * 6.0f + 0.1f;
+                    l.color = {3.0f * k, 2.0f * k, 0.8f * k, 1.0f};
+                    out.pointLights.push_back(l);
+                }
+            } else {
+                ++sparkId;
+            }
+            // Fuga de plasma: un chorro azulado que sale de los cuerpos con maquinaria de potencia.
+            const bool plasma = body.zone == static_cast<int>(HullZone::Core) || body.zone == static_cast<int>(HullZone::PortNacelle) || body.zone == static_cast<int>(HullZone::StarboardNacelle) || body.zone == static_cast<int>(HullZone::WarpRing);
+            if (plasma && placed.free < 14.0f) {
+                const Vec3d jet = placed.turn.TransformDirection(body.spinAxis);
+                const float leak = std::exp(-placed.free / 6.0f) * fade;
+                for (std::uint32_t j = 0; j < 5; ++j) {
+                    const float t = Frac(age * 1.4f + static_cast<float>(j) * 0.2f);
+                    glowAt(at + jet * (static_cast<double>(radius) * (0.3 + 2.2 * static_cast<double>(t))), radius * (0.10f + 0.28f * t), Color{0.7f * leak * (1.0f - t), 1.0f * leak * (1.0f - t), 2.2f * leak * (1.0f - t), 1.0f});
+                }
+            } else {
+                sparkId += 5u;
+            }
+        }
+    }
+}
+
+// Las capsulas de escape de una nave apagada: salen del puente una tras otra, a un lado y a otro,
+// y se alejan con el motor encendido. Solo se ven; quien sobrevive lo decide la partida.
+void GameLayer::DrawEscapePods(const FrameContext& c, FramePacket& out) const {
+    const DestructionRules& r = session_.Rules().destruction;
+    const double now = session_.WreckAge();
+    if (assets_.pod == kNoMesh || now < r.podLaunchSeconds) return;
+    const ShipState& ship = session_.Ship();
+    const double rate = Length(ship.angularRate);
+    const Vec3d axis = rate > 1e-12 ? ship.angularRate * (1.0 / rate) : Vec3d{0, 1, 0};
+    const int bridgeZone = static_cast<int>(HullZone::Bridge);
+    const Vec3d bridge = CustomZoneLayout() ? CustomZoneLayout()->centers[static_cast<std::size_t>(bridgeZone)] : ZoneInfo(bridgeZone).center;
+    const SceneLight light = LightAt(c, ship.position);
+    const float focal = c.camera.FocalPx();
+    for (int i = 0; i < r.pods; ++i) {
+        const double t = now - r.podLaunchSeconds - static_cast<double>(i) * r.podInterval;
+        if (t < 0.0 || t > 25.0) continue;
+        // La nave tal como estaba cuando salio esta capsula: desde entonces ha seguido girando.
+        const Quatd then = (Quatd::FromAxisAngle(axis, -rate * t) * ship.orientation).Normalized();
+        const auto turn = then.ToMatrix();
+        const double side = i % 2 == 0 ? 1.0 : -1.0;
+        const double row = static_cast<double>(i / 2);
+        const Vec3d start = bridge + Vec3d{side * 35.0, -12.0, -40.0 * row};
+        const Vec3d heading = Normalize(turn.TransformDirection(Vec3d{side, -0.45, 0.25 - 0.2 * row}));
+        const double run = r.podSpeed * t + 0.5 * r.podThrust * t * t;  // m
+        const Vec3d at = ship.position + turn.TransformDirection(start * 0.001) + heading * (run * 0.001);
+        const Vec3f view = c.viewRotation.TransformDirection(Vec3f(at - c.cameraPosition));
+        MeshInstance m;
+        m.viewPosition = view;
+        m.scale = 7.0f * kMetre;  // 14 m de largo y 7 de diametro
+        m.rotation = c.camera.Orientation().Conjugate() * Quatf::Cast(CameraLooking(heading));
+        ApplyLight(m, light);
+        m.color = {0.82f, 0.80f, 0.74f, 1.0f};
+        m.emissive = 0.06f;
+        m.id = 0x5B00F000u + static_cast<std::uint32_t>(i);
+        m.mesh = assets_.pod;
+        out.meshes.push_back(m);
+        // El motor: un punto azulado y su estela.
+        const float burn = static_cast<float>(std::min(t / 0.5, 1.0));
+        const Vec3f tail = c.viewRotation.TransformDirection(Vec3f(at - heading * 0.009 - c.cameraPosition));
+        if (tail.z > 0.05f) {
+            SpriteInstance s;
+            s.viewPosition = tail;
+            s.pixelRadius = std::max(0.014f / tail.z * focal, 2.5f);
+            s.tint = {1.4f * burn, 2.0f * burn, 3.0f * burn, 1.0f};
+            s.id = 0x5D00F000u + static_cast<std::uint32_t>(i);
+            s.texture = glow_;
+            s.blend = BlendMode::Additive;
+            s.fogReach = 1.0e9f;
+            out.sprites.push_back(s);
+            const double trail = std::min(run, 60.0 + (r.podSpeed + r.podThrust * t) * 0.5) * 0.001;
+            const Vec3f end = c.viewRotation.TransformDirection(Vec3f(at - heading * trail - c.cameraPosition));
+            if (end.z > 0.05f) out.lines.push_back({tail, end, Color{0.5f * burn, 0.75f * burn, 1.2f * burn, 0.6f}});
+        }
+    }
+}
+
 // --- Modulos y mejoras visibles -----------------------------------------------------------------
 
 namespace {
@@ -1578,11 +2008,15 @@ void GameLayer::Collect(const FrameContext& c, FramePacket& out) {
         DrawWarpLens(c, out);
         DrawScanPulse(c, out);
     } else if (session_.Phase() == GamePhase::Adrift || (session_.Phase() == GamePhase::GameOver && session_.ShutDown())) {
-        DrawAdrift(c, out);
+        // Apagada: con la destruccion detallada salen las capsulas de escape y, despues, la nave se
+        // parte (lo dibuja DrawWrecks). Con la simple se queda entera, como siempre.
+        if (destruction_ <= 0 || session_.WreckAge() < session_.Rules().destruction.driftBreakSeconds) DrawAdrift(c, out);
+        if (destruction_ > 0) DrawEscapePods(c, out);
     } else if (session_.Phase() == GamePhase::Exploding || session_.WreckAge() < 20.0) {
-        DrawWreck(c, out);
+        if (destruction_ <= 0) DrawWreck(c, out);  // si no, sus restos van en DrawWrecks
     }
     DrawLostPieces(c, out);
+    DrawWrecks(c, out);
 
     // Las demas naves de la flota, mientras vuelen. De momento solo el casco, y con las zonas de la
     // nave del foco: modulos, estelas y danos propios de cada una llegaran con el cliente de red.
