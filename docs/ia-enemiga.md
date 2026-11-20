@@ -107,3 +107,30 @@ La misma Utility AI sirve a pie, con otro conjunto de acciones (cubrirse, avanza
 ### Patentes
 
 Cálculo de tiro con adelanto, evasión y reglas de bandada son técnicas muy antiguas y de dominio público académico. No hay relación con la patente de §1, siempre que los roles y las maniobras sean **fijos por clase** y no se alteren por lo que ocurrió con un jugador.
+
+---
+
+## 5. Módulo de interferencia de comunicaciones (decidido el 2026-11-20)
+
+Contrapeso del aprendizaje de la raza: el jugador sacrifica torretas para retrasar la adaptación enemiga a su armamento.
+
+- **Módulo exterior**: ocupa una de las ranuras `hp_…` y compite con torretas, radiadores y antenas.
+- **Detectable**: una interferencia activa la perciben los sensores enemigos y sube la alerta de la región. Se adapta menos, pero llegan antes.
+- **Solo retraso**: alarga el intervalo con que la raza cambia de estrategia. No degrada su observación del jugador (sin ruido).
+- Rendimientos decrecientes (propuesta): `multiplicador_de_época = 1 + (MAX − 1)·(1 − r^n)`, con `MAX = 8` y `r = 0,6` (un módulo ≈ ×3,8, dos ≈ ×5,5, tres ≈ ×6,5).
+- Coste en energía continua y elementos de comunicaciones (Ga, In, Te), a decidir. Distinto del escudo EM, que estropea la puntería enemiga y no su estrategia.
+- **Módulos de sigilo: exclusivos de las naves de categoría prowler (sigilosa)**, cuyo sistema aún está por diseñar (`diseno-combate.md`, apartado 3). No se montan en otras clases.
+- Cifras en `Balance.h`; todas son de partida.
+
+## 6. Tablero de estrategias (propuesta)
+
+Registro de nodos con puntuación por condiciones, elegido por flota al llegar y no por individuo:
+
+- `StrategyNode`: id, nombre, `fit(FleetProfile, PlayerProfile)` (0 = no aplica), lista de órdenes sencillas (esquivar, orbitar, anclar a la artillería, cubrirse, salva), enfriamiento y `next` (grafo de transiciones por fase).
+- `StrategyBoard::Choose` elige por softmax con semilla de flota y época; `Advance` sigue por `next`.
+- Se añaden estrategias con una fila nueva. La lógica vive en `game/` (`Strategy.h/.cpp`); `main.cpp` solo aporta un comando de consola (`estrategia <nombre>`) para forzar un nodo en pruebas.
+- Requiere un id de grupo `Anomaly::fleet`, guardado en `SaveGame`.
+- El perfil del jugador es una **foto del armamento montado** al llegar la flota, no un historial de combate.
+- Aprendizaje opcional: un bandido por época ajusta un multiplicador de peso por nodo y raza. El módulo de §5 alarga esa época.
+
+Estrategias candidatas: saturación de defensa puntual, señuelos, sondeo de escudo, fuego concentrado por zona, supresión, cobertura planetaria, pinza, orbitar, ataque desde la estrella, kiting hacia un bastión, escalonado por alcance y llamada de refuerzos.
