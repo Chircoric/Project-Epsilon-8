@@ -69,3 +69,41 @@ La misma Utility AI sirve a pie, con otro conjunto de acciones (cubrirse, avanza
 - Definir el histograma de armamento y su ritmo de desvanecimiento (propuesta: media móvil con vida media de 24 h simuladas, como la alerta).
 - Decidir las acciones y las curvas de la Utility AI y escribir pruebas deterministas en `game_tests.cpp`.
 - Conectar la doctrina con las flotas que envían las estaciones de nivel 4 o más (fase F: «la alerta aún no tiene efecto en el combate»).
+
+---
+
+## 4. Puntería balística y maniobra táctica
+
+### Lo que ya existe (revisado el 2026-11-20)
+
+- **La puntería balística ya es simétrica.** `Solve()` ([Combat.cpp](../game/src/Combat.cpp)) calcula la intercepción con la velocidad del blanco y la del tirador, simula el vuelo con la gravedad que conoce y corrige la desviación. La usan el jugador (`Session.cpp:3081`), las naves hostiles (`FireAlien`), los hostiles contra estaciones (`FireAtStation`) y las torretas de estación (`StationVolley`).
+- Cada tirador falla según el nivel de su computador (`AimError`, `Scatter`), y el escudo electromagnético lo confunde. Los haces viajan a c y los guiados corrigen su rumbo.
+- **Límite conocido:** `Solve()` supone que el blanco mantiene **velocidad constante**. Es el fallo útil que explota la maniobra evasiva: quien cambia de rumbo después de disparar el otro, hace fallar el cálculo.
+- **El movimiento hostil es muy simple** (`StepAnomaly`, [Anomalies.cpp](../game/src/Anomalies.cpp)): va en línea recta a `0,8 × alcance` y ahí se queda quieto, con la velocidad suavizada (constante de 4 s). No esquiva y no mantiene formación; sin separación, todas acaban en el mismo punto.
+
+### Evasión: girar bruscamente
+
+- Cada nave hostil tiene un **temporizador de esquiva** con intervalo aleatorio (semilla de su `id`, como el resto) y un impulso lateral, perpendicular a la línea de tiro, de dirección sorteada.
+- El intervalo se ajusta al **tiempo de vuelo** de los proyectiles que le apuntan (`FiringSolution::flightTime`): lo que se esquiva es el cálculo de intercepción, así que conviene cambiar de velocidad **a mitad del vuelo**, no al azar.
+- La agilidad (empuje lateral y cadencia de giros) sale de la **clase de nave** (`kShipClasses`): los drones y las corvetas giran mucho, las fragatas poco, la artillería casi nada.
+- Contra un haz (`Spinal`, a c) no sirve esquivar: se usa **cobertura** (escudo, interponer otra nave o un astro).
+- Se aplica **también al jugador** de forma natural: la física ya existe, y es el contrapeso de que los hostiles apunten bien. Opcional: un indicador de «solución de tiro» enemiga.
+
+### Formaciones: amontonarse alrededor de la artillería
+
+- **Roles fijos por clase**, nunca por historial: *Artillería* (lenta, mucho alcance, se queda atrás, apunta con todo el casco), *Pantalla* (escolta que se interpone), *Hostigador* (dron o corveta que esquiva y flanquea). Es una tabla en `Balance.h`.
+- La pantalla usa **reglas de bandada** (Reynolds, 1986, ampliamente publicadas): separación, cohesión y alineación, más una **fuerza de ancla** hacia su nave de artillería.
+- Cada escolta recibe un **hueco** en una cáscara esférica alrededor de la artillería (puntos de Fibonacci, calculados a partir del número de escoltas), con radio que crece con su eslora. Así «se amontonan» sin chocar y cubren los ángulos hacia el jugador, no solo su lado.
+- Si cae la artillería, la pantalla pasa a hostigador: cambia el rol, no su memoria.
+- Todo es **O(n) por flota** con vecinos cercanos por celdas. Se actualiza a baja frecuencia y se desactiva cuando la flota está lejos (simulación estadística, §2).
+
+### Implementación sugerida (por fases)
+
+1. `StepAnomaly`: añadir el temporizador de esquiva y la separación entre naves. Sin roles todavía.
+2. Roles y ancla a la artillería, con pruebas deterministas en `game_tests.cpp`: misma semilla, misma formación.
+3. Medir con `--cmd aparecer` y capturas (`docs/pruebas.md`): porcentaje de aciertos con y sin esquiva, por nivel de computador, para ajustar las cifras en `Balance.h`.
+4. Opcional: que `Solve()` admita aceleración del blanco, para que un computador de nivel alto contrarreste una esquiva lenta.
+
+### Patentes
+
+Cálculo de tiro con adelanto, evasión y reglas de bandada son técnicas muy antiguas y de dominio público académico. No hay relación con la patente de §1, siempre que los roles y las maniobras sean **fijos por clase** y no se alteren por lo que ocurrió con un jugador.
